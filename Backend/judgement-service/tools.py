@@ -589,10 +589,53 @@ def build_ik_query(term: str, exact: bool = False, doctypes: str | None = None) 
     return query
 
 
+# Tribunals, commissions and boards IK offers as their own doctypes, and the
+# docsource phrase that identifies each one in the library ("Income Tax
+# Appellate Tribunal - Jaipur", "Custom, Excise & Service Tax Tribunal", …).
+_TRIBUNAL_TOKEN_MATCH: dict[str, tuple[str, ...]] = {
+    "aptel": ("Appellate Tribunal For Electricity",),
+    "authority": ("Authority For Advance Rulings",),
+    "cat": ("Central Administrative Tribunal",),
+    "cci": ("Competition Commission",),
+    "cegat": ("Gold Tribunal",),
+    "cerc": ("Central Electricity Regulatory Commission",),
+    "cestat": ("Service Tax",),
+    "cic": ("Central Information Commission",),
+    "clb": ("Company Law Board",),
+    "consumer": ("Consumer Disputes Redressal",),
+    "copyrightboard": ("Copyright Board",),
+    "drat": ("Debts Recovery",),
+    "greentribunal": ("National Green Tribunal",),
+    "ipab": ("Intellectual Property Appellate",),
+    "itat": ("Income Tax Appellate Tribunal",),
+    "mrtp": ("Monopolies and Restrictive Trade Practices",),
+    "nclat": ("National Company Law Appellate",),
+    "sebisat": ("Securities Appellate Tribunal",),
+    "tdsat": ("Telecom Disputes Settlement",),
+    "trademark": ("Trade Marks", "Trademark"),
+}
+
+# IK tokens that stand for a whole family of docsources — IK_DOCTYPES uses
+# 'tribunals' by default, so it must resolve to the tribunal bodies rather
+# than to nothing.
+_AGGREGATE_TOKEN_MATCH: dict[str, tuple[str, ...]] = {
+    "tribunals": ("Tribunal", "Commission", "Board", "Authority"),
+}
+
+
+def _docsource_any(phrases: tuple[str, ...]) -> dict[str, Any]:
+    """docsource matches ANY of these phrases."""
+    return {"bool": {"should": [{"match_phrase": {"docsource": p}} for p in phrases],
+                     "minimum_should_match": 1}}
+
+
 def es_court_clauses(doctypes: str) -> list[dict[str, Any]]:
     """docsource filters mirroring IK doctype tokens for the local library.
-    Tokens with no docsource pattern (tribunal codes, laws) are skipped —
-    the library holds the court judgments the pipeline fetched anyway."""
+    EVERY selected token contributes a clause — including tribunal codes and
+    IK document categories the library holds nothing for, which restrict to
+    their own docsource words. A court filter must never silently widen the
+    search back to all courts: picking one court shows that court or
+    nothing."""
     clauses: list[dict[str, Any]] = []
     for token in (doctypes or "").split(","):
         token = token.strip().lower()
@@ -604,14 +647,25 @@ def es_court_clauses(doctypes: str) -> list[dict[str, Any]]:
             clauses.append({"match_phrase": {"docsource": "High Court"}})
         elif token in ("delhidc", "bangaloredc", "districtcourts"):
             clauses.append({"match_phrase": {"docsource": "District"}})
+        elif token in _AGGREGATE_TOKEN_MATCH:
+            clauses.append(_docsource_any(_AGGREGATE_TOKEN_MATCH[token]))
+        elif token in _TRIBUNAL_TOKEN_MATCH:
+            clauses.append(_docsource_any(_TRIBUNAL_TOKEN_MATCH[token]))
         else:
             match = _COURT_TOKEN_MATCH.get(token)
             if match:
                 clauses.append({"bool": {"must": [
-                    {"match_phrase": {"docsource": "High Court"}},
+                    # "High Court" or IK's abbreviated form ("Andhra HC
+                    # (Pre-Telangana)") — both are that court's judgments.
+                    _docsource_any(("High Court", "HC")),
                     {"bool": {"should": [{"match": {"docsource": m}} for m in match],
                               "minimum_should_match": 1}},
                 ]}})
+            else:
+                # An unknown or non-court token (RBI circulars, debates…):
+                # restrict to its own words rather than dropping the filter.
+                clauses.append({"match": {"docsource": {"query": token,
+                                                        "operator": "and"}}})
     return clauses
 
 
@@ -874,6 +928,29 @@ def parse_legal_query(query: str) -> dict[str, Any]:
 
 # ─── Judgment-level legal search (ES primary engine) ─────────────────────────
 
+_EM_RE = re.compile(r"<em>(.*?)</em>", re.S)
+
+
+def highlight_fragment_html(fragment: str) -> str:
+    """An Elasticsearch highlight fragment turned into HTML whose ONLY tag is
+    <mark>: the matched words stay marked and every other character is
+    escaped, so a judgment's own text can never inject markup into the UI."""
+    from html import escape, unescape
+
+    # The stored judgment text keeps IK's entities (&amp;, &nbsp;) — decode
+    # once before escaping, or the reader sees a literal "&amp;".
+    def _plain(piece: str) -> str:
+        return escape(unescape(piece))
+
+    out: list[str] = []
+    pos = 0
+    for m in _EM_RE.finditer(fragment or ""):
+        out.append(_plain(fragment[pos:m.start()]))
+        out.append(f"<mark>{_plain(m.group(1))}</mark>")
+        pos = m.end()
+    out.append(_plain((fragment or "")[pos:]))
+    return "".join(out).strip()
+
 def _phrase_clause(phrase: str, name: str | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"query": phrase}
     if name:
@@ -901,14 +978,18 @@ def _min_covering_span(evidence: list[tuple[int, frozenset]],
 def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
                     doctypes: str = "", fromdate_iso: str | None = None,
                     todate_iso: str | None = None,
-                    limit: int | None = None) -> list[dict[str, Any]]:
+                    limit: int | None = None,
+                    stats: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """The ES primary search: (1) QUALIFY judgments on the full-text index
     — strict mode requires EVERY phrase/citation present in the judgment,
     flexible mode ranks by BM25 with phrase boosts; (2) gather paragraph
     EVIDENCE and re-rank by configured weights (BM25 + proximity of the
     phrases across paragraphs + coverage + section metadata + paragraph
     type). Returns IK-doc-shaped dicts with evidence attached, best first.
-    Empty list = nothing usable (caller decides the IK fallback)."""
+    Empty list = nothing usable (caller decides the IK fallback).
+    `stats`, when given, receives {"total": N} — how many judgments QUALIFY
+    in ES, which is what a result count should report; only the first
+    `limit` of them are re-ranked and returned."""
     from stores import elastic
     settings = get_settings()
     if not elastic.available:
@@ -932,13 +1013,22 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
         filters.append({"range": {"publishdate": date_range}})
 
     # ── Step 1: judgment-level qualification ──
-    if mode == "strict" and phrases:
+    if mode != "flexible":
+        # Indian Kanoon's grammar, verbatim: every quoted phrase must appear
+        # as a phrase AND every bare word must appear somewhere in the
+        # judgment (its title counts, so a case name finds its own case).
+        # A judgment missing one word is NOT a result — same as IK.
         must: list[dict[str, Any]] = [_phrase_clause(p) for p in phrases]
         if terms:
-            must.append({"match": {"text": {"query": " ".join(terms),
-                                            "operator": "and"}}})
+            must.append({"multi_match": {"query": " ".join(terms),
+                                         "fields": ["text", "title^2"],
+                                         "operator": "and",
+                                         "type": "cross_fields"}})
         qualification = {"bool": {"must": must, "filter": filters}}
     else:
+        # Opt-in loose recall (searchMode='flexible'): BM25 with phrase
+        # boosts, 60% of the words is enough. Never the default — it is what
+        # made a two-word query return half the library.
         should: list[dict[str, Any]] = [
             {"match_phrase": {"text": {"query": p, "boost": 3.0}}} for p in phrases]
         all_words = normalize_ws(" ".join(phrases + terms))
@@ -953,6 +1043,9 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
     resp = elastic.search_judgments(qualification, None, 0, size=candidate_limit)
     if resp is None:
         return []
+    if stats is not None:
+        stats["total"] = int((((resp.get("hits") or {}).get("total")
+                               or {}).get("value")) or 0)
     hits = (resp.get("hits") or {}).get("hits") or []
     if settings.es_min_score > 0:
         hits = [h for h in hits if (h.get("_score") or 0) >= settings.es_min_score]
@@ -1001,6 +1094,7 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
             "sections": src.get("sections") or [],
             "type": src.get("paragraph_type") or "",
             "fragment": strip_html(" ".join(frags)).strip(),
+            "fragmentHtml": highlight_fragment_html(" … ".join(frags)),
         })
 
     from config import ES_PARA_TYPE_VALUE
@@ -1037,6 +1131,10 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
             phrases[int(n.split(":", 1)[1])] for n in (matched_names & wanted))
         doc["headline"] = " … ".join(p["fragment"] for p in paras[:2]
                                      if p["fragment"])
+        # WHY this judgment qualified: the matching paragraphs themselves,
+        # with the matched words marked, best-scoring first.
+        doc["evidence"] = [{"paragraph": p["no"], "html": p["fragmentHtml"]}
+                           for p in paras[:3] if p["fragmentHtml"]]
         doc.pop("_bm25", None)
         ranked.append(doc)
     # tid tie-break keeps equal-score ordering identical across runs.

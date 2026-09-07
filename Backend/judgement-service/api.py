@@ -69,10 +69,12 @@ from tools import (
     ik_client,
     ik_cost_start,
     merge_cost_ledger,
+    highlight_fragment_html,
     normalize_ws,
     run_cost_log,
     parse_document,
     parse_document_pages,
+    squash_ws,
     strip_html,
     to_ik_operators,
     year_from_text,
@@ -929,6 +931,41 @@ def _ik_date(value: str, field: str) -> str:
     raise HTTPException(status_code=422, detail=f"{field} must be a date in DD-MM-YYYY form")
 
 
+def _es_unavailable_detail() -> str:
+    """The 503 body for a library request when ES never connected — carries
+    the REAL reason (missing driver, bad credential, wrong URL) instead of
+    sending everyone to check ELASTICSEARCH_URL."""
+    reason = getattr(elastic, "failure_reason", None)
+    detail = "The local judgment library (Elasticsearch) is not reachable"
+    if reason:
+        detail += f" — {reason}"
+    return detail + ". Search Indian Kanoon instead, or restart the service once it is fixed."
+
+
+def _log_provenance(stage: str, source: str, summary: str,
+                    docs: list[dict[str, Any]] | None = None) -> None:
+    """WHICH judgments were served, and WHERE each came from. The [cost]
+    table only counts calls; this prints the docIds themselves so the
+    console shows, per request, whether the judgment came out of the local
+    Elasticsearch library or off Indian Kanoon."""
+    logger.info("[source] %s — source: %s — %s", stage, source, summary)
+    for i, doc in enumerate(docs or [], 1):
+        logger.info("[source]    %2d. doc %-10s %-10s %-28s %s", i,
+                    doc.get("docId") or "?", doc.get("date") or "-",
+                    (doc.get("court") or "-")[:28],
+                    (doc.get("title") or "")[:60])
+
+
+def _ik_doc_origin(cost_tracker: dict[str, Any]) -> str:
+    """Where ONE Indian Kanoon-path document actually came from: the local
+    library and the 7-day cache both short-circuit the billed fetch."""
+    if cost_tracker.get("library"):
+        return "the local library (Elasticsearch) — no IK call"
+    if cost_tracker.get("cached") and not cost_tracker.get("billed"):
+        return "the 7-day document cache — no IK call"
+    return "Indian Kanoon /doc (billed)"
+
+
 @app.post("/api/v1/advanced-search")
 async def advanced_search(request: AdvancedSearchRequest,
                           http_request: Request) -> dict[str, Any]:
@@ -996,12 +1033,22 @@ async def advanced_search(request: AdvancedSearchRequest,
 
     billed = dict(cost_tracker["billed"])
     ik_total = sum(IK_RATES_INR[kind] * count for kind, count in billed.items())
+    _log_provenance(
+        f"ADVANCED SEARCH page {request.pagenum + 1}",
+        "Indian Kanoon /search (billed)" if billed.get("search")
+        else "the cached copy of this exact query — no IK call",
+        f"{len(results)} judgment(s) for: {form_input[:70]}"
+        if results else f"NOT FOUND — nothing matched: {form_input[:70]}",
+        results)
     run_cost_log(cost_tracker,
                  f"ADVANCED SEARCH — page {request.pagenum + 1} — {form_input[:70]}")
     await asyncio.to_thread(flush_usage_events, cost_tracker,
                             session_id=None, stage="advanced_search")
     return {
         "formInput": form_input,
+        # Mirrored in the browser console: where these judgments came from.
+        "servedFrom": ("Indian Kanoon /search (billed)" if billed.get("search")
+                       else "cached copy of this exact query (no IK call)"),
         "pagenum": request.pagenum,
         "found": found,
         "total": total,
@@ -1035,11 +1082,15 @@ async def advanced_search_doc(doc_id: str, http_request: Request) -> dict[str, A
 
     billed = dict(cost_tracker["billed"])
     ik_total = sum(IK_RATES_INR[kind] * count for kind, count in billed.items())
+    _log_provenance(
+        f"DOCUMENT VIEW doc {doc_id}", _ik_doc_origin(cost_tracker),
+        (raw.get("title") or meta.get("title") or "")[:70])
     run_cost_log(cost_tracker, f"ADVANCED SEARCH — document view {doc_id}")
     await asyncio.to_thread(flush_usage_events, cost_tracker,
                             session_id=None, stage="advanced_search_doc")
     return {
         "docId": doc_id,
+        "servedFrom": _ik_doc_origin(cost_tracker),
         "title": raw.get("title") or meta.get("title", ""),
         "court": meta.get("docsource") or raw.get("docsource", ""),
         "publishdate": raw.get("publishdate") or meta.get("publishdate", ""),
@@ -1060,6 +1111,11 @@ async def advanced_search_doc(doc_id: str, http_request: Request) -> dict[str, A
 
 
 # ─── Local judgment library (Elasticsearch mirror of fetched judgments) ─────
+
+# How many qualifying judgments the keyword engine will re-rank (and page
+# through). The full match count is still reported; only ordering past this
+# many results is out of reach.
+LIBRARY_RANK_POOL_CAP = 300
 
 def _iso_date(value: str, field: str) -> str:
     """Either date form → yyyy-MM-dd for the ES publishdate range."""
@@ -1089,20 +1145,31 @@ async def _local_engine_search(request: AdvancedSearchRequest) -> dict[str, Any]
     parsed = parse_legal_query(request.query)
     mode = request.searchMode
     if mode == "auto":
-        mode = "strict" if (parsed["phrases"] or parsed["citations"]) else "flexible"
+        # IK parity: every word typed must appear in the judgment, quoted
+        # phrases verbatim. Loose BM25 recall is still reachable, but only
+        # by asking for it (searchMode='flexible').
+        mode = "strict"
     fromdate_iso = (_iso_date(request.fromdate, "fromdate")
                     if request.fromdate.strip() else None)
     todate_iso = (_iso_date(request.todate, "todate")
                   if request.todate.strip() else None)
+    # IK-style paging: re-ranking happens in-process, so pull a candidate
+    # pool big enough for the page being viewed (bounded — deep paging past
+    # the cap is not served) and report the TRUE qualifying count, not the
+    # size of the pool.
+    pagenum = max(0, request.pagenum)
+    pool = min(LIBRARY_RANK_POOL_CAP,
+               max(get_settings().es_candidate_limit, (pagenum + 1) * 10 + 20))
+    stats: dict[str, Any] = {}
     ranked = await asyncio.to_thread(
         es_legal_search, parsed, mode=mode, doctypes=request.doctypes,
-        fromdate_iso=fromdate_iso, todate_iso=todate_iso)
+        fromdate_iso=fromdate_iso, todate_iso=todate_iso,
+        limit=pool, stats=stats)
     if request.sortby == "mostrecent":
         ranked.sort(key=lambda d: d.get("publishdate") or "", reverse=True)
     elif request.sortby == "leastrecent":
         ranked.sort(key=lambda d: d.get("publishdate") or "9999")
 
-    pagenum = max(0, request.pagenum)
     page = ranked[pagenum * 10:(pagenum + 1) * 10]
     results = [{
         "docId": d["tid"],
@@ -1113,26 +1180,41 @@ async def _local_engine_search(request: AdvancedSearchRequest) -> dict[str, Any]
         "numCitedby": int(d.get("numcitedby") or 0),
         "url": f"https://indiankanoon.org/doc/{d['tid']}/",
         "fromLibrary": True,
+        # The paragraphs this judgment matched on, matched words marked.
+        "evidence": d.get("evidence") or [],
         # Explainability (internal/debug — the popup ignores unknown keys).
         "esScore": d.get("esScore"),
         "finalScore": d.get("finalScore"),
         "matchedPhrases": d.get("matchedPhrases") or [],
         "matchedParagraphs": d.get("matchedParagraphs") or [],
     } for d in page]
-    total = len(ranked)
+    total = int(stats.get("total") or len(ranked))
     start = pagenum * 10 + 1 if results else 0
     end = pagenum * 10 + len(results)
     shown = normalize_ws(request.query)
     if request.doctypes.strip():
         shown += f" doctypes:{normalize_ws(request.doctypes.replace(', ', ','))}"
+    settings_es = get_settings()
+    _log_provenance(
+        f"MY LIBRARY page {pagenum + 1} ({mode} engine)",
+        f"Elasticsearch [{settings_es.elastic_paragraph_index} + "
+        f"{settings_es.elastic_index}] (free)",
+        f"{len(results)} of {total} judgment(s) for: {shown[:70]}"
+        if results else f"NOT FOUND in the library — nothing matched: {shown[:70]}",
+        results)
     return {
         "formInput": shown,
         "source": "local_library",
+        "servedFrom": (f"your library — Elasticsearch "
+                       f"[{settings_es.elastic_paragraph_index} + "
+                       f"{settings_es.elastic_index}] (free)"),
         "mode": mode,
         "pagenum": pagenum,
         "found": f"{start} - {end} of {total}" if total else "",
         "total": total,
-        "hasMore": (pagenum + 1) * 10 < total,
+        # Deep pages past the ranked pool are not served, so never promise
+        # a next page the engine cannot produce.
+        "hasMore": bool(results) and end < min(total, LIBRARY_RANK_POOL_CAP),
         "results": results,
         "cost": {"billedSearches": 0, "cachedHits": 0,
                  "ratePerSearchInr": 0.0, "totalInr": 0.0},
@@ -1149,9 +1231,7 @@ async def local_search(request: AdvancedSearchRequest,
     filters and sort; 10 results per page via pagenum. Response shape is
     identical to /advanced-search so the popup renders either source."""
     if not elastic.available:
-        raise HTTPException(status_code=503, detail=(
-            "The local judgment library (Elasticsearch) is not reachable — "
-            "check ELASTICSEARCH_URL, or search Indian Kanoon instead."))
+        raise HTTPException(status_code=503, detail=_es_unavailable_detail())
 
     # Keyword-only searches go through the paragraph-aware legal engine
     # (strict phrase qualification + proximity re-rank). Field criteria
@@ -1165,12 +1245,15 @@ async def local_search(request: AdvancedSearchRequest,
 
     def _text_clauses(value: str, fields: list[str]) -> None:
         # IK grammar: "quoted phrases" verbatim; remaining words all-AND.
+        # cross_fields so the words may land across text AND title (a case
+        # name matches its own judgment) — never 'any of these words'.
         for phrase in re.findall(r'"([^"]+)"', value):
             must.append({"multi_match": {"query": phrase, "type": "phrase",
                                          "fields": fields}})
         rest = normalize_ws(re.sub(r'"[^"]*"', " ", value))
         if rest:
             must.append({"multi_match": {"query": rest, "operator": "and",
+                                         "type": "cross_fields",
                                          "fields": fields}})
 
     if request.query.strip():
@@ -1219,6 +1302,8 @@ async def local_search(request: AdvancedSearchRequest,
         src = hit.get("_source") or {}
         frags = (hit.get("highlight") or {}).get("text") or []
         doc_id = str(src.get("tid") or hit.get("_id") or "")
+        evidence = [{"paragraph": None, "html": highlight_fragment_html(f)}
+                    for f in frags[:3] if highlight_fragment_html(f)]
         results.append({
             "docId": doc_id,
             "title": src.get("title") or doc_id,
@@ -1228,6 +1313,7 @@ async def local_search(request: AdvancedSearchRequest,
             "numCitedby": int(src.get("numcitedby") or 0),
             "url": f"https://indiankanoon.org/doc/{doc_id}/",
             "fromLibrary": True,
+            "evidence": evidence,
         })
 
     # Same display string the IK path shows, so the popup's query chip works.
@@ -1248,9 +1334,18 @@ async def local_search(request: AdvancedSearchRequest,
 
     start = pagenum * 10 + 1 if results else 0
     end = pagenum * 10 + len(results)
+    _log_provenance(
+        f"MY LIBRARY page {pagenum + 1} (field criteria)",
+        f"Elasticsearch [{get_settings().elastic_index}] (free)",
+        f"{len(results)} of {total} judgment(s) for: {' '.join(shown)[:70]}"
+        if results else
+        f"NOT FOUND in the library — nothing matched: {' '.join(shown)[:70]}",
+        results)
     return {
         "formInput": " ".join(shown),
         "source": "local_library",
+        "servedFrom": (f"your library — Elasticsearch "
+                       f"[{get_settings().elastic_index}] (free)"),
         "pagenum": pagenum,
         "found": f"{start} - {end} of {total}" if total else "",
         "total": total,
@@ -1259,6 +1354,102 @@ async def local_search(request: AdvancedSearchRequest,
         # The library is free — zeros keep the popup's cost logging uniform.
         "cost": {"billedSearches": 0, "cachedHits": 0,
                  "ratePerSearchInr": 0.0, "totalInr": 0.0},
+    }
+
+
+# IK's own doc HTML carries the author/bench headings even when the
+# library's indexed fields were never filled by a /docmeta call.
+_DOC_AUTHOR_RE = re.compile(r'<h3 class="doc_author">(.*?)</h3>', re.S | re.I)
+_DOC_BENCH_RE = re.compile(r'<h3 class="doc_bench">(.*?)</h3>', re.S | re.I)
+
+
+def _library_meta(doc: dict[str, Any]) -> tuple[str, str]:
+    """Author and bench for a library judgment: the indexed fields when a
+    /docmeta call ever filled them, else IK's own headings inside the stored
+    HTML — so an opened judgment shows its full masthead, not a blank one."""
+    html = doc.get("doc") or ""
+    author = (doc.get("author") or "").strip()
+    bench = (doc.get("bench") or "").strip()
+    if not author:
+        m = _DOC_AUTHOR_RE.search(html)
+        if m:
+            author = re.sub(r"^Author:\s*", "", strip_html(m.group(1)).strip())
+    if not bench:
+        m = _DOC_BENCH_RE.search(html)
+        if m:
+            bench = re.sub(r"^Bench:\s*", "", strip_html(m.group(1)).strip())
+    return squash_ws(author), squash_ws(bench)
+
+
+def _library_html(doc: dict[str, Any]) -> str:
+    """The judgment body for the in-app viewer. IK's own HTML is kept
+    verbatim when the library has it; a text-only copy (indexed before the
+    HTML column existed) is escaped into paragraphs so it still renders."""
+    from html import escape
+
+    html = (doc.get("doc") or "").strip()
+    if html:
+        return html
+    text = (doc.get("text") or "").strip()
+    if not text:
+        return ""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    return "".join(f"<p>{escape(p)}</p>" for p in paras)
+
+
+@app.get("/api/v1/local-search/doc/{doc_id}")
+async def local_search_doc(doc_id: str) -> dict[str, Any]:
+    """Document view for the LOCAL library — served ONLY from Elasticsearch.
+    Unlike /advanced-search/doc/{docId} this never falls back to Indian
+    Kanoon: a judgment the library has not collected comes back as a plain
+    404 ("not found in your library"), so picking "My library" can never
+    spend IK credit."""
+    if not elastic.available:
+        raise HTTPException(status_code=503, detail=_es_unavailable_detail())
+
+    doc = await asyncio.to_thread(elastic.get_judgment, doc_id)
+    body = _library_html(doc or {})
+    if not doc or not body:
+        _log_provenance(
+            f"MY LIBRARY doc {doc_id}",
+            f"Elasticsearch [{get_settings().elastic_index}] (free)",
+            "NOT FOUND — this judgment is not in the library"
+            if not doc else "NOT FOUND — the library copy carries no text")
+        raise HTTPException(status_code=404, detail=(
+            "This judgment is not in your library — switch the source to "
+            "Indian Kanoon to fetch it."))
+
+    author, bench = _library_meta(doc)
+    if author or bench:
+        # Enrich the stored copy once, so author:/bench: searches over the
+        # library find it later (best-effort — never fails a doc view).
+        await asyncio.to_thread(elastic.update_judgment, str(doc_id),
+                                {"author": author, "bench": bench})
+
+    _log_provenance(
+        f"MY LIBRARY doc {doc_id}",
+        f"Elasticsearch [{get_settings().elastic_index}] (free)",
+        f"{(doc.get('title') or '')[:60]} — complete judgment, "
+        f"{len(body):,} chars, no IK call")
+
+    return {
+        "docId": str(doc.get("tid") or doc_id),
+        "source": "local_library",
+        "servedFrom": (f"your library — Elasticsearch "
+                       f"[{get_settings().elastic_index}] (free)"),
+        "title": doc.get("title") or "",
+        "court": doc.get("docsource") or "",
+        "publishdate": doc.get("publishdate") or "",
+        "author": author,
+        "bench": bench,
+        "citesCount": int(doc.get("numcites") or 0),
+        "citedByCount": int(doc.get("numcitedby") or 0),
+        "casesCited": doc.get("casesCited") or [],
+        "citedBy": doc.get("citedBy") or [],
+        "html": body,
+        "url": f"https://indiankanoon.org/doc/{doc_id}/",
+        # Free by construction — keeps the popup's cost logging uniform.
+        "cost": {"billed": {}, "cachedHits": 0, "totalInr": 0.0},
     }
 
 

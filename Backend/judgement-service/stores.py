@@ -676,6 +676,10 @@ class ElasticStore:
     def __init__(self) -> None:
         self._client = None
         self._failed = False
+        # Why the connection failed, verbatim — the API surfaces it in the
+        # 503 so "not reachable" never hides a missing driver or a bad
+        # credential behind a generic "check ELASTICSEARCH_URL".
+        self.failure_reason: str | None = None
         # Indexing is fired from executor THREADS (12 doc fetches can land
         # together) — without this lock they all raced into the connect
         # attempt before the failure latch was set, printing the warning
@@ -691,6 +695,7 @@ class ElasticStore:
             settings = get_settings()
             if not settings.elasticsearch_url:
                 self._failed = True
+                self.failure_reason = "ELASTICSEARCH_URL is not set"
                 return None
             try:
                 # The per-request transport logs are INFO-noisy; failures
@@ -714,10 +719,18 @@ class ElasticStore:
                 logger.info("[stores] Elasticsearch connected — judgment library "
                             "index '%s'", settings.elastic_index)
             except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, ModuleNotFoundError):
+                    # Running the service under an interpreter that lacks the
+                    # driver — the usual cause is starting it with the system
+                    # python instead of this service's venv.
+                    reason += (" — install requirements.txt, or start the "
+                               "service with venv/Scripts/python.exe")
                 logger.warning("[stores] Elasticsearch unavailable (%s) — local "
-                               "judgment library disabled until restart", exc)
+                               "judgment library disabled until restart", reason)
                 self._client = None
                 self._failed = True
+                self.failure_reason = reason
             return self._client
 
     @property

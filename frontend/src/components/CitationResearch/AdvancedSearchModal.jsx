@@ -49,12 +49,69 @@ const labelCls = 'block mb-1.5 text-[length:calc(12px*var(--jnx-text-scale,1))] 
 // Indian Kanoon's own doc HTML, sanitized; relative IK links (e.g. /doc/123/)
 // made absolute AFTER sanitization so they open on indiankanoon.org instead
 // of dead-ending on our origin.
+const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const cleanDocHtml = (html) => DOMPurify
   .sanitize(html || '', { USE_PROFILES: { html: true } })
   .replaceAll('href="/', 'target="_blank" rel="noreferrer" href="https://indiankanoon.org/');
 
+// A matched-paragraph fragment from the service: <mark> is the only tag it
+// is allowed to carry, so the judgment's own text can never inject markup.
+const cleanFragment = (html) => DOMPurify.sanitize(html || '', {
+  ALLOWED_TAGS: ['mark'], ALLOWED_ATTR: [],
+});
+
+// Highlight every occurrence of the searched words inside the rendered
+// judgment, so the paragraph a result was fetched on is visible in the doc
+// itself. Walks text nodes (never re-parses HTML) and returns the count.
+const markMatches = (root, needles) => {
+  if (!root || needles.length === 0) return 0;
+  const rx = new RegExp(`(${needles.map(escapeRx).join('|')})`, 'gi');
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const targets = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeValue && !n.parentElement?.closest('mark.adv-hit')
+        && rx.test(n.nodeValue)) targets.push(n);
+    rx.lastIndex = 0;
+  }
+  let count = 0;
+  targets.forEach((node) => {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    const text = node.nodeValue;
+    for (let m = rx.exec(text); m; m = rx.exec(text)) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const mark = document.createElement('mark');
+      mark.className = 'adv-hit';
+      mark.textContent = m[0];
+      frag.appendChild(mark);
+      last = m.index + m[0].length;
+      count += 1;
+    }
+    rx.lastIndex = 0;
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  });
+  return count;
+};
+
+// The words to highlight: quoted phrases verbatim, then the bare words —
+// the same grammar the library engine matched on.
+const highlightTerms = (query) => {
+  const text = String(query || '');
+  const phrases = [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1].trim());
+  const rest = text.replace(/"[^"]*"/g, ' ').split(/\s+/)
+    .map((w) => w.trim()).filter((w) => w.length > 2);
+  return [...new Set([...phrases, ...rest])].filter(Boolean).slice(0, 12);
+};
+
 // Typography for the rendered judgment — mirrors IK's doc page (justified
 // serif paragraphs, bordered monospace block for pre-formatted orders).
+const HIT_CSS = `
+.adv-hit-text mark, .adv-ik-doc mark.adv-hit { background: #FDF0A8; color: inherit; border-radius: 3px; padding: 0 1px; }
+.adv-ik-doc mark.adv-hit.adv-hit-first { background: #FBD44C; box-shadow: 0 0 0 2px rgba(251,212,76,0.35); }
+`;
+
 const DOC_CSS = `
 .adv-ik-doc { font-family: Georgia, 'Times New Roman', serif; color: #1F2937; font-size: calc(15px * var(--jnx-text-scale, 1)); line-height: 1.85; }
 .adv-ik-doc p { margin: 0 0 1em; text-align: justify; }
@@ -120,6 +177,43 @@ function DoctypeFilter({ doctypes, onToggle, onToggleAll, openCats, onToggleOpen
   );
 }
 
+// Browser-console provenance: which judgments came back and where each one
+// was actually served from (the local Elasticsearch library, a cache, or a
+// billed Indian Kanoon call — the service reports it in `servedFrom`).
+const logResults = (label, data) => {
+  const rows = data.results || [];
+  const from = data.servedFrom || (data.source === 'local_library'
+    ? 'your library — Elasticsearch (free)' : 'Indian Kanoon');
+  console.groupCollapsed(
+    `%c[Advanced Search]%c ${label} — ${rows.length} judgment(s) from ${from}`,
+    'color:#0E8371;font-weight:700', 'color:inherit',
+  );
+  console.info(`Query: ${data.formInput || '(none)'}`);
+  console.info(`Source: ${from}${data.mode ? ` · engine: ${data.mode}` : ''}`);
+  if (rows.length === 0) {
+    console.warn('NOT FOUND — nothing matched these criteria.');
+  } else {
+    console.table(rows.map((r) => ({
+      docId: r.docId,
+      title: r.title,
+      court: r.court,
+      date: r.date,
+      from: r.fromLibrary ? 'library (Elasticsearch)' : 'Indian Kanoon',
+    })));
+  }
+  console.groupEnd();
+};
+
+const logDoc = (docId, data) => {
+  const from = data.servedFrom || (data.source === 'local_library'
+    ? 'your library — Elasticsearch (free)' : 'Indian Kanoon');
+  console.info(
+    `%c[Advanced Search]%c judgment ${docId} fetched from ${from} — `
+    + `"${data.title || 'untitled'}"`,
+    'color:#0E8371;font-weight:700', 'color:inherit',
+  );
+};
+
 /**
  * Advanced Search popup — a direct Indian Kanoon search with the user's own
  * criteria, mirroring IK's /advsearch form. Two pages inside the popup, like
@@ -146,10 +240,23 @@ export default function AdvancedSearchModal({ open, onClose }) {
   const [doc, setDoc] = useState(null);
   const [docLoading, setDocLoading] = useState(false);
   const [docError, setDocError] = useState('');
+  // The open judgment's origin — labels and the "not found" copy differ, and
+  // a library document must never fall back to a billed Indian Kanoon fetch.
+  const [docFromLibrary, setDocFromLibrary] = useState(false);
   // Pagination re-runs the criteria as SUBMITTED, not as currently edited.
   const submittedRef = useRef(null);
   const listRef = useRef(null);
   const docRef = useRef(null);
+  const docBodyRef = useRef(null);
+  // Search-within-results: the query as FIRST submitted, plus the extra
+  // keywords added on top of it. Every refinement is ANDed into the query
+  // and the search re-runs — the same thing Indian Kanoon's "Search Within
+  // Results" does — so refining narrows the set instead of replacing it.
+  const baseQueryRef = useRef('');
+  const [refinements, setRefinements] = useState([]);
+  const [refineText, setRefineText] = useState('');
+  // How many times the searched words appear in the open judgment.
+  const [docHits, setDocHits] = useState(0);
 
   const hasCriteria = useMemo(
     () => Object.values(fields).some((v) => v.trim())
@@ -182,11 +289,18 @@ export default function AdvancedSearchModal({ open, onClose }) {
       toast.info('Fill in at least one search field first');
       return;
     }
+    if (!criteria) {
+      // Submitted from the criteria form — this query is the new baseline.
+      baseQueryRef.current = params.query || '';
+      setRefinements([]);
+      setRefineText('');
+    }
     setSearching(true);
     setError('');
     try {
       const call = params.source === 'local' ? judgementApi.localSearch : judgementApi.advancedSearch;
       const data = await call({ ...params, pagenum });
+      logResults(`page ${(data.pagenum || 0) + 1}`, data);
       if (data.cost && params.source !== 'local') {
         // Complete costing for the Advanced Search module — the service
         // console prints the same bill as a [cost] table per request.
@@ -220,6 +334,23 @@ export default function AdvancedSearchModal({ open, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doctypes, sortby, fromdate, todate, source, view]);
 
+  // The judgment is rendered from HTML, so the marking happens on the DOM
+  // afterwards: the paragraph a result was fetched on is then visible inside
+  // the judgment itself, not just in the result card.
+  useEffect(() => {
+    if (view !== 'doc' || !doc?.html) { setDocHits(0); return; }
+    const root = docBodyRef.current;
+    if (!root) return;
+    const terms = highlightTerms(submittedRef.current?.query || fields.query);
+    setDocHits(markMatches(root, terms));
+    const first = root.querySelector('mark.adv-hit');
+    if (first) {
+      first.classList.add('adv-hit-first');
+      first.scrollIntoView({ block: 'center' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, view]);
+
   if (!open) return null;
 
   const setField = (key) => (e) => setFields((f) => ({ ...f, [key]: e.target.value }));
@@ -249,14 +380,49 @@ export default function AdvancedSearchModal({ open, onClose }) {
     if (next !== resp.pagenum) runSearch(next, submittedRef.current);
   };
 
+  // Re-run the search with the baseline query plus `list` of extra keywords.
+  // The words join the query itself, so the engine's all-words rule does the
+  // filtering and the result count is honest at every step.
+  const runWithRefinements = (list) => {
+    const query = [baseQueryRef.current, ...list].filter(Boolean).join(' ').trim();
+    const params = { ...(submittedRef.current || buildCriteria()), query };
+    setFields((f) => ({ ...f, query }));
+    setRefinements(list);
+    setRefineText('');
+    runSearch(0, params);
+  };
+
+  const addRefinement = () => {
+    const words = refineText.trim();
+    if (!words) return;
+    if (refinements.includes(words)) { setRefineText(''); return; }
+    runWithRefinements([...refinements, words]);
+  };
+
+  // Escape hatch from an empty library result — an explicit, billed re-run
+  // of the SAME criteria against Indian Kanoon.
+  const searchIndianKanoon = () => {
+    const params = { ...(submittedRef.current || buildCriteria()), source: 'ik' };
+    setSource('ik');
+    runSearch(0, params);
+  };
+
   // Open one judgment IN the popup, rendered like Indian Kanoon's doc page.
   const openDoc = async (docId) => {
+    // A search served from the library keeps its documents in the library
+    // too: /local-search/doc reads Elasticsearch only and 404s when the
+    // judgment was never collected — it never spends Indian Kanoon credit.
+    const fromLibrary = (submittedRef.current?.source || source) === 'local';
+    setDocFromLibrary(fromLibrary);
     setView('doc');
     setDocLoading(true);
     setDocError('');
+    setDoc(null);
     try {
-      const data = await judgementApi.advancedSearchDoc(docId);
-      if (data.cost) {
+      const data = fromLibrary
+        ? await judgementApi.localSearchDoc(docId)
+        : await judgementApi.advancedSearchDoc(docId);
+      if (data.cost && !fromLibrary) {
         console.info(
           `[Advanced Search · Indian Kanoon cost] document ${docId}\n`
           + `  Billed: ${Object.entries(data.cost.billed || {}).map(([k, v]) => `${v}× ${k}`).join(', ') || 'nothing (cached)'}\n`
@@ -264,10 +430,18 @@ export default function AdvancedSearchModal({ open, onClose }) {
           + `  TOTAL: ₹${data.cost.totalInr.toFixed(2)}`,
         );
       }
+      logDoc(docId, data);
       setDoc(data);
       docRef.current?.scrollTo({ top: 0 });
     } catch (err) {
-      setDocError(err.message || 'Could not load the judgment');
+      if (err.status === 404 && fromLibrary) {
+        console.warn(`[Advanced Search] judgment ${docId} NOT FOUND in your `
+          + 'library (Elasticsearch) — no Indian Kanoon call was made.');
+      }
+      setDocError(err.status === 404 && fromLibrary
+        ? 'Not found — this judgment is not in your library yet. Switch the '
+          + 'source to Indian Kanoon on the search form to fetch it.'
+        : err.message || 'Could not load the judgment');
     } finally {
       setDocLoading(false);
     }
@@ -284,10 +458,17 @@ export default function AdvancedSearchModal({ open, onClose }) {
     setError('');
     setDoc(null);
     setDocError('');
+    setDocFromLibrary(false);
+    setRefinements([]);
+    setRefineText('');
+    baseQueryRef.current = '';
     submittedRef.current = null;
     setView('form');
   };
 
+  // The source the SHOWN results came from — the submitted one, not the
+  // toggle the user may have flipped since.
+  const libraryResults = resp?.source === 'local_library';
   const pageStart = resp ? (resp.pagenum || 0) * 10 + 1 : 0;
   const pageEnd = resp ? pageStart + (resp.results?.length || 0) - 1 : 0;
 
@@ -372,13 +553,126 @@ export default function AdvancedSearchModal({ open, onClose }) {
               </span>
             )}
           </div>
-          {item.headline && (
+          {item.evidence?.length > 0 ? (
+            <div className="mt-2 space-y-1.5">
+              {item.evidence.map((ev, i) => (
+                <div
+                  key={`${item.docId}-ev-${ev.paragraph ?? i}`}
+                  className="flex gap-2 rounded-lg border-l-2 border-[#BFE9DF] bg-[#F8FAFC] px-2.5 py-1.5"
+                >
+                  {ev.paragraph != null && (
+                    <span
+                      title="Paragraph this judgment matched on"
+                      className="shrink-0 text-[length:calc(10.5px*var(--jnx-text-scale,1))] font-bold text-[#0E8371] pt-[1px]"
+                    >
+                      ¶ {ev.paragraph}
+                    </span>
+                  )}
+                  <p
+                    className="adv-hit-text text-[length:calc(12px*var(--jnx-text-scale,1))] text-[#475569] leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: cleanFragment(ev.html) }}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : item.headline && (
             <p className="mt-2 text-[length:calc(12px*var(--jnx-text-scale,1))] text-[#475569] leading-relaxed line-clamp-3">
               {item.headline}
             </p>
           )}
         </article>
       ))}
+    </div>
+  );
+
+  const notFound = resp && resp.results.length === 0 && !searching && (
+    <div className="rounded-2xl border border-dashed border-[#D8E3E0] bg-white px-6 py-12 text-center shadow-sm">
+      <div className="mx-auto mb-3 h-11 w-11 rounded-full bg-[#F1F5F4] flex items-center justify-center text-[#93A2A7]">
+        <MagnifyingGlassIcon className="h-5 w-5" />
+      </div>
+      <h4 className="text-[length:calc(15px*var(--jnx-text-scale,1))] font-bold text-[#0F1B21]">Not found</h4>
+      <p className="mt-1.5 mx-auto max-w-[440px] text-[length:calc(12.5px*var(--jnx-text-scale,1))] text-[#64757C] leading-relaxed">
+        {libraryResults
+          ? 'No judgment in your library matches these criteria. The library holds only what JuriNex has already collected — try fewer words, drop a filter, or search Indian Kanoon instead.'
+          : 'Indian Kanoon returned no documents for these criteria. Try fewer words, a wider date range, or fewer court filters.'}
+      </p>
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+        {refinements.length > 0 && (
+          <button
+            type="button"
+            onClick={() => runWithRefinements(refinements.slice(0, -1))}
+            className="px-3.5 py-2 rounded-[9px] border border-[#BFE9DF] bg-[#F6FDFB] text-[length:calc(12px*var(--jnx-text-scale,1))] font-semibold text-[#0E8371] hover:bg-[#E9F9F5] transition-colors"
+          >
+            Undo &quot;{refinements[refinements.length - 1]}&quot;
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setView('form')}
+          className="px-3.5 py-2 rounded-[9px] border border-[#E5ECEB] bg-white text-[length:calc(12px*var(--jnx-text-scale,1))] font-semibold text-[#25353C] hover:border-[#BFE9DF] hover:text-[#0E8371] transition-colors"
+        >
+          Edit search
+        </button>
+        {libraryResults && (
+          <button
+            type="button"
+            onClick={searchIndianKanoon}
+            className="px-3.5 py-2 rounded-[9px] bg-[#0F1B21] text-white text-[length:calc(12px*var(--jnx-text-scale,1))] font-semibold hover:bg-[#25353C] transition-colors"
+          >
+            Search Indian Kanoon instead
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  const refineBar = resp && (
+    <div className="mb-3 rounded-xl border border-[#E5ECEB] bg-white p-2.5 shadow-sm">
+      <div className="flex flex-col sm:flex-row gap-2">
+        <input
+          type="text"
+          value={refineText}
+          onChange={(e) => setRefineText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') addRefinement(); }}
+          placeholder="Refine your search — add a keyword, or an exact phrase in quotes"
+          aria-label="Add a keyword to search within these results"
+          className="flex-1 min-w-0 bg-white border border-[#E5ECEB] rounded-[9px] px-3 py-2 text-[length:calc(12.5px*var(--jnx-text-scale,1))] text-[#0F1B21] placeholder:text-[#93A2A7] outline-none transition-all focus:border-[#3FC8B4] focus:ring-[3px] focus:ring-[#3FC8B4]/15"
+        />
+        <button
+          type="button"
+          onClick={addRefinement}
+          disabled={searching || !refineText.trim()}
+          className="shrink-0 flex items-center justify-center gap-1.5 px-4 py-2 rounded-[9px] bg-[#0F1B21] text-white text-[length:calc(12px*var(--jnx-text-scale,1))] font-semibold hover:bg-[#25353C] disabled:opacity-40 transition-colors"
+        >
+          <MagnifyingGlassIcon className="h-3.5 w-3.5" /> Search Within Results
+        </button>
+      </div>
+      {refinements.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[length:calc(11px*var(--jnx-text-scale,1))] font-semibold text-[#64757C]">
+            Narrowed by:
+          </span>
+          {refinements.map((word, i) => (
+            <button
+              key={word}
+              type="button"
+              title="Remove this keyword"
+              onClick={() => runWithRefinements(refinements.filter((_, j) => j !== i))}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#E9F9F5] border border-[#BFE9DF] text-[length:calc(11px*var(--jnx-text-scale,1))] font-semibold text-[#0E8371] hover:bg-[#D9F4EE] transition-colors"
+            >
+              {word}
+              <XMarkIcon className="h-3 w-3" />
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => runWithRefinements([])}
+            className="ml-1 text-[length:calc(10.5px*var(--jnx-text-scale,1))] font-bold text-[#0E8371] px-1.5 py-0.5 rounded-md hover:bg-[#3FC8B4]/15"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
     </div>
   );
 
@@ -413,6 +707,7 @@ export default function AdvancedSearchModal({ open, onClose }) {
       aria-label="Advanced Search"
     >
       <div className="w-full max-w-[1080px] max-h-[92vh] flex flex-col rounded-2xl bg-[#F6F9F8] border border-[#E5ECEB] shadow-[0_24px_64px_rgba(15,27,33,0.28)] overflow-hidden">
+        <style>{HIT_CSS}</style>
 
         {/* Header */}
         <div className="flex items-start gap-3.5 px-5 sm:px-7 pt-5 pb-4 bg-white border-b border-[#E5ECEB] shrink-0">
@@ -428,7 +723,9 @@ export default function AdvancedSearchModal({ open, onClose }) {
                   ? (resp.results.length === 0
                     ? 'No documents matched these criteria.'
                     : `Showing ${pageStart}–${pageEnd}${resp.total ? ` of ${resp.total.toLocaleString('en-IN')}` : ''} — refine with the filters on the left.`)
-                  : 'Search Indian Kanoon directly with precision — every field is optional; fill any and search.'}
+                  : source === 'local'
+                    ? 'Search your own judgment library — free and instant; every field is optional, fill any and search.'
+                    : 'Search Indian Kanoon directly with precision — every field is optional; fill any and search.'}
             </p>
           </div>
           {view === 'results' && (
@@ -579,7 +876,9 @@ export default function AdvancedSearchModal({ open, onClose }) {
                 <ArrowPathIcon className="h-4 w-4" /> Reset Filters
               </button>
               <span className="ml-auto hidden sm:block text-[length:calc(11.5px*var(--jnx-text-scale,1))] text-[#93A2A7]">
-                Results come directly from Indian Kanoon, exactly as it ranks them.
+                {source === 'local'
+                  ? "Results come from your own judgment library — no Indian Kanoon call, no spend."
+                  : 'Results come directly from Indian Kanoon, exactly as it ranks them.'}
               </span>
             </div>
           </>
@@ -645,7 +944,9 @@ export default function AdvancedSearchModal({ open, onClose }) {
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-3">
                   <span className="text-[length:calc(12px*var(--jnx-text-scale,1))] text-[#64757C]">
                     {resp.results.length === 0
-                      ? 'No documents matched these criteria — adjust the filters or edit the search.'
+                      ? (libraryResults
+                        ? 'Not found in your library — adjust the filters or edit the search.'
+                        : 'No documents matched these criteria — adjust the filters or edit the search.')
                       : `Showing ${pageStart}–${pageEnd}${resp.total ? ` of ${resp.total.toLocaleString('en-IN')}` : ''}`}
                   </span>
                   {resp.source === 'local_library' && (
@@ -665,11 +966,14 @@ export default function AdvancedSearchModal({ open, onClose }) {
                 {searching && (
                   <div className="absolute inset-0 z-10 flex items-start justify-center pt-16 rounded-xl bg-[#F6F9F8]/70 backdrop-blur-[1px]">
                     <span className="flex items-center gap-2 px-4 py-2 rounded-full bg-white border border-[#E5ECEB] shadow-sm text-[length:calc(12.5px*var(--jnx-text-scale,1))] font-semibold text-[#0E8371]">
-                      <ArrowPathIcon className="h-4 w-4 animate-spin" /> Searching Indian Kanoon…
+                      <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                      {source === 'local' ? 'Searching your library…' : 'Searching Indian Kanoon…'}
                     </span>
                   </div>
                 )}
+                {refineBar}
                 {resultCards}
+                {notFound}
                 {pagination}
               </div>
             </div>
@@ -679,16 +983,38 @@ export default function AdvancedSearchModal({ open, onClose }) {
         {/* ── PAGE 3: in-app judgment view, like Indian Kanoon's doc page ── */}
         {view === 'doc' && (
           <div ref={docRef} className="flex-1 min-h-0 overflow-y-auto px-5 sm:px-7 py-5">
-            <style>{DOC_CSS}</style>
+            <style>{DOC_CSS}{HIT_CSS}</style>
             {docLoading && (
               <div className="flex items-center justify-center gap-2 py-24 text-[length:calc(13.5px*var(--jnx-text-scale,1))] font-semibold text-[#0E8371]">
-                <ArrowPathIcon className="h-5 w-5 animate-spin" /> Loading the judgment from Indian Kanoon…
+                <ArrowPathIcon className="h-5 w-5 animate-spin" />
+                {docFromLibrary ? 'Loading the judgment from your library…' : 'Loading the judgment from Indian Kanoon…'}
               </div>
             )}
             {!docLoading && docError && (
-              <div className="rounded-xl border border-[#FECACA] bg-[#FEF2F2] px-4 py-3 text-[length:calc(13px*var(--jnx-text-scale,1))] font-medium text-[#991B1B]">
-                {docError}
-              </div>
+              docError.startsWith('Not found')
+                ? (
+                  <div className="max-w-[560px] mx-auto rounded-2xl border border-dashed border-[#D8E3E0] bg-white px-6 py-12 text-center shadow-sm">
+                    <div className="mx-auto mb-3 h-11 w-11 rounded-full bg-[#F1F5F4] flex items-center justify-center text-[#93A2A7]">
+                      <MagnifyingGlassIcon className="h-5 w-5" />
+                    </div>
+                    <h4 className="text-[length:calc(15px*var(--jnx-text-scale,1))] font-bold text-[#0F1B21]">Not found</h4>
+                    <p className="mt-1.5 text-[length:calc(12.5px*var(--jnx-text-scale,1))] text-[#64757C] leading-relaxed">
+                      This judgment is not in your library yet.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setView('form'); setSource('ik'); setDocError(''); }}
+                      className="mt-4 px-3.5 py-2 rounded-[9px] bg-[#0F1B21] text-white text-[length:calc(12px*var(--jnx-text-scale,1))] font-semibold hover:bg-[#25353C] transition-colors"
+                    >
+                      Switch to Indian Kanoon
+                    </button>
+                  </div>
+                )
+                : (
+                  <div className="rounded-xl border border-[#FECACA] bg-[#FEF2F2] px-4 py-3 text-[length:calc(13px*var(--jnx-text-scale,1))] font-medium text-[#991B1B]">
+                    {docError}
+                  </div>
+                )
             )}
             {!docLoading && !docError && doc && (
               <article className="max-w-[880px] mx-auto rounded-2xl border border-[#E5ECEB] bg-white shadow-sm px-5 sm:px-10 py-8">
@@ -709,6 +1035,22 @@ export default function AdvancedSearchModal({ open, onClose }) {
                     </div>
                   )}
                   <div className="flex items-center justify-center gap-3 pt-1">
+                    {docHits > 0 && (
+                      <span
+                        title="Occurrences of your search words in this judgment — the first one is scrolled to"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#FDF0A8] border border-[#E7D06A] text-[length:calc(9.5px*var(--jnx-text-scale,1))] font-bold text-[#6B5A0E]"
+                      >
+                        {docHits} match{docHits === 1 ? '' : 'es'} highlighted
+                      </span>
+                    )}
+                    {docFromLibrary && (
+                      <span
+                        title="Served from JuriNex's own judgment library — no Indian Kanoon call"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#E9F9F5] border border-[#BFE9DF] text-[length:calc(9.5px*var(--jnx-text-scale,1))] font-bold text-[#0E8371]"
+                      >
+                        <CircleStackIcon className="h-3 w-3" /> From your library
+                      </span>
+                    )}
                     {doc.publishdate && (
                       <span className="text-[length:calc(11.5px*var(--jnx-text-scale,1))] text-[#93A2A7]">{prettyDate(doc.publishdate)}</span>
                     )}
@@ -726,8 +1068,14 @@ export default function AdvancedSearchModal({ open, onClose }) {
 
                 {/* The judgment, in IK's own formatting (sanitized) */}
                 {doc.html
-                  ? <div className="adv-ik-doc" dangerouslySetInnerHTML={{ __html: cleanDocHtml(doc.html) }} />
-                  : <p className="text-[length:calc(13px*var(--jnx-text-scale,1))] text-[#64757C]">The full text of this document is not available from Indian Kanoon.</p>}
+                  ? <div ref={docBodyRef} className="adv-ik-doc" dangerouslySetInnerHTML={{ __html: cleanDocHtml(doc.html) }} />
+                  : (
+                    <p className="text-[length:calc(13px*var(--jnx-text-scale,1))] text-[#64757C]">
+                      {docFromLibrary
+                        ? 'The library copy of this judgment has no full text — open it on Indian Kanoon, or search that source instead.'
+                        : 'The full text of this document is not available from Indian Kanoon.'}
+                    </p>
+                  )}
 
                 {/* Cites / cited-by samples — each opens in-app too */}
                 {[['Cases cited', doc.casesCited], ['Cited by', doc.citedBy]].map(([label, list]) => (
