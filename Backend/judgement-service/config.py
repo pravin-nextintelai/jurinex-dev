@@ -225,7 +225,13 @@ class Settings(BaseSettings):
     elasticsearch_username: str | None = None
     elasticsearch_password: str | None = None
     elastic_verify_certs: bool = False
-    elastic_request_timeout: int = 3
+    # A judgment-index query highlights over FULL judgment texts — measured
+    # at 0.3-1.7s warm and more on a cold shard, so the old 3s budget turned
+    # an ordinary keyword search into a transport timeout. Timeouts are
+    # retried as well: one slow request must never be read as "the library
+    # is empty".
+    elastic_request_timeout: int = 30
+    elastic_max_retries: int = 2
     elastic_index: str = "ik_judgments"
     # Exact-query memory: every IK search response is stored under its wire
     # query — the SAME query never needs IK again, across restarts.
@@ -282,6 +288,11 @@ class Settings(BaseSettings):
     # citationTest Postgres — used when JUDGEMENT_DB_URL is not set, so all
     # sessions/results/reports/vault rows land in the citationTest database.
     citation_db_url: str | None = None
+
+    # Draft_DB — the admin console's agent_prompts table (per-agent model,
+    # system prompt and generation parameters). Absent → every agent uses
+    # its hardcoded prompt and the model from this file.
+    draft_db_url: str | None = None
 
     # --- Agentic document service (the user's cases live there) ---
     agentic_document_service_url: str = "http://localhost:8092"

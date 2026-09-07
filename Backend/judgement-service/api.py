@@ -108,6 +108,34 @@ async def _close_ik_http_pool() -> None:
     await ik_client.aclose()
 
 
+@app.get("/health/agents")
+async def health_agents() -> dict[str, Any]:
+    """Which configuration every LLM agent is actually running on: the admin
+    console row (source=db, with its id and model) or the hardcoded default.
+    `acceptedDbNames` lists the agent_prompts.name values each agent answers
+    to, so a row can be added for exactly the agent intended."""
+    from agent_config import describe_agents
+
+    agents = await asyncio.to_thread(describe_agents)
+    return {
+        "table": "public.agent_prompts",
+        "database": "Draft_DB (DRAFT_DB_URL)",
+        "modelCatalogue": "public.llm_models (DOC_DB_URL)",
+        "fromAdminDb": sum(1 for a in agents if a["source"] == "db"),
+        "fromDefaults": sum(1 for a in agents if a["source"] != "db"),
+        "agents": agents,
+    }
+
+
+@app.post("/health/agents/reload")
+async def health_agents_reload() -> dict[str, Any]:
+    """Drop the 2-minute config cache so an admin edit applies immediately."""
+    from agent_config import invalidate
+
+    invalidate()
+    return {"status": "ok", "reloaded": True}
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
@@ -1165,6 +1193,13 @@ async def _local_engine_search(request: AdvancedSearchRequest) -> dict[str, Any]
         es_legal_search, parsed, mode=mode, doctypes=request.doctypes,
         fromdate_iso=fromdate_iso, todate_iso=todate_iso,
         limit=pool, stats=stats)
+    if stats.get("failed"):
+        # The same 503 the field-criteria path raises. Reporting an ES
+        # timeout as "NOT FOUND in the library" tells the user their search
+        # has no results when the search was never actually run.
+        raise HTTPException(status_code=503, detail=(
+            "The local judgment library did not respond — try again, or "
+            "search Indian Kanoon instead."))
     if request.sortby == "mostrecent":
         ranked.sort(key=lambda d: d.get("publishdate") or "", reverse=True)
     elif request.sortby == "leastrecent":

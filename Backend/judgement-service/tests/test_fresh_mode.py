@@ -58,7 +58,7 @@ def _result() -> GroundsExtractResult:
 def test_fresh_extraction_labels_and_maps(monkeypatch):
     captured = {}
 
-    async def _fake_parse(system, user, model, **kwargs):
+    async def _fake_parse(system, user, output_model, **kwargs):
         captured["system"] = system
         captured["user"] = user
         return _result()
@@ -106,7 +106,7 @@ def test_fresh_empty_result_asks_for_clarification(monkeypatch):
 def test_fresh_merges_spotted_issues(monkeypatch):
     """Fresh mode now spots issues too: proposed grounds first, then the
     spotted issues no ground already covers, ids renumbered."""
-    async def _fake_parse(system, user, model, **kwargs):
+    async def _fake_parse(system, user, output_model, **kwargs):
         return _result()
 
     async def _spotted(raw_text, ctx, covered=None):

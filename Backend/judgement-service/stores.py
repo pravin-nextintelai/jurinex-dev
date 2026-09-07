@@ -704,6 +704,10 @@ class ElasticStore:
                 from elasticsearch import Elasticsearch
                 kwargs: dict[str, Any] = {
                     "request_timeout": settings.elastic_request_timeout,
+                    "max_retries": settings.elastic_max_retries,
+                    # Off by default in elasticsearch-py — without it a
+                    # single slow query fails outright instead of retrying.
+                    "retry_on_timeout": True,
                     "verify_certs": settings.elastic_verify_certs,
                     "ssl_show_warn": False,
                 }

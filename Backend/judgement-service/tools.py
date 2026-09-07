@@ -989,7 +989,8 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
     Empty list = nothing usable (caller decides the IK fallback).
     `stats`, when given, receives {"total": N} — how many judgments QUALIFY
     in ES, which is what a result count should report; only the first
-    `limit` of them are re-ranked and returned."""
+    `limit` of them are re-ranked and returned — plus {"failed": True} when
+    ES never answered, so a timeout is not mistaken for an empty library."""
     from stores import elastic
     settings = get_settings()
     if not elastic.available:
@@ -1042,6 +1043,11 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
     candidate_limit = limit or settings.es_candidate_limit
     resp = elastic.search_judgments(qualification, None, 0, size=candidate_limit)
     if resp is None:
+        # ES answered nothing (timeout/transport error) — that is NOT an
+        # empty library. Callers holding `stats` can say so; the pipeline's
+        # library-first fetch keeps reading [] as "go ask IK".
+        if stats is not None:
+            stats["failed"] = True
         return []
     if stats is not None:
         stats["total"] = int((((resp.get("hits") or {}).get("total")
@@ -2755,6 +2761,16 @@ def good_law_signal(candidate: Candidate) -> tuple[float | None, str | None]:
     return None, None  # unknown — contributes nothing, chip stays honest
 
 
+def good_law_prompt(prompt: str, judgment_line: str) -> str:
+    """Put the judgment under check into the prompt. {judgment} marks the
+    spot; a prompt without the placeholder (an admin wrote it and did not
+    know about it) gets the judgment appended instead — the check is never
+    sent without saying which judgment it is about."""
+    if "{judgment}" in prompt:
+        return prompt.replace("{judgment}", judgment_line)
+    return f"{prompt}\n\nJUDGMENT: {judgment_line}"
+
+
 async def grounded_good_law_check(title: str, court: str, year: int | None) -> dict[str, Any]:
     """Web-grounded status check (Gemini + Google Search tool) for ONE
     judgment: overruled / reversed / stayed / SLP pending / good law.
@@ -2769,9 +2785,13 @@ async def grounded_good_law_check(title: str, court: str, year: int | None) -> d
         from google.genai import types as gt
 
         client = genai.Client(api_key=settings.google_api_key)
-        prompt = (
+        # Model, temperature and instruction come from the admin console when
+        # a row exists for this agent; the wording below is the fallback.
+        from agent_config import get_agent_config
+        judgment_line = f"{title} ({court}{', ' + str(year) if year else ''})"
+        instruction = (
             "Search the web and check the CURRENT status of this Indian judgment:\n"
-            f"{title} ({court}{', ' + str(year) if year else ''})\n\n"
+            "{judgment}\n\n"
             "Has it been overruled, reversed in appeal, stayed, or is a Special "
             "Leave Petition pending against it? Rely on court websites, Indian "
             "Kanoon, LiveLaw, Bar & Bench, SCC Online snippets and similar legal "
@@ -2785,19 +2805,29 @@ async def grounded_good_law_check(title: str, court: str, year: int | None) -> d
             "Never invent a citing case or an appeal that you did not find."
         )
 
+        cfg = get_agent_config("good_law_check", default_prompt=instruction)
+        model = (cfg.model_name
+                 if cfg.model_name.lower().startswith(("gemini", "gemma"))
+                 else settings.gemini_model)
+        prompt = good_law_prompt(cfg.prompt or instruction, judgment_line)
+
         def _call():
             return client.models.generate_content(
-                model=settings.gemini_model,
+                model=model,
                 contents=prompt,
                 config=gt.GenerateContentConfig(
+                    # The Google Search tool IS this agent — it stays on even
+                    # if the console's grounding switch is off, or the check
+                    # would have nothing to ground on.
                     tools=[gt.Tool(google_search=gt.GoogleSearch())],
-                    temperature=0.0,  # determinism: same as every other agent
+                    # Determinism unless the admin set a temperature.
+                    temperature=float(cfg.temperature) if cfg.from_db else 0.0,
                     seed=42,
                 ),
             )
 
         resp = await asyncio.to_thread(_call)
-        llm_track_usage(settings.gemini_model, getattr(resp, "usage_metadata", None),
+        llm_track_usage(model, getattr(resp, "usage_metadata", None),
                         task="good_law_check")
         grounding_track()
         text = resp.text or ""

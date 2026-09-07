@@ -170,6 +170,24 @@ def test_es_down_returns_empty_for_ik_fallback(monkeypatch):
     assert es_legal_search(parsed, mode="strict") == []
 
 
+def test_search_timeout_is_reported_not_read_as_empty_library(es_stub, monkeypatch):
+    """A timed-out ES search must NOT look like "nothing matched" — the
+    caller has to be able to tell the two apart (api raises 503)."""
+    es_stub["judgment_hits"] = []
+    parsed = parse_legal_query('"Section 482"')
+    ok_stats: dict = {}
+    assert es_legal_search(parsed, mode="strict", stats=ok_stats) == []
+    assert not ok_stats.get("failed")  # genuinely empty library
+
+    def timed_out(query, sort, pagenum, size=10):
+        return None
+
+    monkeypatch.setattr(stores.elastic, "search_judgments", timed_out)
+    failed_stats: dict = {}
+    assert es_legal_search(parsed, mode="strict", stats=failed_stats) == []
+    assert failed_stats["failed"] is True
+
+
 def test_flexible_mode_does_not_require_all_words(es_stub):
     parsed = parse_legal_query(
         "cases where proceedings under Section 482 were quashed")

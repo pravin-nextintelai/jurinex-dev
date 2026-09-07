@@ -46,6 +46,54 @@ optional — the service degrades gracefully when they are absent.
 The `signals` object on each result is the explainability contract — render one chip
 per key; new precision layers appear as new keys, never as schema changes.
 
+## Agent configuration from the admin console
+
+Every LLM agent takes its **model, system prompt, temperature and generation
+parameters** from `public.agent_prompts` in **Draft_DB** (`DRAFT_DB_URL`).
+`model_ids` resolves through `public.llm_models` in **Document_DB**
+(`DOC_DB_URL`) — id 23 is `gemini-2.5-flash`, id 27 is `gemma-4-31b-it`.
+
+With no row for an agent, that agent keeps the prompt written in `agents.py`
+and the model from `config.py`/env — the service never depends on the admin
+DB being populated or reachable.
+
+Rows are matched by **name** only (never by `agent_type`: several services
+share this table and reuse types like `citation`). Each agent answers to,
+in order: `judgement_<agent>_agent`, `judgement_<agent>`, `<agent>_agent`,
+`<agent>`. Use a `judgement_*` name to scope a row to this service.
+
+| agent | what it does |
+|---|---|
+| `doc_classify` | classifies the uploaded document |
+| `context_extract` | extracts parties/facts/relief |
+| `issue_split` | splits a case into legal issues |
+| `keyword_extract` | builds the Indian Kanoon queries |
+| `judgment_verifier` | verifies one judgment against one issue |
+| `citation_analysis` | writes the per-citation report |
+| `case_summary` | the 100-word advocate summary |
+| `grounds_extract` | grounds pleaded in a filing |
+| `fresh_extract` | proposed grounds for a fresh matter |
+| `good_law_check` | web-grounded good-law status |
+
+`GET /health/agents` lists every agent with the configuration in force
+(`source: db | default`) and the names it answers to; `POST
+/health/agents/reload` drops the 2-minute cache so an admin edit applies at
+once.
+
+Notes:
+- `llm_parameters.temperature` wins over the `temperature` column; `seed`,
+  `top_p`, `top_k`, `max_output_tokens`, `thinking_budget` and
+  `thinking_level` are read from `llm_parameters` too.
+- A row with an empty `prompt` configures the **model only** — the agent
+  keeps its hardcoded instruction rather than losing it.
+- Without a row, generation stays deterministic (temperature 0, seed 42).
+  A row's temperature is used as given, so determinism becomes the admin's
+  choice.
+- These agents run on Google ADK, which drives Gemini/Gemma. A row naming a
+  Claude/DeepSeek model is logged and the hardcoded model is kept — except
+  for `judgment_verifier`, whose Claude fallback path does use a
+  `claude-*` model from the row.
+
 ## Scoring phases
 
 Weights are **config** (`SCORING_PHASE` + optional `SCORING_WEIGHTS_JSON`), not code.
