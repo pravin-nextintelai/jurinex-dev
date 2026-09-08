@@ -68,35 +68,55 @@ def _claude() -> str:
     return get_settings().active_claude_model
 
 
+# Which engine an agent actually runs on. It decides which models can be
+# selected for it: ADK agents talk to Gemini/Gemma, claude_llm agents to
+# Claude, and "both" agents try Claude first with a Gemini fallback.
+GEMINI, CLAUDE, BOTH = "gemini", "claude", "both"
+
+
 @dataclass(frozen=True)
 class AgentDefaults:
     """What an agent uses when the admin console has no row for it: the
     model from settings (env-tunable, as before) and the temperature the
-    code was written with."""
+    code was written with. `runtime` says which models it can run."""
     temperature: float
     model: Callable[[], str]
+    runtime: str = GEMINI
 
 
 # Every LLM agent this service runs. The key is the agent's internal name —
 # the same name the ADK agent is built with — and is what an admin row's
 # `name` column should carry (see ACCEPTED_DB_NAMES for the exact strings).
 AGENT_DEFAULTS: dict[str, AgentDefaults] = {
-    "doc_classify":       AgentDefaults(0.1, _gemini),
-    "context_extract":    AgentDefaults(0.1, _gemini),
-    "issue_split":        AgentDefaults(0.25, _gemini_fallback),
-    "keyword_extract":    AgentDefaults(0.25, _gemini_keyword),
-    "judgment_verifier":  AgentDefaults(0.1, _gemini),
-    "citation_analysis":  AgentDefaults(0.1, _gemini),
-    "case_summary":       AgentDefaults(0.1, _gemini),
-    "grounds_extract":    AgentDefaults(0.1, _gemini_fallback),
-    "fresh_extract":      AgentDefaults(0.1, _gemini_fallback),
-    "good_law_check":     AgentDefaults(0.0, _gemini),
-    # Claude-path agents: these run through claude_llm, so their row's
-    # prompt applies and a claude-* model in it is used as-is.
-    "issue_spotter":      AgentDefaults(0.1, _claude),
-    "query_generation":   AgentDefaults(0.1, _claude),
-    "custom_issue_enrich": AgentDefaults(0.1, _claude),
+    "doc_classify":       AgentDefaults(0.1, _gemini, GEMINI),
+    "context_extract":    AgentDefaults(0.1, _gemini, GEMINI),
+    "issue_split":        AgentDefaults(0.25, _gemini_fallback, GEMINI),
+    "keyword_extract":    AgentDefaults(0.25, _gemini_keyword, GEMINI),
+    "citation_analysis":  AgentDefaults(0.1, _gemini, GEMINI),
+    "case_summary":       AgentDefaults(0.1, _gemini, GEMINI),
+    "good_law_check":     AgentDefaults(0.0, _gemini, GEMINI),
+    # Claude first, Gemini fallback — either kind of model works.
+    "judgment_verifier":  AgentDefaults(0.1, _gemini, BOTH),
+    "grounds_extract":    AgentDefaults(0.1, _gemini_fallback, BOTH),
+    "fresh_extract":      AgentDefaults(0.1, _gemini_fallback, BOTH),
+    # claude_llm only — there is no Gemini implementation of these, so a
+    # Gemini model cannot drive them.
+    "issue_spotter":      AgentDefaults(0.1, _claude, CLAUDE),
+    "query_generation":   AgentDefaults(0.1, _claude, CLAUDE),
+    "custom_issue_enrich": AgentDefaults(0.1, _claude, CLAUDE),
 }
+
+
+def _model_runs_on(model: str, runtime: str) -> bool:
+    """Can this model actually drive an agent of that runtime?"""
+    low = (model or "").strip().lower()
+    is_gemini = low.startswith(("gemini", "gemma", "models/"))
+    is_claude = low.startswith("claude")
+    if runtime == GEMINI:
+        return is_gemini
+    if runtime == CLAUDE:
+        return is_claude
+    return is_gemini or is_claude
 
 
 def accepted_db_names(agent_name: str) -> list[str]:
@@ -117,6 +137,69 @@ def accepted_db_names(agent_name: str) -> list[str]:
     return out
 
 
+# ─── Model capabilities ──────────────────────────────────────────────────────
+# Which generation parameters each model actually accepts, verified against
+# the live Gemini API (2026-09-07). Thinking parameters are NOT interchangeable:
+# 2.5-era models reject thinking_level, the Pro and flash-lite models reject a
+# budget of 0 ("this model only works in thinking mode"), and a rejected
+# parameter fails the whole request — so an unknown model is treated
+# conservatively (no thinking parameters sent) and runs on its own defaults
+# rather than breaking the moment Google ships a new one.
+
+# The levels the API defines (google.genai.types.ThinkingLevel).
+THINKING_LEVELS = ("minimal", "low", "medium", "high")
+
+
+@dataclass(frozen=True)
+class ModelCaps:
+    thinking_level: bool = False    # accepts LOW / MEDIUM / HIGH
+    thinking_budget: bool = False   # accepts a numeric thinking_budget
+    zero_budget: bool = False       # accepts thinking_budget=0 (thinking off)
+    available: bool = True          # reachable with this API key
+    # MINIMAL is newer and narrower than the other levels: the Pro models and
+    # the larger flash models reject it ("Thinking level MINIMAL is not
+    # supported for this model") while the lite models accept it.
+    minimal_level: bool = False
+
+
+MODEL_CAPABILITIES: dict[str, ModelCaps] = {
+    # 2.5 era — budgets yes, thinking_level no.
+    "gemini-2.5-flash":         ModelCaps(thinking_budget=True, zero_budget=True),
+    "gemini-2.5-flash-lite":    ModelCaps(thinking_budget=True, zero_budget=True),
+    "gemini-2.5-pro":           ModelCaps(thinking_budget=True),
+    "gemini-2.5-flash-lite":    ModelCaps(thinking_budget=True, zero_budget=True),
+    # 3.x era and the rolling aliases — LOW/MEDIUM/HIGH everywhere; MINIMAL
+    # and a zero budget vary, so both are recorded per model.
+    #                                level budget zero  avail minimal
+    "gemini-3-flash-preview":        ModelCaps(True, True, True,  True, True),
+    "gemini-3.1-flash-lite":         ModelCaps(True, True, True,  True, True),
+    "gemini-3.1-flash-lite-preview": ModelCaps(True, True, True,  True, True),
+    "gemini-3.5-flash":              ModelCaps(True, True, True,  True, True),
+    "gemini-3.5-flash-lite":         ModelCaps(True, True, False, True, True),
+    "gemini-3.6-flash":              ModelCaps(True, True, False, True, True),
+    "gemini-flash-lite-latest":      ModelCaps(True, True, False, True, True),
+    "gemini-3.7-flash":              ModelCaps(True, True, True,  True, False),
+    "gemini-3.8-flash":              ModelCaps(True, True, True,  True, False),
+    "gemini-flash-latest":           ModelCaps(True, True, True,  True, False),
+    "gemini-3.1-pro-preview":        ModelCaps(True, True, False, True, False),
+    "gemini-pro-latest":             ModelCaps(True, True, False, True, False),
+    # Gemma takes neither.
+    "gemma-4-26b-a4b-it":       ModelCaps(),
+    "gemma-4-31b-it":           ModelCaps(),
+    # In llm_models but NOT served by the API — selecting one 404s every call.
+    "gemini":                   ModelCaps(available=False),
+    "gemini-2.0-flash":         ModelCaps(available=False),
+    "gemini-3-pro":             ModelCaps(available=False),
+    "gemini-pro-2.5":           ModelCaps(available=False),
+}
+
+
+def model_caps(model: str) -> ModelCaps:
+    """What this model accepts. An unrecognised model is assumed reachable
+    but is sent no thinking parameters."""
+    return MODEL_CAPABILITIES.get((model or "").strip().lower(), ModelCaps())
+
+
 # ─── Config object ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -128,6 +211,7 @@ class AgentConfig:
     temperature: float
     llm_parameters: dict[str, Any] = field(default_factory=dict)
     agent_type: str = ""
+    runtime: str = "gemini"          # which engine actually runs this agent
     source: str = "default"          # "db" | "default"
     db_id: int | None = None
     db_updated_at: Any = None
@@ -348,6 +432,10 @@ def get_agent_config(agent_name: str, *, default_prompt: str = "",
         hit = _cache.get(agent_name)
         if hit and now < hit[1]:
             cached = hit[0]
+            logger.info(
+                "[AgentConfig] using   agent=%-20s model=%-22s temp=%-5s source=%s (cached)",
+                agent_name, cached.model_name, cached.temperature,
+                "ADMIN-DB" if cached.from_db else "SYSTEM")
             # The prompt default can differ per call (e.g. keyword_extract's
             # two query styles), so a cached DEFAULT keeps this call's prompt.
             if cached.from_db:
@@ -363,6 +451,7 @@ def get_agent_config(agent_name: str, *, default_prompt: str = "",
             )
 
     defaults = AGENT_DEFAULTS.get(agent_name)
+    runtime = defaults.runtime if defaults else GEMINI
     fallback_model = (default_model
                       or (defaults.model() if defaults else _gemini()))
     fallback_temperature = (default_temperature
@@ -393,6 +482,21 @@ def get_agent_config(agent_name: str, *, default_prompt: str = "",
                     continue
 
         model_name = _model_from_row(row, llm_params) or fallback_model
+        if not _model_runs_on(model_name, runtime):
+            logger.warning(
+                "[AgentConfig] agent=%s: the admin row selects %r, but this agent "
+                "runs on %s — %s cannot execute it, so %s is used instead. Pick a "
+                "%s model for this agent.",
+                agent_name, model_name, runtime.upper(), model_name,
+                fallback_model,
+                "Claude" if runtime == CLAUDE else "Gemini/Gemma")
+            model_name = fallback_model
+        elif not model_caps(model_name).available:
+            logger.warning(
+                "[AgentConfig] agent=%s: the admin row selects %r, which this "
+                "API key cannot serve (every call would 404). Pick another model "
+                "in the console — the request is still sent as configured.",
+                agent_name, model_name)
 
         prompt = str(row.get("prompt") or "").strip()
         extra = str(llm_params.get("system_instructions") or "").strip()
@@ -415,15 +519,16 @@ def get_agent_config(agent_name: str, *, default_prompt: str = "",
             temperature=temperature,
             llm_parameters=llm_params,
             agent_type=str(row.get("agent_type") or "").strip(),
+            runtime=runtime,
             source="db",
             db_id=row.get("id"),
             db_updated_at=row.get("updated_at"),
         )
         logger.info(
-            "[AgentConfig] source=DB       agent=%-18s row=%-4s name=%-28r "
-            "model=%-22s temp=%.2f prompt=%d chars updated=%s",
-            agent_name, cfg.db_id, str(row.get("name") or ""), cfg.model_name,
-            cfg.temperature, len(cfg.prompt), cfg.db_updated_at)
+            "[AgentConfig] FETCHED from ADMIN-DB  agent=%-20s model=%-22s "
+            "temp=%-5s prompt=%d chars  (row id=%s name=%r updated=%s)",
+            agent_name, cfg.model_name, cfg.temperature, len(cfg.prompt),
+            cfg.db_id, str(row.get("name") or ""), cfg.db_updated_at)
     else:
         cfg = AgentConfig(
             agent_name=agent_name,
@@ -432,17 +537,49 @@ def get_agent_config(agent_name: str, *, default_prompt: str = "",
             temperature=fallback_temperature,
             llm_parameters={},
             agent_type="",
+            runtime=runtime,
             source="default",
         )
         logger.info(
-            "[AgentConfig] source=DEFAULT  agent=%-18s model=%-22s temp=%.2f "
-            "— no public.agent_prompts row named any of %s",
+            "[AgentConfig] SYSTEM default        agent=%-20s model=%-22s "
+            "temp=%-5s prompt=hardcoded  (no agent_prompts row named %s)",
             agent_name, cfg.model_name, cfg.temperature,
-            accepted_db_names(agent_name))
+            " / ".join(accepted_db_names(agent_name)))
 
     with _cache_lock:
         _cache[agent_name] = (cfg, now + CACHE_TTL_SECONDS)
     return cfg
+
+
+def log_startup_summary() -> None:
+    """Print every agent's resolved model at boot — the answer to "which
+    model is this actually using, mine or the admin's?" without waiting for
+    a pipeline run to produce the first line."""
+    settings = get_settings()
+    logger.info("[AgentConfig] %s", "=" * 96)
+    logger.info("[AgentConfig] LLM agents — admin console: public.agent_prompts "
+                "in Draft_DB (%s)",
+                "configured" if settings.draft_db_url else "DRAFT_DB_URL not set")
+    logger.info("[AgentConfig] %-22s %-10s %-8s %-24s %-6s %s",
+                "AGENT", "SOURCE", "RUNS ON", "MODEL IN USE", "TEMP", "PROMPT")
+    logger.info("[AgentConfig] %s", "-" * 96)
+    from_db = 0
+    for name in AGENT_DEFAULTS:
+        try:
+            cfg = get_agent_config(name)
+        except Exception as exc:      # never block startup on this
+            logger.warning("[AgentConfig] %s: could not resolve (%s)", name, exc)
+            continue
+        from_db += 1 if cfg.from_db else 0
+        logger.info("[AgentConfig] %-22s %-10s %-8s %-24s %-6s %s",
+                    name, "ADMIN-DB" if cfg.from_db else "SYSTEM",
+                    cfg.runtime, cfg.model_name, cfg.temperature,
+                    f"admin ({len(cfg.prompt)} chars)" if cfg.from_db else "hardcoded")
+    logger.info("[AgentConfig] %s", "-" * 96)
+    logger.info("[AgentConfig] %d of %d agents configured from the admin console; "
+                "the rest use the models and prompts in code.",
+                from_db, len(AGENT_DEFAULTS))
+    logger.info("[AgentConfig] %s", "=" * 96)
 
 
 def describe_agents() -> list[dict[str, Any]]:
@@ -455,6 +592,8 @@ def describe_agents() -> list[dict[str, Any]]:
             "agent": name,
             "source": cfg.source,
             "model": cfg.model_name,
+            "runsOn": cfg.runtime,
+            "modelAvailable": model_caps(cfg.model_name).available,
             "temperature": cfg.temperature,
             # The hardcoded prompt lives at the call site, so its length is
             # only known there — report where the prompt comes from instead

@@ -24,7 +24,7 @@ import re
 import time
 from typing import Any
 
-from agent_config import get_agent_config
+from agent_config import THINKING_LEVELS, get_agent_config, model_caps
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.runners import InMemoryRunner
 from google.genai import types as genai_types
@@ -152,7 +152,7 @@ def _gen_config(temperature: float,
     # Fixed seed: temperature 0 alone is not bit-reproducible on Gemini —
     # the seed pins sampling so the same prompt yields the same output.
     config = genai_types.GenerateContentConfig(temperature=0.0, seed=42)
-    if model and model.startswith("gemini-3"):
+    if model and model_caps(model).thinking_level:
         # Gemini 3 models think at a HIGH level by default; LOW keeps the
         # structured-extraction quality while cutting latency substantially
         # (user directive 2026-08-10 — these are the primary analysis
@@ -185,6 +185,34 @@ def _claude_agent(agent_name: str, default: str) -> tuple[str, str | None]:
     return cfg.prompt, model
 
 
+# ADK resolves {placeholder} in an instruction from session state and RAISES
+# when one is missing, so a placeholder an admin leaves in a prompt would fail
+# the whole run. Matches identifier-like placeholders only — ADK ignores the
+# rest (JSON braces in a prompt are safe).
+_ADK_PLACEHOLDER_RE = re.compile("[{]([A-Za-z_][A-Za-z0-9_.]*)[?]?[}]")
+
+
+def _safe_adk_prompt(cfg, prompt: str, supplied: tuple[str, ...] = ()) -> str:
+    """Make an admin prompt safe to hand to ADK: any placeholder this agent
+    does not actually supply is marked optional, so ADK substitutes an empty
+    string instead of raising. Reported, so the admin can fix the prompt."""
+    if not cfg.from_db:
+        return prompt
+    unknown = sorted({m.group(1) for m in _ADK_PLACEHOLDER_RE.finditer(prompt)}
+                     - set(supplied))
+    if not unknown:
+        return prompt
+    logger.warning(
+        "[AgentConfig] agent=%s: admin prompt contains placeholder(s) %s that "
+        "nothing fills — treating them as optional (they render as empty). "
+        "Remove them from the prompt, or use one of: %s",
+        cfg.agent_name, ", ".join("{" + u + "}" for u in unknown),
+        ", ".join("{" + s + "}" for s in supplied) or "none for this agent")
+    for name in unknown:
+        prompt = prompt.replace("{" + name + "}", "{" + name + "?}")
+    return prompt
+
+
 def _adk_model(cfg, fallback: str) -> str:
     """The model string for an ADK LlmAgent. ADK talks to Gemini/Gemma
     directly; an admin row naming a Claude/DeepSeek model cannot drive these
@@ -204,19 +232,50 @@ def _adk_model(cfg, fallback: str) -> str:
 
 
 def _thinking_config(params: dict, model: str):
-    """thinking_budget / thinking_level from the admin's llm_parameters."""
-    budget = params.get("thinking_budget")
+    """thinking_budget / thinking_level from the admin's llm_parameters,
+    filtered by what the chosen model actually accepts (see model_caps).
+
+    The console writes `false` for an unticked toggle — that means "not set",
+    NOT "a budget of zero"; reading it as 0 is what broke gemini-2.5-pro. A
+    parameter the model would reject is dropped with a warning rather than
+    sent, because a rejected parameter fails the entire request.
+    """
+    caps = model_caps(model)
+
+    # The console may write any case ("MINIMAL", "low"); "default"/"" mean
+    # "not set". MINIMAL is newer than the rest and several models reject it.
     level = str(params.get("thinking_level") or "").strip().lower()
-    if level in ("low", "medium", "high") and model.startswith("gemini-3"):
-        return genai_types.ThinkingConfig(thinking_level=level)
-    if isinstance(budget, bool):
-        # The console writes False for "off"; 2.5-era models take a budget of 0.
-        if budget is False and model.startswith("gemini-2"):
-            return genai_types.ThinkingConfig(thinking_budget=0)
+    if level in THINKING_LEVELS:
+        if not caps.thinking_level:
+            logger.warning(
+                "[AgentConfig] thinking_level=%r is not accepted by %s — ignoring "
+                "it; the model runs at its own default.", level.upper(), model)
+        elif level == "minimal" and not caps.minimal_level:
+            # Closest the model does accept, rather than dropping the intent.
+            logger.warning(
+                "[AgentConfig] %s does not support thinking_level MINIMAL — "
+                "using LOW, the least thinking it accepts.", model)
+            return genai_types.ThinkingConfig(thinking_level="LOW")
+        else:
+            return genai_types.ThinkingConfig(thinking_level=level.upper())
+
+    budget = params.get("thinking_budget")
+    if budget is None or isinstance(budget, bool):
+        return None                      # a toggle, not a budget
+    if not isinstance(budget, (int, float)):
         return None
-    if isinstance(budget, (int, float)):
-        return genai_types.ThinkingConfig(thinking_budget=int(budget))
-    return None
+    budget = int(budget)
+    if budget == 0 and not caps.zero_budget:
+        logger.warning(
+            "[AgentConfig] thinking_budget=0 is not accepted by %s (it always "
+            "thinks) — sending no budget instead so the run does not fail.", model)
+        return None
+    if not caps.thinking_budget:
+        logger.warning(
+            "[AgentConfig] %s does not accept a thinking budget — ignoring "
+            "thinking_budget=%s.", model, budget)
+        return None
+    return genai_types.ThinkingConfig(thinking_budget=budget)
 
 
 def _gen_config_for(cfg, model: str) -> genai_types.GenerateContentConfig:
@@ -267,7 +326,7 @@ def build_classify_agent() -> LlmAgent:
         name="doc_classify",
         model=model,
         description="Classifies the uploaded legal document type.",
-        instruction=cfg.prompt,
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
         generate_content_config=_gen_config_for(cfg, model),
         output_schema=DocClassification,
         output_key="doc_classification",
@@ -300,11 +359,21 @@ def build_extract_agent(document_type: str | None = None) -> LlmAgent:
         instruction = instruction.replace("{doc_classification}", document_type)
     cfg = get_agent_config("context_extract", default_prompt=instruction)
     model = _adk_model(cfg, get_settings().gemini_model)
+    prompt = cfg.prompt
+    if document_type:
+        # Standalone fast path: the type is known, so it is injected here —
+        # into the prompt actually in use, admin-authored or not.
+        prompt = prompt.replace("{doc_classification}", document_type)
+        supplied: tuple[str, ...] = ()
+    else:
+        # Sequential flow: the classifier writes doc_classification to
+        # session state and ADK substitutes it.
+        supplied = ("doc_classification",)
     return LlmAgent(
         name="context_extract",
         model=model,
         description="Extracts structured case context from the document.",
-        instruction=cfg.prompt,
+        instruction=_safe_adk_prompt(cfg, prompt, supplied),
         generate_content_config=_gen_config_for(cfg, model),
         output_schema=CaseContextDraft,
         output_key="case_context_draft",
@@ -560,7 +629,7 @@ def build_keyword_extract_agent(style: str = "simple") -> LlmAgent:
         name="keyword_extract",
         model=model,
         description="Generates anchor queries + four-axis search terms for one legal issue.",
-        instruction=cfg.prompt,
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
         generate_content_config=_gen_config_for(cfg, model),
         output_schema=KeywordSet,
         output_key="keywords",
@@ -893,13 +962,13 @@ def build_judgment_verifier_agent() -> LlmAgent:
                            default_prompt=JUDGMENT_VERIFIER_SYSTEM)
     model = _adk_model(cfg, get_settings().gemini_model)
     config = _gen_config_for(cfg, model)
-    if not cfg.from_db and model.startswith("gemini-2"):
+    if not cfg.from_db and model_caps(model).zero_budget:
         config.thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
     return LlmAgent(
         name="judgment_verifier",
         model=model,
         description="Verifies whether ONE fetched judgment is usable for ONE issue.",
-        instruction=cfg.prompt,
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
         generate_content_config=config,
         output_schema=JudgmentVerification,
         output_key="judgment_verification",
@@ -1083,7 +1152,7 @@ async def _verify_direct_cached(message: str) -> JudgmentVerification | None:
     config.cached_content = cache_name
     config.response_mime_type = "application/json"
     config.response_schema = JudgmentVerification
-    if not cfg.from_db and model.startswith("gemini-2"):
+    if not cfg.from_db and model_caps(model).zero_budget:
         config.thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
     try:
         resp = await asyncio.to_thread(
@@ -1342,7 +1411,7 @@ def build_citation_analysis_agent() -> LlmAgent:
         name="citation_analysis",
         model=model,
         description="Drafts a grounded legal-intelligence report for one judgment.",
-        instruction=cfg.prompt,
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
         generate_content_config=_gen_config_for(cfg, model),
         output_schema=CitationAnalysis,
         output_key="citation_analysis",
@@ -1423,7 +1492,7 @@ def build_case_summary_agent() -> LlmAgent:
         name="case_summary",
         model=model,
         description="Advocate-grade 100-word summary + 8-line structured note for one judgment.",
-        instruction=cfg.prompt,
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
         generate_content_config=_gen_config_for(cfg, model),
         output_schema=JudgmentCaseSummary,
         output_key="case_summary",
@@ -1455,9 +1524,48 @@ async def generate_case_summary(title: str, doc_text: str, matter_context: str,
 
 # ─── Runner helper ────────────────────────────────────────────────────────────
 
+# Upstream failures that say "try again", not "your request is wrong": a
+# capacity blip on Gemini (503 UNAVAILABLE) used to fail an entire analysis
+# run, throwing away every stage that had already succeeded.
+_TRANSIENT_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_TRANSIENT_MARKERS = ("UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED",
+                      "INTERNAL", "overloaded", "try again")
+# 2s then 6s: long enough for a capacity blip to pass, short enough that a
+# genuinely down model fails fast.
+_RETRY_DELAYS = (2.0, 6.0)
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """Is this worth retrying, or is the request itself wrong?"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code in _TRANSIENT_STATUSES
+    text = str(exc)
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
 async def run_agent_once(agent, message: str, output_keys: list[str]) -> dict[str, Any]:
     """Run one ADK agent (or SequentialAgent) in a fresh in-memory session
-    and return the requested session-state outputs (written via output_key)."""
+    and return the requested session-state outputs (written via output_key).
+    A transient upstream error is retried with backoff — one 503 from Gemini
+    must not discard a whole run."""
+    task = str(getattr(agent, "name", "") or "agent")
+    for attempt, delay in enumerate((*_RETRY_DELAYS, None), start=1):
+        try:
+            return await _run_agent_attempt(agent, message, output_keys)
+        except Exception as exc:
+            if delay is None or not _is_transient_llm_error(exc):
+                raise
+            logger.warning(
+                "[agents] %s on %s: %s — retrying in %.0fs (attempt %d of %d)",
+                task, getattr(agent, "model", "?"), str(exc)[:120], delay,
+                attempt, len(_RETRY_DELAYS) + 1)
+            await asyncio.sleep(delay)
+    raise RuntimeError("unreachable")            # loop always returns or raises
+
+
+async def _run_agent_attempt(agent, message: str,
+                             output_keys: list[str]) -> dict[str, Any]:
     runner = InMemoryRunner(agent=agent, app_name=_APP)
     session = await runner.session_service.create_session(app_name=_APP, user_id="pipeline")
     content = genai_types.Content(role="user", parts=[genai_types.Part(text=message[:_llm_budget()])])

@@ -102,6 +102,15 @@ app.add_middleware(
 )
 
 
+@app.on_event("startup")
+async def _log_agent_configuration() -> None:
+    """Say at boot which model and prompt every LLM agent is running on —
+    the admin console's or the ones in code."""
+    from agent_config import log_startup_summary
+
+    await asyncio.to_thread(log_startup_summary)
+
+
 @app.on_event("shutdown")
 async def _close_ik_http_pool() -> None:
     """Release the IK client's shared keep-alive connection pool."""
@@ -1230,6 +1239,22 @@ async def _local_engine_search(request: AdvancedSearchRequest) -> dict[str, Any]
     if request.doctypes.strip():
         shown += f" doctypes:{normalize_ws(request.doctypes.replace(', ', ','))}"
     settings_es = get_settings()
+    did_you_mean = None
+    if total == 0:
+        from library_suggest import did_you_mean as _dym
+
+        def _count(candidate: str) -> int:
+            probe: dict[str, Any] = {}
+            es_legal_search(parse_legal_query(candidate), mode=mode,
+                            doctypes=request.doctypes, fromdate_iso=fromdate_iso,
+                            todate_iso=todate_iso, limit=1, stats=probe)
+            return int(probe.get("total") or 0)
+
+        did_you_mean = _dym(request.query, parsed["terms"],
+                            suggest=elastic.suggest_words, count=_count)
+        if did_you_mean:
+            logger.info("[source] MY LIBRARY did-you-mean: %r -> %r (%d judgments)",
+                        request.query, did_you_mean["query"], did_you_mean["total"])
     _log_provenance(
         f"MY LIBRARY page {pagenum + 1} ({mode} engine)",
         f"Elasticsearch [{settings_es.elastic_paragraph_index} + "
@@ -1244,6 +1269,9 @@ async def _local_engine_search(request: AdvancedSearchRequest) -> dict[str, Any]
                        f"[{settings_es.elastic_paragraph_index} + "
                        f"{settings_es.elastic_index}] (free)"),
         "mode": mode,
+        # Offered when nothing matched and a spelling fix would: the popup
+        # shows "Did you mean …?" and re-runs with it on click.
+        "didYouMean": did_you_mean,
         "pagenum": pagenum,
         "found": f"{start} - {end} of {total}" if total else "",
         "total": total,
@@ -1276,20 +1304,16 @@ async def local_search(request: AdvancedSearchRequest,
         return await _local_engine_search(request)
 
     must: list[dict[str, Any]] = []
+    must_not: list[dict[str, Any]] = []
     filters: list[dict[str, Any]] = []
 
     def _text_clauses(value: str, fields: list[str]) -> None:
-        # IK grammar: "quoted phrases" verbatim; remaining words all-AND.
-        # cross_fields so the words may land across text AND title (a case
-        # name matches its own judgment) — never 'any of these words'.
-        for phrase in re.findall(r'"([^"]+)"', value):
-            must.append({"multi_match": {"query": phrase, "type": "phrase",
-                                         "fields": fields}})
-        rest = normalize_ws(re.sub(r'"[^"]*"', " ", value))
-        if rest:
-            must.append({"multi_match": {"query": rest, "operator": "and",
-                                         "type": "cross_fields",
-                                         "fields": fields}})
+        # IK grammar: "quoted phrases" verbatim, remaining words all-AND,
+        # A OR B either, NOT X excluded — one parser for every library query.
+        from library_query import boolean_clauses
+        got_must, got_must_not = boolean_clauses(value, fields)
+        must.extend(got_must)
+        must_not.extend(got_must_not)
 
     if request.query.strip():
         _text_clauses(request.query, ["text", "title^2"])
@@ -1323,7 +1347,8 @@ async def local_search(request: AdvancedSearchRequest,
     pagenum = max(0, request.pagenum)
     resp = await asyncio.to_thread(
         elastic.search_judgments,
-        {"bool": {"must": must or [{"match_all": {}}], "filter": filters}},
+        {"bool": {"must": must or [{"match_all": {}}], "must_not": must_not,
+                  "filter": filters}},
         sort, pagenum)
     if resp is None:
         raise HTTPException(status_code=503, detail=(

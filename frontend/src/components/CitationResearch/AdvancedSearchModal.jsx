@@ -95,13 +95,17 @@ const markMatches = (root, needles) => {
   return count;
 };
 
+const OPERATOR_WORDS = new Set(['AND', 'OR', 'NOT', 'ANDD', 'ORR', 'NOTT']);
+
 // The words to highlight: quoted phrases verbatim, then the bare words —
 // the same grammar the library engine matched on.
 const highlightTerms = (query) => {
   const text = String(query || '');
   const phrases = [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1].trim());
+  // Operators are not search words: NOT would otherwise get marked on
+  // every "not" in the judgment.
   const rest = text.replace(/"[^"]*"/g, ' ').split(/\s+/)
-    .map((w) => w.trim()).filter((w) => w.length > 2);
+    .map((w) => w.trim()).filter((w) => w.length > 2 && !OPERATOR_WORDS.has(w));
   return [...new Set([...phrases, ...rest])].filter(Boolean).slice(0, 12);
 };
 
@@ -392,6 +396,16 @@ export default function AdvancedSearchModal({ open, onClose }) {
     runSearch(0, params);
   };
 
+  // "Did you mean …?" — the service's spelling fix becomes the new
+  // baseline query (refinements were built on the misspelt one).
+  const applySuggestion = (query) => {
+    baseQueryRef.current = query;
+    setRefinements([]);
+    setRefineText('');
+    setFields((f) => ({ ...f, query }));
+    runSearch(0, { ...(submittedRef.current || buildCriteria()), query });
+  };
+
   const addRefinement = () => {
     const words = refineText.trim();
     if (!words) return;
@@ -596,6 +610,22 @@ export default function AdvancedSearchModal({ open, onClose }) {
           ? 'No judgment in your library matches these criteria. The library holds only what JuriNex has already collected — try fewer words, drop a filter, or search Indian Kanoon instead.'
           : 'Indian Kanoon returned no documents for these criteria. Try fewer words, a wider date range, or fewer court filters.'}
       </p>
+      {resp.didYouMean && (
+        <p className="mt-3 text-[length:calc(13px*var(--jnx-text-scale,1))] text-[#25353C]">
+          Did you mean{' '}
+          <button
+            type="button"
+            onClick={() => applySuggestion(resp.didYouMean.query)}
+            className="font-bold text-[#0E8371] underline decoration-[#BFE9DF] underline-offset-2 hover:decoration-[#0E8371]"
+          >
+            {resp.didYouMean.query}
+          </button>
+          ?{' '}
+          <span className="text-[#64757C]">
+            ({resp.didYouMean.total.toLocaleString('en-IN')} judgment{resp.didYouMean.total === 1 ? '' : 's'})
+          </span>
+        </p>
+      )}
       <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
         {refinements.length > 0 && (
           <button

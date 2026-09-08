@@ -689,14 +689,10 @@ def _es_query_from_wire(wire: str) -> dict[str, Any]:
         todate = m.group(1)
     text_part = re.sub(r"\b(?:doctypes|fromdate|todate|sortby):\S+", " ", text_part)
 
-    must: list[dict[str, Any]] = []
-    for phrase in re.findall(r'"([^"]+)"', text_part):
-        must.append({"multi_match": {"query": phrase, "type": "phrase",
-                                     "fields": ["text", "title^2"]}})
-    rest = normalize_ws(re.sub(r'"[^"]*"', " ", text_part))
-    if rest:
-        must.append({"multi_match": {"query": rest, "operator": "and",
-                                     "fields": ["text", "title^2"]}})
+    # ANDD / ORR / NOTT are IK's wire operators — the library honours them
+    # through the same grammar the popup uses (library_query).
+    from library_query import boolean_clauses
+    must, must_not = boolean_clauses(text_part)
 
     filters: list[dict[str, Any]] = []
     if doctypes:
@@ -710,7 +706,8 @@ def _es_query_from_wire(wire: str) -> dict[str, Any]:
             date_range[bound] = f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
     if date_range:
         filters.append({"range": {"publishdate": date_range}})
-    return {"bool": {"must": must or [{"match_all": {}}], "filter": filters}}
+    return {"bool": {"must": must or [{"match_all": {}}], "must_not": must_not,
+                     "filter": filters}}
 
 
 def _wire_date_iso(value: str | None) -> str | None:
@@ -903,7 +900,9 @@ def parse_legal_query(query: str) -> dict[str, Any]:
     citations and 'Section NNN' references become phrases even when
     unquoted (exact legal terms deserve strong relevance), remaining bare
     words are plain terms. Returns {phrases, terms, citations, sections}."""
-    working = normalize_quotes(query or "")
+    from library_query import split_boolean
+    and_text, or_groups, excluded = split_boolean(query or "")
+    working = normalize_quotes(and_text)
     citations = extract_citations(working)
     for cite in citations:
         working = working.replace(cite, " ")
@@ -923,6 +922,9 @@ def parse_legal_query(query: str) -> dict[str, Any]:
         "terms": terms,
         "citations": citations,
         "sections": list(dict.fromkeys(sections)),
+        # IK's OR / NOT, kept apart from the required terms.
+        "or_groups": or_groups,
+        "excluded": excluded,
     }
 
 
@@ -997,7 +999,8 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
         return []
     phrases = list(parsed.get("phrases") or []) + list(parsed.get("citations") or [])
     terms = list(parsed.get("terms") or [])
-    if not phrases and not terms:
+    or_groups = list(parsed.get("or_groups") or [])
+    if not phrases and not terms and not or_groups:
         return []
 
     filters: list[dict[str, Any]] = []
@@ -1019,13 +1022,17 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
         # as a phrase AND every bare word must appear somewhere in the
         # judgment (its title counts, so a case name finds its own case).
         # A judgment missing one word is NOT a result — same as IK.
+        from library_query import group_clause, term_clause
         must: list[dict[str, Any]] = [_phrase_clause(p) for p in phrases]
         if terms:
             must.append({"multi_match": {"query": " ".join(terms),
                                          "fields": ["text", "title^2"],
                                          "operator": "and",
                                          "type": "cross_fields"}})
-        qualification = {"bool": {"must": must, "filter": filters}}
+        must += [group_clause(g) for g in (parsed.get("or_groups") or [])]
+        must_not = [term_clause(t) for t in (parsed.get("excluded") or [])]
+        qualification = {"bool": {"must": must, "must_not": must_not,
+                                  "filter": filters}}
     else:
         # Opt-in loose recall (searchMode='flexible'): BM25 with phrase
         # boosts, 60% of the words is enough. Never the default — it is what
@@ -1079,11 +1086,14 @@ def es_legal_search(parsed: dict[str, Any], *, mode: str = "strict",
     wanted = frozenset(f"ph:{i}" for i in range(len(phrases)))
     weights = settings.es_rank_weights
     evidence_resp = None
-    if phrases or terms:
+    if phrases or terms or or_groups:
         should = [_phrase_clause(p, name=f"ph:{i}") for i, p in enumerate(phrases)]
         if terms:
             should.append({"match": {"text": {"query": " ".join(terms),
                                               "operator": "and"}}})
+        for group in or_groups:
+            for member in group:
+                should.append({"match_phrase": {"text": member.strip('"')}})
         evidence_resp = elastic.search_paragraphs(
             {"bool": {"filter": [{"terms": {"judgment_id": list(judgments)}}],
                       "should": should, "minimum_should_match": 1}},

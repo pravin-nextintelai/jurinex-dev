@@ -834,6 +834,32 @@ class ElasticStore:
         except Exception:
             pass  # not indexed yet, or ES hiccup — nothing depends on this
 
+    def suggest_words(self, words: list[str]) -> dict[str, str]:
+        """Spelling suggestions for words the library does NOT contain, drawn
+        from the judgment text itself (term suggester, suggest_mode=missing):
+        {"queshing": "quashing"}. A word the index holds is never suggested
+        against. {} when ES is down or there is nothing to suggest."""
+        client = self._get()
+        wanted = [w for w in dict.fromkeys((w or "").strip().lower() for w in words) if w]
+        if client is None or not wanted:
+            return {}
+        try:
+            resp = client.search(
+                index=get_settings().elastic_index, size=0,
+                suggest={f"w{i}": {"text": w, "term": {
+                    "field": "text", "suggest_mode": "missing", "size": 1}}
+                    for i, w in enumerate(wanted)})
+            out: dict[str, str] = {}
+            for i, w in enumerate(wanted):
+                entries = (resp.get("suggest") or {}).get(f"w{i}") or []
+                options = (entries[0].get("options") if entries else None) or []
+                if options and options[0].get("text"):
+                    out[w] = str(options[0]["text"])
+            return out
+        except Exception as exc:
+            logger.warning("[stores] ES suggest failed (%s)", exc)
+            return {}
+
     def search_judgments(self, query: dict[str, Any], sort: list | None,
                          pagenum: int, size: int = 10) -> dict[str, Any] | None:
         """One page (`size` hits) of the library, IK-style: `from` walks

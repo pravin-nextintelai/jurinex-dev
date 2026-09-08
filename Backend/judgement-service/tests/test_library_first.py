@@ -128,7 +128,10 @@ def test_wire_translation_mirrors_ik_grammar():
     musts = q["bool"]["must"]
     assert {"multi_match": {"query": "civil dispute", "type": "phrase",
                             "fields": ["text", "title^2"]}} in musts
+    # cross_fields: the words may span text AND title (a case name matches
+    # its own judgment) — the same clause the popup's library search sends.
     assert {"multi_match": {"query": "quash", "operator": "and",
+                            "type": "cross_fields",
                             "fields": ["text", "title^2"]}} in musts
     filters = q["bool"]["filter"]
     assert any("range" in f and f["range"]["publishdate"] ==
