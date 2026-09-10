@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 import logging
-import re
 import time
 import uuid
 
@@ -1274,7 +1273,14 @@ def _page_texts_from_stamped_ocr(text: str) -> list[str]:
     return [by_number.get(index, "") for index in range(1, max_number + 1)]
 
 
-_MAX_OCR_PAGE_WINDOW = 8
+_MAX_OCR_PAGE_WINDOW = 12
+
+
+def _record_page_count(record: dict[str, Any] | None) -> int:
+    try:
+        return max(0, int((record or {}).get("page_count") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _ocr_page_texts_for_record(record: dict[str, Any] | None) -> list[str]:
@@ -1284,6 +1290,9 @@ def _ocr_page_texts_for_record(record: dict[str, Any] | None) -> list[str]:
     stamped = _page_texts_from_stamped_ocr(text)
     if stamped:
         return stamped
+    stored_count = _record_page_count(record)
+    if stored_count > 1 and text.strip():
+        return _split_text_evenly_by_pages(text, stored_count)
     cleaned = text.strip()
     return [cleaned] if cleaned else []
 
@@ -1313,12 +1322,23 @@ def _virtualized_ocr_payload(
     page_to: int,
 ) -> dict[str, Any] | None:
     """Return OCR for a small page window. The original PDF is served via signed URL, not here."""
-    texts = _ocr_page_texts_for_record(record)
-    try:
-        stored_count = int((record or {}).get("page_count") or 0)
-    except (TypeError, ValueError):
-        stored_count = 0
-    page_count = max(len(texts), stored_count)
+    working = dict(record or {})
+    texts = _ocr_page_texts_for_record(working)
+    file_id = str(working.get("id") or "")
+    if (not texts or _record_page_count(working) <= 0) and file_id:
+        extra = _get_file_ocr_extraction(file_id, include_text=True)
+        extra_text = str((extra or {}).get("extractedText") or "")
+        extra_count = 0
+        try:
+            extra_count = int((extra or {}).get("pageCount") or 0)
+        except (TypeError, ValueError):
+            extra_count = 0
+        if extra_text and extra_text != working.get("full_text_content"):
+            working["full_text_content"] = extra_text
+        if extra_count > _record_page_count(working):
+            working["page_count"] = extra_count
+        texts = _ocr_page_texts_for_record(working)
+    page_count = max(len(texts), _record_page_count(working))
     if page_count <= 0:
         return None
     start = max(1, min(int(page_from or 1), page_count))
@@ -1347,7 +1367,7 @@ def _virtualized_ocr_payload(
         "extractedText": window_text,
         "metadata": {
             "virtualized": True,
-            "pageSource": "page_stamps",
+            "pageSource": "page_window",
             "returnedPages": [start, end],
         },
     }
@@ -1553,7 +1573,12 @@ def _choose_ocr_payload(
     return stored
 
 
-def _get_file_ocr_extraction(file_id: str, *, include_structure: bool = False) -> dict[str, Any] | None:
+def _get_file_ocr_extraction(
+    file_id: str,
+    *,
+    include_structure: bool = False,
+    include_text: bool = False,
+) -> dict[str, Any] | None:
     if not is_db_available():
         return None
     try:
@@ -1574,9 +1599,11 @@ def _get_file_ocr_extraction(file_id: str, *, include_structure: bool = False) -
                 "updated_at",
                 "created_at",
             ]
+            if include_text or include_structure:
+                wanted.append("extracted_text")
             if include_structure:
                 # Prefer structured_schema over raw Document AI JSON — raw_response is often tens of MB.
-                wanted.extend(["extracted_text", "metadata", "structured_schema"])
+                wanted.extend(["metadata", "structured_schema"])
             select_columns = [column for column in wanted if column in columns]
             if not select_columns:
                 return None
@@ -1635,6 +1662,8 @@ def _get_file_ocr_extraction(file_id: str, *, include_structure: bool = False) -
             "extractedText": row.get("extracted_text") or "",
             "metadata": _parse_jsonish(row.get("metadata")) or {},
         })
+    elif include_text:
+        out["extractedText"] = row.get("extracted_text") or ""
     return out
 
 
@@ -1847,11 +1876,12 @@ async def view_file(
     # Signed URL for the original PDF. OCR is virtualized: only the requested page of text,
     # never the whole file from GCS and never every page of structured JSON.
     ocr_payload = _virtualized_ocr_payload(record, page_from=page_number, page_to=page_number)
+    page_count = int((ocr_payload or {}).get("pageCount") or 0)
     logger.info(
         "[Route:view_file] file_id=%s page=%s ocr_page_count=%s returned_pages=%s virtualized=true",
         file_id,
         page_number,
-        (ocr_payload or {}).get("pageCount") or 0,
+        page_count,
         1 if ocr_payload else 0,
     )
     return {
@@ -1867,6 +1897,7 @@ async def view_file(
         "viewUrl": signed_url,
         "viewUrlWithPage": f"{signed_url}#page={page_number}",
         "page": page_number,
+        "pageCount": page_count,
         "ocr": ocr_payload,
     }
 
@@ -1874,8 +1905,8 @@ async def view_file(
 @router.get("/file/{file_id}/ocr-pages")
 async def get_ocr_pages(
     file_id: str,
-    from_page: int = Query(default=1, alias="from", ge=1),
-    to_page: int | None = Query(default=None, alias="to", ge=1),
+    from_page: int = Query(default=1, ge=1),
+    to_page: int | None = Query(default=None, ge=1),
     x_user_id: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:

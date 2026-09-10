@@ -23,18 +23,29 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
   const [reloadVersion, setReloadVersion] = useState(0);
 
   const loadedPagesRef = useRef<Set<number>>(new Set());
-  const fetchingRangeRef = useRef<string | null>(null);
+  const inFlightPagesRef = useRef<Set<number>>(new Set());
 
   const reload = useCallback(() => {
     setReloadVersion((version) => version + 1);
   }, []);
 
   const mergeOcrPages = useCallback(
-    (incoming: OcrPage[], pageCount: number) => {
+    (incoming: OcrPage[], pageCount: number, markLoaded: number[] = []) => {
       incoming.forEach((page) => loadedPagesRef.current.add(page.page));
+      markLoaded.forEach((page) => loadedPagesRef.current.add(page));
       setOcrData((prev) => {
         const byNumber = new Map((prev?.pages || []).map((page) => [page.page, page]));
         incoming.forEach((page) => byNumber.set(page.page, page));
+        markLoaded.forEach((pageNumber) => {
+          if (!byNumber.has(pageNumber)) {
+            byNumber.set(pageNumber, {
+              page: pageNumber,
+              width: 1000,
+              height: 1414,
+              words: [],
+            });
+          }
+        });
         return {
           documentId: documentId || prev?.documentId || '',
           pageCount: Math.max(prev?.pageCount || 0, pageCount || 0),
@@ -52,22 +63,43 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
       const end = Math.max(start, toPage);
       const missing: number[] = [];
       for (let page = start; page <= end; page += 1) {
-        if (!loadedPagesRef.current.has(page)) missing.push(page);
+        if (!loadedPagesRef.current.has(page) && !inFlightPagesRef.current.has(page)) {
+          missing.push(page);
+        }
       }
       if (!missing.length) return;
-      const reqFrom = Math.min(...missing);
-      const reqTo = Math.max(...missing);
-      const key = `${documentId}:${reqFrom}-${reqTo}`;
-      if (fetchingRangeRef.current === key) return;
-      fetchingRangeRef.current = key;
+      const reqFrom = missing[0];
+      const reqTo = Math.min(missing[missing.length - 1], reqFrom + 11);
+      for (let page = reqFrom; page <= reqTo; page += 1) {
+        inFlightPagesRef.current.add(page);
+      }
+      let fetched = false;
       try {
         const result = await ocrApi.fetchOcrPages(documentId, reqFrom, reqTo);
-        mergeOcrPages(result.pages, result.pageCount);
+        const returned = new Set((result.pages || []).map((page) => page.page));
+        const filled = [];
+        for (let page = reqFrom; page <= reqTo; page += 1) {
+          if (!returned.has(page)) filled.push(page);
+        }
+        mergeOcrPages(result.pages, result.pageCount, filled);
         setHasOcrData(Boolean(result.pageCount || result.pages.length));
+        fetched = true;
       } catch (err) {
         console.warn('[OCR PREVIEW] Failed to load OCR page window', reqFrom, reqTo, err);
       } finally {
-        if (fetchingRangeRef.current === key) fetchingRangeRef.current = null;
+        for (let page = reqFrom; page <= reqTo; page += 1) {
+          inFlightPagesRef.current.delete(page);
+        }
+      }
+      if (!fetched) return;
+      const stillMissing: number[] = [];
+      for (let page = start; page <= end; page += 1) {
+        if (!loadedPagesRef.current.has(page) && !inFlightPagesRef.current.has(page)) {
+          stillMissing.push(page);
+        }
+      }
+      if (stillMissing.length) {
+        await ensureOcrRange(stillMissing[0], stillMissing[stillMissing.length - 1]);
       }
     },
     [documentId, mergeOcrPages],
@@ -81,11 +113,13 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
       setMetadata(null);
       setHasOcrData(null);
       loadedPagesRef.current = new Set();
+      inFlightPagesRef.current = new Set();
       return;
     }
 
     let cancelled = false;
     loadedPagesRef.current = new Set();
+    inFlightPagesRef.current = new Set();
 
     const load = async () => {
       setLoading(true);

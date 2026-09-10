@@ -247,7 +247,7 @@ const ocrApi = {
         file_name: doc.name || null,
         pdf_signed_url: pdfUrl,
         ocr_signed_url: ocrAvailable ? 'inline-structured-json' : null,
-        page_count: ocrData?.pageCount || ocrPayload?.pageCount || 0,
+        page_count: ocrData?.pageCount || ocrPayload?.pageCount || viewData?.pageCount || 0,
         average_confidence: typeof ocrPayload?.confidence === 'number' ? normalizeConfidence(ocrPayload.confidence) : undefined,
         progress_percentage: statusLooksProcessing(doc.status) ? 50 : ocrAvailable ? 100 : 0,
         pages_processed: ocrData?.pageCount || 0,

@@ -112,7 +112,7 @@ const OcrPanel: React.FC<OcrPanelProps> = ({
           defaultItemHeight={PDF_VIEWER_PAGE_HEIGHT}
           computeItemKey={(index) => index + 1}
           scrollerRef={handleScrollerRef}
-          increaseViewportBy={{ top: 1200, bottom: 1800 }}
+          increaseViewportBy={{ top: 400, bottom: 800 }}
           rangeChanged={handleRangeChanged}
           itemContent={(index) => {
             const pageNumber = index + 1;
@@ -124,6 +124,16 @@ const OcrPanel: React.FC<OcrPanelProps> = ({
                   style={{ height: PDF_VIEWER_PAGE_HEIGHT }}
                 >
                   Loading page {pageNumber}…
+                </div>
+              );
+            }
+            if (!p.words?.length) {
+              return (
+                <div
+                  className="flex items-center justify-center text-xs text-gray-400 bg-gray-50"
+                  style={{ height: PDF_VIEWER_PAGE_HEIGHT }}
+                >
+                  No OCR text on page {pageNumber}
                 </div>
               );
             }
