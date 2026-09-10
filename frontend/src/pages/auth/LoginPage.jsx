@@ -5,7 +5,7 @@ import { auth, googleProvider } from '../../config/firebase';
 import { AUTH_SERVICE_URL } from '../../config/apiConfig';
 import { signInWithPopup } from 'firebase/auth';
 import { useAuth } from '../../context';
-import JuriNexLogo from '../../assets/JuriNex_gavel_logo.png';
+import JuriNexLogo from '../../assets/jurinex-wordmark.png';
 import AdvocateImage from '../../assets/advocate.png';
 
 const LoginPage = () => {
@@ -98,15 +98,13 @@ const LoginPage = () => {
  }
 
  return (
- <div className={`${size} rounded-lg flex items-center justify-center overflow-hidden bg-gray-100`}>
  <img
  src={JuriNexLogo}
- alt="JuriNex Logo"
- className="w-full h-full object-contain"
+ alt="JURINEX"
+ className="h-12 w-auto object-contain"
  onError={() => setLogoError(true)}
  onLoad={() => setLogoError(false)}
  />
- </div>
  );
  };
 

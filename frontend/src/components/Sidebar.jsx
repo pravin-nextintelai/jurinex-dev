@@ -343,7 +343,7 @@
 //                   {isChats ? (
 //                     <Link
 //                       to={currentFileId ? `/chats/${currentFileId}` : '/chats'}
-//                       className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-sm rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
+//                       className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-base rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
 //                         }`}
 //                       title={isCollapsed ? item.name : undefined}
 //                     >
@@ -356,7 +356,7 @@
 //                   ) : (
 //                     <Link
 //                       to={item.path}
-//                       className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-sm rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
+//                       className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-base rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
 //                         }`}
 //                       title={isCollapsed ? item.name : undefined}
 //                     >
@@ -588,7 +588,8 @@ import { useAuth } from '../context';
 import { useSidebar } from '../context/SidebarContext';
 import { canUsePermission, PERMISSION_KEYS } from '../utils/permissions';
 import { createPortal } from 'react-dom';
-import JuriNexLogoImg from '/src/assets/JuriNex_gavel_logo.png';
+import JuriNexWordmarkImg from '/src/assets/jurinex-wordmark-light.png';
+import JuriNexMarkImg from '/src/assets/jurinex-mark.png';
 
 const Sidebar = () => {
   const { isSidebarHidden, setIsSidebarHidden, isSidebarCollapsed, setIsSidebarCollapsed, forceSidebarCollapsed, setForceSidebarCollapsed } = useSidebar();
@@ -807,10 +808,10 @@ const Sidebar = () => {
 
   const navigationItems = [
     { name: 'Dashboard', path: '/dashboard', icon: ChartBarIcon },
-    { name: 'Projects', path: '/documents', icon: DocumentTextIcon },
+    { name: 'Ongoing Cases', path: '/documents', icon: DocumentTextIcon },
     { name: 'Case Storage', path: '/case-storage', icon: ArchiveBoxIcon },
     { name: 'Citation Research', path: '/citation-research', icon: ScaleIcon },
-    { name: 'ChatModel', path: '/chatmodel', icon: ChatBubbleLeftRightIcon },
+    { name: 'Quick Chat', path: '/chatmodel', icon: ChatBubbleLeftRightIcon },
     { name: 'Chats', path: '/chats', icon: MessageSquare, isSpecial: true },
     { name: 'Translation', path: '/translation', icon: GlobeAltIcon },
     // Temporarily hidden — restore by uncommenting:
@@ -820,18 +821,12 @@ const Sidebar = () => {
   ];
 
   const JuriNexLogo = ({ collapsed = false }) => (
-    <div className="flex items-center space-x-3">
+    <div className="flex items-center">
       <img
-        src={JuriNexLogoImg}
-        alt="JuriNex Logo"
-        className="h-12 w-12 object-contain flex-shrink-0"
+        src={collapsed ? JuriNexMarkImg : JuriNexWordmarkImg}
+        alt="JURINEX"
+        className={`${collapsed ? 'h-10 w-10 rounded-lg' : 'h-9 w-auto'} object-contain flex-shrink-0`}
       />
-      {!collapsed && (
-        <div className="flex items-baseline">
-          <span className="text-xl font-bold text-[#21C1B6]">Juri</span>
-          <span className="text-xl font-bold text-white">Nex</span>
-        </div>
-      )}
     </div>
   );
 
@@ -883,7 +878,7 @@ const Sidebar = () => {
             navigate('/chatmodel', { state: { newChat: true } });
           }}
           disabled={!canCreateCases}
-          className={`w-full text-white rounded-xl py-3 text-sm font-bold flex items-center justify-center transition-all duration-200 shadow-lg ${canCreateCases ? 'hover:shadow-xl transform hover:-translate-y-0.5' : 'cursor-not-allowed opacity-50'} ${isSidebarCollapsed && !isMobileView ? 'px-2' : ''
+          className={`w-full text-white rounded-xl py-3 text-base font-bold flex items-center justify-center transition-all duration-200 shadow-lg ${canCreateCases ? 'hover:shadow-xl transform hover:-translate-y-0.5' : 'cursor-not-allowed opacity-50'} ${isSidebarCollapsed && !isMobileView ? 'px-2' : ''
             }`}
           style={{ backgroundColor: '#21C1B6' }}
           onMouseEnter={(e) => {
@@ -922,7 +917,7 @@ const Sidebar = () => {
                   <div key="deepseek-ai">
                     <button
                       onClick={() => setIsDeepSeekOpen((v) => !v)}
-                      className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-sm rounded-xl transition-all duration-200 relative ${isDeepSeekOpen ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'}`}
+                      className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-base rounded-xl transition-all duration-200 relative ${isDeepSeekOpen ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'}`}
                       title={isCollapsed ? 'DeepSeek AI' : undefined}
                     >
                       <Zap
@@ -942,7 +937,7 @@ const Sidebar = () => {
                   {isChats ? (
                     <Link
                       to={currentFileId ? `/chats/${currentFileId}` : '/chats'}
-                      className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-sm rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
+                      className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-base rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
                         }`}
                       title={isCollapsed ? item.name : undefined}
                     >
@@ -955,7 +950,7 @@ const Sidebar = () => {
                   ) : (
                     <Link
                       to={item.path}
-                      className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-sm rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
+                      className={`group flex items-center w-full ${isCollapsed ? 'justify-center px-3' : 'px-4'} py-3 text-base rounded-xl transition-all duration-200 relative ${active ? 'bg-[#1c2128] text-white font-bold' : 'text-gray-400 hover:bg-[#1c2128]/60 hover:text-gray-200 font-medium'
                         }`}
                       title={isCollapsed ? item.name : undefined}
                     >
@@ -987,7 +982,7 @@ const Sidebar = () => {
             </div>
             {(!isSidebarCollapsed || isMobileView) && (
               <div className="text-left min-w-0 flex-1">
-                <div className="text-sm font-semibold text-gray-200 truncate">{displayName}</div>
+                <div className="text-base font-semibold text-gray-200 truncate">{displayName}</div>
                 {userData?.email && <div className="text-xs text-gray-500 truncate">{userData.email}</div>}
               </div>
             )}

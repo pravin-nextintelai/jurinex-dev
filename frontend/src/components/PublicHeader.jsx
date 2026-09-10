@@ -123,7 +123,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
-import JuriNexGavelLogo from '../assets/JuriNex_gavel_logo.png';
+import JuriNexWordmark from '../assets/jurinex-wordmark.png';
 
 const PublicHeader = () => {
   const navigate = useNavigate();
@@ -153,19 +153,8 @@ const PublicHeader = () => {
       <div className="w-full px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         {/* Logo */}
         <div className="flex items-center flex-shrink-0">
-          <Link to="/" className="flex items-center space-x-2">
-            <img src={JuriNexGavelLogo} alt="JuriNex Logo" className="h-8 w-auto" />
-            <span className="text-xl font-bold">
-              <span style={{ color: '#21C1B6' }}>Juri</span>
-              <span style={{ color: '#1a1a1a' }} className="relative">Nex
-                <span
-                  className="absolute text-xs font-normal"
-                  style={{ top: '0', right: '-0.6em', color: '#0b0c0cff' }}
-                >
-                  ™
-                </span>
-              </span>
-            </span>
+          <Link to="/" className="flex items-center">
+            <img src={JuriNexWordmark} alt="JURINEX" className="h-8 w-auto" />
           </Link>
         </div>
 

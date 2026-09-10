@@ -1,6 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { X } from 'lucide-react';
-import JuriNexLogo from '/src/assets/JuriNex_gavel_logo.png';
+import JuriNexLogo from '/src/assets/jurinex-mark.png';
 
 const TermsAndConditions = ({
   isOpen,

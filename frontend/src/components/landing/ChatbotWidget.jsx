@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react"
 import { motion as Motion, AnimatePresence } from "framer-motion"
-import gavelIcon from "../../assets/JuriNex_gavel_logo.png"
+import gavelIcon from "../../assets/jurinex-mark.png"
 
 const AI_CHATBOT_DIRECT_URL = (
   import.meta.env.VITE_APP_AI_CHATBOT_URL || "http://localhost:8095"

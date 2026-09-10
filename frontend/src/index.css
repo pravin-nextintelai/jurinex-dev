@@ -7,14 +7,31 @@
 @theme {
   --font-display: "Lora", Georgia, "Times New Roman", serif;
   --font-body: "Inter", "DM Sans", system-ui, -apple-system, sans-serif;
+  --font-hero: "Newsreader", "Times New Roman", Georgia, serif;   /* landing hero headline */
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-editorial: "Newsreader", "Lora", Georgia, serif;
 
   --color-nx-ink: #101413;         /* near-black — headings and body ink */
-  --color-nx-forest: #06342c;      /* deep forest teal — dark section ground */
-  --color-nx-forest-soft: #0b4a3f; /* raised surface on dark grounds */
-  --color-nx-teal: #0d9488;        /* primary accent (brand teal) */
-  --color-nx-teal-deep: #0f766e;
-  --color-nx-teal-ink: #115e59;    /* small labels / emphasized accents */
-  --color-nx-mint: #99f6e4;        /* accent text on dark grounds */
+  --color-nx-forest: #08a393;      /* brand teal, sampled from the logo — coloured section ground */
+  --color-nx-forest-soft: #21b3a4; /* raised surface on teal grounds */
+  --color-nx-teal: #08a393;        /* primary accent: the logo teal, used everywhere */
+  --color-nx-teal-deep: #07958a;   /* hover state, one small step darker */
+  --color-nx-teal-ink: #06857b;    /* small labels / emphasized accents */
+  --color-nx-mint: #a6ece3;        /* accent text on dark grounds, same hue */
+
+  /* Tailwind's teal scale re-tuned to the logo hue so bg-teal-600,
+     text-teal-700, border-teal-500 … all match the brand exactly. */
+  --color-teal-50: #eaf8f6;
+  --color-teal-100: #d2f1ec;
+  --color-teal-200: #a6e3db;
+  --color-teal-300: #6fd0c4;
+  --color-teal-400: #34b9a9;
+  --color-teal-500: #08a393;
+  --color-teal-600: #08a393;
+  --color-teal-700: #07958a;
+  --color-teal-800: #06857b;
+  --color-teal-900: #056b63;
+  --color-teal-950: #044a45;
   --color-nx-muted: #5b6664;       /* body text on light grounds */
   --color-nx-faint: #8f9b98;
   --color-nx-line: #e3e9e7;        /* hairline borders */
@@ -241,4 +258,20 @@ html[data-jnx-textscale] :is(p, li, dd, dt, figcaption, blockquote, td, th):not(
   blockquote blockquote):not(
   :is(li, td, th, blockquote) p) {
   font-size: calc(1em * var(--jnx-text-scale, 1)) !important;
+}
+/* Landing hero: word-by-word headline reveal and blinking caret */
+@keyframes hero-word-in {
+  from { opacity: 0; transform: translateY(0.35em); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes hero-caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.hero-word { animation: hero-word-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.hero-caret { animation: hero-caret-blink 1s steps(1) infinite; }
+.hero-caret-typing { animation: none; opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .hero-word { animation: none; }
+  .hero-caret { animation: none; }
 }

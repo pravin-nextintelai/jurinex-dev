@@ -52,7 +52,7 @@ Reveal.propTypes = {
 export const Eyebrow = ({ children, dark = false }) => (
   <p
     className={`text-xs font-semibold uppercase tracking-[0.16em] ${
-      dark ? "text-nx-mint" : "text-nx-teal"
+      dark ? "text-white" : "text-nx-teal"
     }`}
   >
     {children}
@@ -80,7 +80,7 @@ export const SectionHeading = ({ eyebrow, title, lede, align = "center", dark = 
     {lede && (
       <p
         className={`mt-4 text-base leading-relaxed sm:text-lg ${
-          dark ? "text-teal-50/80" : "text-nx-muted"
+          dark ? "text-white/90" : "text-nx-muted"
         }`}
       >
         {lede}
@@ -143,7 +143,7 @@ export const IconTile = ({ name, dark = false, size = "md" }) => (
   <span
     className={`inline-flex flex-none items-center justify-center rounded-xl ${
       size === "lg" ? "h-12 w-12" : "h-10 w-10"
-    } ${dark ? "bg-white/10 text-nx-mint" : "bg-nx-teal/8 text-nx-teal"}`}
+    } ${dark ? "bg-white/15 text-white" : "bg-nx-teal/8 text-nx-teal"}`}
   >
     <Icon name={name} className={size === "lg" ? "h-6 w-6" : "h-5 w-5"} />
   </span>

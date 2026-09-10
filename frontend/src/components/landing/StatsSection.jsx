@@ -13,7 +13,7 @@ const StatsSection = () => (
           <p className="font-display text-3xl font-semibold text-white sm:text-4xl">
             {stat.value}
           </p>
-          <p className="mt-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-teal-200/80">
+          <p className="mt-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-white/85">
             {stat.label}
           </p>
         </Reveal>

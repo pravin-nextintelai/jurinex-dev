@@ -549,7 +549,7 @@ const CommunitySection = () => {
       case "landing":
         return (
           <div className="flex h-full flex-col bg-white">
-            <AppBar avatar="J" name="jurinex.ai" meta="Landing page section" bg="#06342c" avatarColor="#06342c" />
+            <AppBar avatar="J" name="jurinex.ai" meta="Landing page section" bg="#08a393" avatarColor="#08a393" />
             <div className="flex-1 overflow-y-auto px-4 py-3.5">
               <p className="mb-3.5 rounded-md border border-nx-line bg-nx-pale px-2.5 py-1.5 text-[10.5px] text-slate-400">
                 jurinex.ai/#/community

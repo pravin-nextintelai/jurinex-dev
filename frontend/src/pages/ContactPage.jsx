@@ -3,6 +3,9 @@ import PropTypes from "prop-types"
 import Navbar from "../components/landing/Navbar"
 import Footer from "../components/landing/Footer"
 import PolicyModal from "../components/landing/PolicyModal"
+import ChatbotWidget from "../components/landing/ChatbotWidget"
+import BookDemoModal from "../components/landing/BookDemoModal"
+import { useDemoPrompt } from "../hooks/useDemoPrompt"
 import { useState } from "react"
 
 const fadeUp = {
@@ -58,12 +61,14 @@ const CARDS = [
   },
 ]
 
-const ContactPage = ({ onBackToHome, onNavigateLogin, onOpenDemo, onSectionNav }) => {
+const ContactPage = ({ onBackToHome, onNavigateLogin, onSectionNav }) => {
+  const [demoOpen, setDemoOpen] = useState(false)
+  useDemoPrompt(setDemoOpen)
   const [policyKey, setPolicyKey] = useState(null)
 
   return (
     <div className="min-h-screen bg-white">
-      <Navbar solid onRequestDemo={onOpenDemo} onLogin={onNavigateLogin} onSectionNav={onSectionNav} />
+      <Navbar solid onRequestDemo={() => setDemoOpen(true)} onLogin={onNavigateLogin} onSectionNav={onSectionNav} />
 
       <main className="mx-auto max-w-4xl px-6 pb-20 pt-32 sm:px-10">
         {/* Back */}
@@ -149,6 +154,9 @@ const ContactPage = ({ onBackToHome, onNavigateLogin, onOpenDemo, onSectionNav }
           onClose={() => setPolicyKey(null)}
         />
       )}
+
+      <BookDemoModal isOpen={demoOpen} onClose={() => setDemoOpen(false)} />
+      <ChatbotWidget />
     </div>
   )
 }
@@ -156,7 +164,6 @@ const ContactPage = ({ onBackToHome, onNavigateLogin, onOpenDemo, onSectionNav }
 ContactPage.propTypes = {
   onBackToHome: PropTypes.func,
   onNavigateLogin: PropTypes.func,
-  onOpenDemo: PropTypes.func,
 }
 
 export default ContactPage

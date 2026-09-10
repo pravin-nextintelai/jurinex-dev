@@ -10,41 +10,81 @@
  * child href is a real on-page anchor or app route.
  * @type {{ label: string, href: string, children?: { label: string, href: string }[] }[]}
  */
+/**
+ * Primary navigation. Items with `children` or `sections` open a
+ * full-width mega menu; each entry carries a one-line description and
+ * the menu shows a `feature` card on the right.
+ */
 export const NAV_LINKS = [
   {
     label: "Product",
-    href: "#features",
+    href: "/products",
     children: [
-      { label: "Core Features", href: "#features" },
-      { label: "Document Intelligence", href: "#showcase-analyze" },
-      { label: "Legal AI Assistant", href: "#showcase-ask" },
-      { label: "Case Insights", href: "#showcase-insights" },
-      { label: "Jurinex Workflow", href: "#workflow" },
-      { label: "AI Capabilities", href: "#capabilities" },
+      { label: "Create Case", href: "/products/create-case", icon: "FolderPlus", desc: "Upload once. A guided wizard builds the case memory every later step reads from." },
+      { label: "Case Storage", href: "/products/case-storage", icon: "FolderLock", desc: "My Documents and My Cases in folders, with advance search and custom branding." },
+      { label: "Quick Chat", href: "/products/quick-chat", icon: "MessageSquareText", desc: "Ask anything about a file without creating a case, with one-click presets." },
+      { label: "AI Drafting", href: "/products/ai-drafting", icon: "FilePenLine", desc: "Petitions, agreements and notices from a guided template picker, section by section." },
+      { label: "Citation Research", href: "/products/citation-research", icon: "Scale", desc: "Indian Kanoon authorities matched to your pleaded grounds, verified before you rely." },
+      { label: "All Products", href: "/products", icon: "LayoutGrid", desc: "Five products, one case memory. See how each one works, step by step." },
     ],
+    feature: {
+      image: "product",
+      eyebrow: "Introducing Chronology",
+      badge: "New",
+      text: "Every dated event in a bundle, extracted automatically and linked to the page that proves it.",
+      cta: "See it in action",
+      href: "/products/create-case",
+    },
   },
   {
     label: "Solutions",
     href: "#solutions",
     children: [
-      { label: "Solo Practitioners", href: "#solutions" },
-      { label: "Law Firms & Enterprises", href: "#solutions" },
-      { label: "Built for Indian Courts", href: "#indian-courts" },
-      { label: "Security & Trust", href: "#security" },
+      { label: "Solo Practitioners", href: "#solutions", icon: "UserRound", desc: "A single chamber with the document-handling depth of a large firm." },
+      { label: "Law Firms & Enterprises", href: "#solutions", icon: "Building2", desc: "Shared case folders, roles and seats that scale with the practice." },
+      { label: "Built for Indian Courts", href: "#indian-courts", icon: "Landmark", desc: "Indian court hierarchy, citation formats and regional languages." },
+      { label: "Security & Trust", href: "#security", icon: "ShieldCheck", desc: "Data in India, DPDPA-compliant, encrypted end to end." },
     ],
+    feature: {
+      image: "solutions",
+      eyebrow: "Built for Indian courts",
+      text: "Drafts formatted for District Courts, High Courts, the Supreme Court and tribunals, in English or Marathi.",
+      cta: "Explore court coverage",
+      href: "#indian-courts",
+    },
   },
   { label: "Why Jurinex", href: "#why" },
   {
     label: "Resources",
     href: "#resources",
-    children: [
-      { label: "Community", href: "#resources" },
-      { label: "FAQs", href: "#faq" },
-      { label: "Team", href: "#team" },
-      { label: "Contact", href: "/contact" },
+    sections: [
+      {
+        heading: "Resource center",
+        links: [
+          { label: "Blogs", href: "/blogs", icon: "Newspaper", desc: "Practical writing on legal AI, drafting and running a modern practice." },
+          { label: "FAQs", href: "/faqs", icon: "CircleHelp", desc: "Everything to know before bringing Jurinex into your practice." },
+        ],
+      },
+      {
+        heading: "Support",
+        links: [
+          { label: "WhatsApp Community", href: "/community", icon: "MessageCircle", desc: "Product updates, drafting tips and a direct line to the team." },
+          { label: "Get Help", href: "/help", icon: "LifeBuoy", desc: "Email, phone, walkthroughs and the in-app support desk." },
+          { label: "Contact Us", href: "/contact", icon: "Mail", desc: "Office address, phone and email for the Jurinex team." },
+        ],
+      },
     ],
+    feature: {
+      image: "resources",
+      eyebrow: "Join the community",
+      badge: "WhatsApp",
+      text: "Practise alongside advocates who use AI every day. Release notes and roadmap polls land there first.",
+      cta: "Join on WhatsApp",
+      href: "/community",
+    },
   },
   { label: "Pricing", href: "#pricing" },
+  { label: "Team", href: "/team" },
 ]
 
 export const HERO_COPY = {
@@ -224,29 +264,64 @@ export const INDIAN_COURTS = [
     icon: "Languages",
     title: "Supports Indian languages.",
     text: "Marathi, Hindi, Tamil, Telugu, and other widely spoken Indian languages are supported by the system, enabling it to generate reports in these languages.",
+    tags: ["Marathi", "Hindi", "Tamil", "Telugu", "English"],
   },
   {
     icon: "Landmark",
     title: "Built for Indian court hierarchy.",
     text: "Drafts are prepared in formats suitable for District Courts, High Courts, Supreme Court, and tribunals.",
+    tags: ["District Courts", "High Courts", "Supreme Court", "Tribunals"],
   },
   {
     icon: "BadgeCheck",
     title: "Zero hallucination policy.",
     text: "The system retrieves information solely from authorised and verified sources, subjecting each response to multiple verification checks for accuracy.",
+    tags: ["Authorised sources only", "Multiple verification checks", "Flags, never invents"],
   },
   {
     icon: "ShieldCheck",
     title: "Data sensitivity and security.",
     text: "All data storage infrastructure is in India. Complies with the Data Protection and Privacy Act (DPDPA). No cross-border data transfer policy. End-to-end encryption is provided for all data processed.",
+    tags: ["Stored in India", "DPDPA compliant", "End-to-end encrypted"],
   },
+]
+
+/** The court ladder shown beside the photo, top of the hierarchy first. */
+export const COURT_LADDER = [
+  { level: "Supreme Court", note: "Special leave petitions, appeals and writs under Article 32." },
+  { level: "High Courts", note: "Writ petitions, appeals and revisions, every bench and format." },
+  { level: "District Courts", note: "Suits, applications and bail, civil and criminal sides." },
+  { level: "Tribunals", note: "NCLT, DRT, CAT and other specialised forums." },
+]
+
+/** Compliance facts for the strip under the commitments. */
+export const INDIA_COMPLIANCE = [
+  { icon: "MapPin", label: "All data stored in India" },
+  { icon: "FileCheck2", label: "DPDPA compliant" },
+  { icon: "Ban", label: "No cross-border transfer" },
+  { icon: "Lock", label: "End-to-end encryption" },
 ]
 
 /** Practice-size fit cards ("Whether you're a solo practitioner…"). */
 export const PRACTICE_SIZES = [
-  { numeral: "I", title: "Solo Practitioners", seats: "3 seats" },
-  { numeral: "II", title: "Small Law Firms", seats: "4 to 10 seats" },
-  { numeral: "III", title: "Large Law Firms and Enterprises", seats: "11 and above seats" },
+  {
+    numeral: "I",
+    title: "Solo Practitioners",
+    seats: "3 seats",
+    text: "One chamber with the document-handling depth of a large firm. Upload, research and draft without a junior.",
+  },
+  {
+    numeral: "II",
+    title: "Small Law Firms",
+    seats: "4 to 10 seats",
+    text: "Shared case folders and roles, so juniors upload and organise while seniors analyse and draft.",
+  },
+  {
+    numeral: "III",
+    title: "Large Law Firms and Enterprises",
+    seats: "11 and above seats",
+    text: "Firm-wide workspaces with admin controls, device limits and storage that grows with the practice.",
+  },
 ]
 
 export const USE_CASES = [
@@ -254,31 +329,37 @@ export const USE_CASES = [
     icon: "Building2",
     title: "Law Firms",
     text: "Juniors upload and organize; seniors analyze and draft. Shared case folders keep the whole team on one version of the truth.",
+    products: ["Create Case", "Case Storage", "AI Drafting"],
   },
   {
     icon: "Briefcase",
     title: "Corporate Legal Teams",
     text: "Manage contracts, notices, and internal legal documents with structured extraction of obligations and key dates.",
+    products: ["Quick Chat", "AI Drafting", "Case Storage"],
   },
   {
     icon: "Gavel",
     title: "Litigation Teams",
     text: "Build chronologies and evidence matrices from case materials, and find the fact that matters before the other side does.",
+    products: ["Create Case", "Citation Research", "AI Drafting"],
   },
   {
     icon: "BookOpen",
     title: "Legal Researchers",
     text: "Search judgments in natural language and get authorities matched to specific grounds, not keyword noise.",
+    products: ["Citation Research", "Quick Chat"],
   },
   {
     icon: "ClipboardCheck",
     title: "Compliance Teams",
     text: "Review policies and regulatory documents with AI extraction of duties, deadlines, and exposure.",
+    products: ["Quick Chat", "Case Storage"],
   },
   {
     icon: "UserRound",
     title: "Individual Attorneys",
     text: "A solo practice with the document-handling depth of a large chamber — reading, research, and drafting handled.",
+    products: ["Create Case", "Quick Chat", "AI Drafting"],
   },
 ]
 
@@ -418,12 +499,50 @@ export const EXECUTIVE_CORE = [
     role: "Founder, CTO & Principal Architect",
     photo: "santosh",
     bio: "Santosh Dehadrai is the founder & CTO of NexIntel AI, where he leads the development of Jurinex — an AI-powered legal platform built for Indian advocates and law firms. With 25+ years across networking, internet technologies, and large-scale systems, he brings deep technical depth and a practical understanding of how legal practice actually works.",
+    summary:
+      "Engineer-founder who leads NexIntel AI and architects Jurinex end to end.",
+    journey: [
+      {
+        tag: "25+ years",
+        title: "Networking, internet technologies & large-scale systems",
+        text: "The technical depth that underpins every part of the platform.",
+      },
+      {
+        tag: "NexIntel AI",
+        title: "Founder & CTO",
+        text: "Runs the company and its engineering with a practical understanding of how legal practice actually works.",
+      },
+      {
+        tag: "Jurinex",
+        title: "Principal Architect",
+        text: "Designs the AI-powered legal platform for Indian advocates and law firms.",
+      },
+    ],
   },
   {
     name: "Saurabh Bhogale",
     role: "Co-founder, Executive Director & Project Coordinator",
     photo: "saurabh",
     bio: "Fifteen years in precision manufacturing and ten years building products gave Saurabh one non-negotiable standard: if a tool fails the person depending on it, it is not a product yet. Watching practicing advocates lose hours every day to drafting, documentation, and procedural paperwork made the problem clear — and the solution worth building. Jurinex exists because it was built by someone who understands what it truly means to engineer something a professional can depend on.",
+    summary:
+      "Co-founder who brings a manufacturer's discipline to how Jurinex is built and run.",
+    journey: [
+      {
+        tag: "15 years",
+        title: "Precision manufacturing",
+        text: "Set his one non-negotiable standard: if a tool fails the person depending on it, it is not a product yet.",
+      },
+      {
+        tag: "10 years",
+        title: "Building products",
+        text: "Saw practising advocates lose hours every day to drafting, documentation and procedural paperwork — the problem became clear, and the solution worth building.",
+      },
+      {
+        tag: "Jurinex",
+        title: "Executive Director & Project Coordinator",
+        text: "Owns the project end to end, engineering something a professional can genuinely depend on.",
+      },
+    ],
   },
 ]
 
@@ -573,6 +692,7 @@ export const FOOTER_COLUMNS = [
   {
     heading: "Product",
     links: [
+      { title: "All Products", href: "/products", type: "route" },
       { title: "Features", href: "#features", type: "anchor" },
       { title: "Workflow", href: "#workflow", type: "anchor" },
       { title: "Security", href: "#security", type: "anchor" },
@@ -592,8 +712,10 @@ export const FOOTER_COLUMNS = [
   {
     heading: "Resources",
     links: [
-      { title: "Community", href: "#resources", type: "anchor" },
-      { title: "FAQs", href: "#faq", type: "anchor" },
+      { title: "Blogs", href: "/blogs", type: "route" },
+      { title: "Community", href: "/community", type: "route" },
+      { title: "FAQs", href: "/faqs", type: "route" },
+      { title: "Get Help", href: "/help", type: "route" },
       { title: "Services", href: "/services", type: "route" },
       { title: "Contact", href: "/contact", type: "route" },
     ],
@@ -601,7 +723,7 @@ export const FOOTER_COLUMNS = [
   {
     heading: "Company",
     links: [
-      { title: "Team", href: "#team", type: "anchor" },
+      { title: "Team", href: "/team", type: "route" },
       { title: "Why Jurinex", href: "#why", type: "anchor" },
       { title: "About", href: "/aboutus", type: "route" },
       { title: "Contact", href: "/contact", type: "route" },
@@ -645,4 +767,406 @@ export const CONTACT_INFO = {
   gstin: "27AAKCN4811B1ZQ",
   registeredOffice: "Chhatrapati Sambhajinagar, Maharashtra 431005",
   incorporation: "Incorporated under the Companies Act, 2013.",
+}
+
+/** External links for the community page. Swap `whatsapp` for the group invite link when available. */
+export const COMMUNITY_LINKS = {
+  whatsapp: "https://wa.me/919684027372",
+  linkedin: "https://www.linkedin.com/in/jurinex-ai-47935a3aa/",
+}
+
+export const COMMUNITY_PERKS = [
+  {
+    icon: "Megaphone",
+    title: "Release announcements first",
+    body: "New features, model upgrades and court coverage land in the channel before anywhere else.",
+  },
+  {
+    icon: "MessagesSquare",
+    title: "Peer drafting tips",
+    body: "Advocates share prompts, templates and workflows that work in their courts and practice areas.",
+  },
+  {
+    icon: "Vote",
+    title: "Vote on the roadmap",
+    body: "Polls decide what we build next. Members see the results and the follow-through.",
+  },
+  {
+    icon: "Headset",
+    title: "Direct line to the team",
+    body: "Product and support staff are in the group. Bugs and questions get answered in working hours.",
+  },
+]
+
+/** Support channels shown on the public Get Help page. */
+export const HELP_CHANNELS = [
+  {
+    icon: "Mail",
+    title: "Email support",
+    body: "Best for account, billing and detailed technical questions. We reply within one working day.",
+    cta: "connect@jurinex.ai",
+    href: "mailto:connect@jurinex.ai",
+  },
+  {
+    icon: "Phone",
+    title: "Call us",
+    body: "Talk to a person during support hours for onboarding help or urgent issues.",
+    cta: "+91 9684027372",
+    href: "tel:+919684027372",
+  },
+  {
+    icon: "MessageCircle",
+    title: "WhatsApp community",
+    body: "Quick questions, tips from other advocates and product updates in one place.",
+    cta: "Join the community",
+    href: "/community",
+  },
+  {
+    icon: "CalendarCheck",
+    title: "Book a walkthrough",
+    body: "A 30-minute session with our team covering your practice's workflow end to end.",
+    cta: "Contact us",
+    href: "/contact",
+  },
+]
+
+export const HELP_TOPICS = [
+  {
+    q: "How do I start a free trial?",
+    a: "Click Start Free Trial in the header, register your firm with a work email and you can upload your first case file within minutes. No card is needed.",
+  },
+  {
+    q: "Which file types can I upload?",
+    a: "PDF, DOCX, images of scanned documents and plain text. Scanned pages are OCR-processed automatically, including regional-language documents.",
+  },
+  {
+    q: "Is my client data used to train models?",
+    a: "No. Your files and conversations stay in your workspace, are encrypted at rest and in transit, and are never used for model training.",
+  },
+  {
+    q: "Can I add colleagues to my workspace?",
+    a: "Yes. Firm admins invite team members from User Management, assign roles and control who can see which cases.",
+  },
+  {
+    q: "How do citations get verified?",
+    a: "Every citation Jurinex produces is checked against its source and flagged if it cannot be verified, so you never carry an unverified authority into a filing.",
+  },
+  {
+    q: "Where do I raise a bug or a support ticket?",
+    a: "Signed-in users can open Get Help inside the app to raise a ticket with attachments and track its status. Visitors can email or call us.",
+  },
+]
+
+/** Articles rendered on the public Blogs page. */
+export const BLOG_POSTS = [
+  {
+    slug: "citation-hallucination-checklist",
+    category: "Research",
+    date: "Aug 2026",
+    readTime: "5 min read",
+    author: "Jurinex Team",
+    title: "A five-point checklist before you rely on an AI-generated citation",
+    excerpt:
+      "Courts in India and abroad have sanctioned counsel for citing cases that do not exist. Here is the routine we recommend before any authority reaches a draft.",
+    body: [
+      "Generative models are excellent at producing text that looks like a citation and poor at guaranteeing the case exists. The failure is not rare, and the consequences for counsel are serious. The fix is procedural, not technical: treat every citation as unverified until it clears a short checklist.",
+      "First, confirm the case exists in a primary source, not a secondary summary. Second, check that the proposition attributed to it actually appears in the judgment. Third, confirm it has not been overruled or distinguished. Fourth, verify the bench and year match what you are citing. Fifth, keep the verification record with the draft.",
+      "Jurinex runs steps one through three automatically and marks anything it cannot verify, but the checklist belongs in your own practice regardless of which tool you use.",
+    ],
+  },
+  {
+    slug: "drafting-with-structure",
+    category: "Drafting",
+    date: "Jul 2026",
+    readTime: "4 min read",
+    author: "Jurinex Team",
+    title: "Why structured drafts beat free-form prompts for court filings",
+    excerpt:
+      "A plaint, a written statement and a bail application share almost no structure. Asking a model to write one from a blank prompt is where most quality problems begin.",
+    body: [
+      "The most common drafting complaint we hear is that AI output reads well but misses mandatory parts: a verification clause, a prayer, the correct cause title format for the court concerned. These are not knowledge failures. They are the result of asking for a document without telling the model what shape it must take.",
+      "Structured drafting inverts this. The template carries the mandatory sections, the court-specific formatting and the order of relief. The model fills content into that structure from your case facts and the documents you have uploaded, and every section can be regenerated on its own.",
+      "The result is a draft you review section by section rather than a wall of text you re-read from the top after every change.",
+    ],
+  },
+  {
+    slug: "regional-language-ocr",
+    category: "Product",
+    date: "Jun 2026",
+    readTime: "3 min read",
+    author: "Jurinex Team",
+    title: "Working with Marathi, Hindi and other regional-language case files",
+    excerpt:
+      "A large share of trial-court records are scanned, handwritten or in a regional language. Here is how Jurinex handles them and where it still needs your help.",
+    body: [
+      "Most legal AI tools assume clean, English, machine-readable PDFs. Indian practice does not look like that. Lower-court orders, police papers and evidence bundles arrive as scans, often in Devanagari or other scripts, sometimes with handwritten annotations in the margins.",
+      "Jurinex runs OCR on every scanned page and detects the language automatically, so a Marathi charge sheet can be searched, summarised and translated alongside the English documents in the same case. Translations preserve page layout so you can cross-check against the original.",
+      "Handwriting remains the hard case. Where recognition confidence is low we flag the page rather than guess, and the original scan is always one click away.",
+    ],
+  },
+  {
+    slug: "chronology-from-bundle",
+    category: "Case management",
+    date: "May 2026",
+    readTime: "4 min read",
+    author: "Jurinex Team",
+    title: "Building a case chronology from a thousand-page bundle in an afternoon",
+    excerpt:
+      "The chronology is the document every litigator needs and nobody wants to prepare. A repeatable method for producing one from raw files.",
+    body: [
+      "A good chronology does three things: it lists every dated event, ties each event to the page that proves it, and makes gaps and contradictions visible. Done by hand it takes days and is out of date the moment a new document arrives.",
+      "The method we recommend is to extract every dated statement from the bundle first, with its source page, and only then decide which events matter. Jurinex produces that first list automatically and links each entry to the exact page. Your work becomes editorial: merge duplicates, cut noise, annotate significance.",
+      "When new documents come in, the extraction re-runs on the additions only, so the chronology grows with the file instead of being rebuilt.",
+    ],
+  },
+  {
+    slug: "data-protection-for-law-firms",
+    category: "Security",
+    date: "Apr 2026",
+    readTime: "6 min read",
+    author: "Jurinex Team",
+    title: "What the DPDP Act means for a law firm adopting AI tools",
+    excerpt:
+      "Client files are personal data. The Digital Personal Data Protection Act puts obligations on firms that process them, and on the vendors those firms choose.",
+    body: [
+      "Under the DPDP Act a law firm is typically a data fiduciary for the personal data in its client files, and an AI vendor processing that data on the firm's behalf is a data processor. That relationship needs a contract, defined purposes and a clear answer to where the data lives and who can see it.",
+      "Questions to put to any vendor: Is data stored in India? Is it encrypted at rest and in transit? Is it used to train models? Can the firm delete it on demand? Who inside the vendor can access it and under what audit?",
+      "Jurinex answers these in its Data Processing Agreement and Data Security Policy, both linked from the footer. We think every vendor should be able to do the same in writing.",
+    ],
+  },
+  {
+    slug: "solo-practice-week",
+    category: "Practice",
+    date: "Mar 2026",
+    readTime: "4 min read",
+    author: "Jurinex Team",
+    title: "A week in a solo practice, with and without an AI assistant",
+    excerpt:
+      "We asked a solo advocate to log where the hours went for two weeks. The second week used Jurinex for research, drafting and file review.",
+    body: [
+      "Week one looked familiar: roughly a third of working hours on reading and summarising files, a quarter on drafting, a large slice on research, and the remainder on court attendance and client calls. Almost none of it was billable at full rate.",
+      "In week two, file review and first-draft time fell sharply. Research time fell less than expected, because verification of AI-suggested authorities replaced some of the searching. Court attendance and client time were unchanged.",
+      "The honest conclusion is that the gain is not in replacing legal judgment but in removing the mechanical reading and typing that surrounds it. The hours came back as client time and, for the first time in months, an evening off.",
+    ],
+  },
+]
+
+/* ------------------------------------------------------------------ */
+/* /products page                                                      */
+/* ------------------------------------------------------------------ */
+
+export const PRODUCTS_HERO = {
+  eyebrow: "Products",
+  title: "Five products. One case memory.",
+  lede:
+    "Create Case builds the matter once. Case Storage, Quick Chat, AI Drafting and Citation Research then work on it, from the sidebar or from inside the case. Nothing re-uploaded, nothing re-explained.",
+  tagline: "Independent when you need a tool. Connected when you are inside a case.",
+  hint: "Hover a product to preview it",
+}
+
+/**
+ * The five products in sidebar order. Each carries the copy for its
+ * section on /products: what it is, how it works (from the user guide),
+ * quick facts, and what it produces. `id` doubles as the in-page anchor.
+ */
+export const PRODUCTS = [
+  {
+    id: "create-case",
+    num: "01",
+    name: "Create Case",
+    icon: "FolderPlus",
+    short: "Upload once. The matter is read, structured and remembered.",
+    tagline: "Process once. Intelligence for the life of the case.",
+    text:
+      "A case in Jurinex is like a folder: every document, note and AI analysis for one matter lives inside it. A guided wizard reads your papers, fills in the particulars and builds the case memory that every draft, chronology, citation and question draws on later.",
+    facts: [
+      { value: "200 MB", label: "per file" },
+      { value: "PDF · DOCX · JPG · A/V", label: "accepted formats" },
+      { value: "1–3 min", label: "per 50-page document" },
+    ],
+    stepsHeading: "How it works",
+    steps: [
+      { title: "Upload", text: "Drag in PDFs, Word files, images, audio or video, one file or many." },
+      { title: "Auto Fill", text: "Title, court, bench, case type, filing date and parties are extracted from the papers. Skip it and type them yourself if you prefer." },
+      { title: "OCR + Verify", text: "Scans are read page by page. Low-confidence text is flagged for a one-time human check." },
+      { title: "Processing", text: "Documents are indexed and a synopsis generated in the background. Leave the page; the work continues." },
+      { title: "Chronology", text: "Dates and events are sequenced automatically, each linked to the page that proves it." },
+    ],
+    outputsHeading: "Ready inside the case when processing ends",
+    outputs: [
+      "Case Summary",
+      "List of Dates & Events",
+      "Case Brief",
+      "Hearing Preparation",
+      "Prayer Matrix",
+      "Statute & Section Radar",
+      "Gap Reasoning",
+    ],
+    highlight: "Upload once, understood forever. Every hearing, draft and citation starts from full context.",
+  },
+  {
+    id: "case-storage",
+    num: "02",
+    name: "Case Storage",
+    icon: "FolderLock",
+    short: "Every document and case in folders, searchable in seconds.",
+    tagline: "Your digital filing cabinet, searchable in seconds.",
+    text:
+      "Every document and every case lives here. Browse My Documents and My Cases as folders, upload files without opening a case, create documents in place, switch between grid and list, and watch the storage meter as the practice grows.",
+    facts: [
+      { value: "6 filters", label: "court, bench, type, status, dates, keywords" },
+      { value: "Full text", label: "search inside document content" },
+      { value: "DOCX + PDF", label: "branded exports" },
+    ],
+    stepsHeading: "Advance Search, when the simple box is not enough",
+    steps: [
+      { title: "Court and Bench", text: "All matters from the Bombay High Court, or only the Aurangabad Bench." },
+      { title: "Case type and status", text: "Civil, criminal, writ. Pending, disposed, in appeal." },
+      { title: "Date range", text: "Anything filed, heard or uploaded between two dates." },
+      { title: "Keywords", text: "Any word or phrase inside the document content itself, not just the file name." },
+    ],
+    outputsHeading: "Custom Branding for every export",
+    outputs: [
+      "Firm name, address, phone and email",
+      "Logo with position and size",
+      "Bar Council number",
+      "Font, paper size and orientation",
+      "Live letterhead preview",
+      "Set as default for every export",
+    ],
+    highlight: "Always available, never lost. Search, filters, grid or list.",
+  },
+  {
+    id: "quick-chat",
+    num: "03",
+    name: "Quick Chat",
+    icon: "MessageSquareText",
+    short: "Ask anything about a file, with answers that cite the passage.",
+    tagline: "Ask anything about a file, no case required.",
+    text:
+      "Session chat over any document, the easiest way into Jurinex. Upload the file, type a question in plain English and get an answer that cites the passage it relies on. The same preset workflows and role selector as the case view, without creating a case first.",
+    facts: [
+      { value: "9 presets", label: "one-click workflows" },
+      { value: "H · M · L · RV", label: "confidence on every answer" },
+      { value: "Cited", label: "source page on every claim" },
+    ],
+    stepsHeading: "How a conversation runs",
+    steps: [
+      { title: "Upload", text: "Attach the document you want to discuss. Its name appears at the top of the chat." },
+      { title: "Ask", text: "Type freely, or tap a preset: Case Summary, List of Dates & Events, Case Gist, Grounds, Hearing Preparation, Client Brief, Statute & Section Finder." },
+      { title: "Read with confidence", text: "Answers carry a confidence level: High, Medium, Low or Requires Verification, so you know what to double-check." },
+      { title: "Follow up or export", text: "Suggested follow-ups keep the thread moving. Click a citation to open the source, then copy, download or print." },
+    ],
+    outputsHeading: "Ask it things like",
+    outputs: [
+      "Summarise this case in five sentences.",
+      "What are the important dates in this matter?",
+      "List all the parties and their roles.",
+      "What sections of the IPC / BNS are mentioned?",
+      "What is the prayer of the petitioner?",
+      "Draft a short reply to this notice.",
+    ],
+    highlight: "Private and encrypted. Your conversations never leave your firm.",
+  },
+  {
+    id: "ai-drafting",
+    num: "04",
+    name: "AI Drafting",
+    icon: "FilePenLine",
+    short: "Court-ready petitions, agreements and notices, section by section.",
+    tagline: "Petitions, agreements and notices in minutes, not hours.",
+    text:
+      "Litigation drafts start from inside case chat. Conveyancing, corporate and general drafting go through a guided template picker: system templates, or your own, cloned and edited. Every draft is built section by section so you stay in control of the structure.",
+    facts: [
+      { value: "6 steps", label: "guided drafting workflow" },
+      { value: "~30 sec", label: "to a first full draft" },
+      { value: "EN · MR", label: "English or Marathi output" },
+    ],
+    stepsHeading: "The drafting workflow",
+    steps: [
+      { title: "Initialization", text: "Attach a case to use its facts and history, or upload context files. Pick a court for compliant formatting and the output language." },
+      { title: "Section config", text: "Every standard section is on by default. Switch any off, and set each one to Detailed, Concise or Short with its own instruction." },
+      { title: "Draft sections", text: "Generate and refine one section at a time. Send an instruction to update just that section." },
+      { title: "Review", text: "Final human verification of names, dates, sections of law and prayer before assembly." },
+      { title: "Generate document", text: "Preview the assembled draft, download it as DOCX or PDF with your branding, or save it back to the case." },
+    ],
+    outputsHeading: "Templates in the library",
+    outputs: [
+      "Writ Petition",
+      "Bail Application",
+      "Revision Petition",
+      "Legal Notice · Reply to Notice",
+      "Leave and Licence Agreement",
+      "Employment Agreement",
+      "Sale, Gift and Mortgage Deeds",
+      "Partnership Deed",
+      "Power of Attorney",
+      "Franchise Agreement",
+      "Arbitration Appeal",
+      "Suit for Partition",
+    ],
+    highlight: "Formatted for the bench you are filing in, on your letterhead.",
+  },
+  {
+    id: "citation-research",
+    num: "05",
+    name: "Citation Research",
+    icon: "Scale",
+    short: "Indian Kanoon authorities matched to your pleaded grounds.",
+    tagline: "Authorities matched to your pleaded grounds.",
+    text:
+      "Pick a case, or upload or paste the text you are arguing from. Tell Jurinex who you act for and the legal focus, and it retrieves Indian Kanoon authorities that fit the ground, with the reasoning for why each one applies. Analyses are saved to the case for the next hearing.",
+    facts: [
+      { value: "Indian Kanoon", label: "source database" },
+      { value: "Boolean", label: "precision when you need it" },
+      { value: "Verified", label: "still-good-law check" },
+    ],
+    stepsHeading: "From ground to authority",
+    steps: [
+      { title: "Set the context", text: "Choose a case from your workspace, or upload or paste the pleading, order or issue." },
+      { title: "Acting for and focus", text: "Petitioner or respondent, and the point of law you need support on." },
+      { title: "Retrieve", text: "Indian Kanoon authorities matched to the ground, with Boolean precision when you want to narrow the field." },
+      { title: "Verify and save", text: "Each citation links to the underlying judgment and is checked for whether it still stands. Save the analysis to the case." },
+    ],
+    outputsHeading: "What you can rely on",
+    outputs: [
+      "Court-approved citation formats",
+      "Reasoning for why each authority fits",
+      "Checks on whether a judgment still stands",
+      "Links back to the source judgment",
+      "Saved analyses inside the case",
+      "Flags rather than invents when unsure",
+    ],
+    highlight: "Zero-hallucination policy. If the system is not confident, it flags rather than invents.",
+  },
+]
+
+/** Automated presets and workflows that run on the case memory. */
+export const PRODUCT_PRESETS = [
+  { group: "Summarisation", icon: "AlignLeft", items: ["Grounds", "Case summary", "Concise summary"] },
+  { group: "Drafting", icon: "PenLine", items: ["Start drafting"] },
+  { group: "Citation", icon: "BookMarked", items: ["Find authorities"] },
+  { group: "Prelitigation", icon: "Mail", items: ["Notice", "Reply"] },
+  { group: "Court Ready Documents", icon: "Stamp", items: ["Branded DOCX / PDF"] },
+  { group: "Cross Examination", icon: "ListChecks", items: ["Question bank"] },
+]
+
+export const PRODUCT_PRESETS_COPY = {
+  eyebrow: "Automated presets and workflows",
+  title: "Run on the case memory. No prompt writing, no re-reading the file.",
+  lede: "One-click legal workflows available from Quick Chat and from inside every case. Suggested follow-ups and precedent searches are proposed from the case itself.",
+  extras: ["Suggested follow-ups", "Research further", "Role selector"],
+}
+
+/** Side-by-side matrix: what each product needs and gives. */
+export const PRODUCT_MATRIX = {
+  rows: [
+    { label: "Works without a case", values: ["Builds it", true, true, true, true] },
+    { label: "Reads the case memory", values: [true, true, true, true, true] },
+    { label: "One-click presets", values: [true, false, true, true, true] },
+    { label: "Cites the source page", values: [true, false, true, true, true] },
+    { label: "Exports DOCX / PDF", values: [true, true, true, true, true] },
+    { label: "Custom branding applied", values: [false, true, true, true, false] },
+    { label: "Indian Kanoon lookup", values: [false, false, true, false, true] },
+  ],
 }

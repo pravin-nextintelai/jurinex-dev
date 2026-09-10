@@ -1,33 +1,31 @@
 import { AI_CAPABILITIES } from "../../utils/landingConstants"
 import { Icon, Reveal, SectionHeading } from "./primitives"
+import courtroomPhoto from "../../assets/landing/courtroom.jpg"
 
 /**
- * The intelligence layer behind the platform — rendered on a dark ground
- * to read as the "engine room" of the product.
+ * The intelligence layer behind the platform — rendered over a darkened
+ * courtroom photograph so it reads as the "engine room" of the product.
  */
 const AICapabilitiesSection = () => (
   <section
     id="capabilities"
-    className="relative scroll-mt-20 overflow-hidden bg-nx-forest py-20 sm:py-28"
+    className="relative scroll-mt-20 overflow-hidden bg-nx-ink py-20 sm:py-28"
     aria-labelledby="capabilities-heading"
   >
-    {/* Ambient glow + fine grid */}
+    {/* Background photograph with a dark overlay for legibility */}
+    <img
+      src={courtroomPhoto}
+      alt=""
+      aria-hidden="true"
+      loading="lazy"
+      className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center"
+    />
     <div
       className="pointer-events-none absolute inset-0"
       aria-hidden="true"
       style={{
         background:
-          "radial-gradient(ellipse 55% 50% at 50% 0%, rgba(13,148,136,0.18), transparent 65%)",
-      }}
-    />
-    <div
-      className="pointer-events-none absolute inset-0 opacity-25"
-      aria-hidden="true"
-      style={{
-        backgroundImage:
-          "linear-gradient(rgba(148,163,184,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.08) 1px, transparent 1px)",
-        backgroundSize: "48px 48px",
-        maskImage: "radial-gradient(ellipse 75% 65% at 50% 40%, black, transparent 80%)",
+          "linear-gradient(180deg, rgba(16,20,19,0.62) 0%, rgba(16,20,19,0.48) 50%, rgba(16,20,19,0.66) 100%)",
       }}
     />
 
@@ -45,15 +43,16 @@ const AICapabilitiesSection = () => (
           <Reveal
             key={cap.title}
             delay={(i % 3) * 0.07}
-            className="group rounded-2xl border border-white/10 bg-white/[0.04] p-6 backdrop-blur-[2px] transition-all duration-300 hover:border-nx-mint/40 hover:bg-white/[0.07]"
+            className="group relative overflow-hidden rounded-2xl border border-white/40 bg-nx-ink/85 p-6 shadow-[0_0_0_1px_rgba(8,163,147,0.35),0_24px_50px_-20px_rgba(0,0,0,0.8)] ring-1 ring-nx-teal/40 transition-all duration-300 hover:-translate-y-1 hover:border-nx-mint hover:bg-nx-ink hover:shadow-[0_0_0_1px_rgba(166,236,227,0.6),0_0_40px_-8px_rgba(8,163,147,0.55),0_28px_60px_-20px_rgba(0,0,0,0.85)]"
           >
+            <span aria-hidden="true" className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-nx-teal via-nx-mint to-nx-teal" />
             <div className="flex items-center gap-3">
-              <span className="inline-flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-nx-teal/20 text-nx-mint transition-colors duration-300 group-hover:bg-nx-teal/30">
+              <span className="inline-flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-nx-teal text-white shadow-md shadow-teal-500/30">
                 <Icon name={cap.icon} className="h-4.5 w-4.5" />
               </span>
-              <h3 className="text-sm font-semibold text-white">{cap.title}</h3>
+              <h3 className="text-[15px] font-bold text-white">{cap.title}</h3>
             </div>
-            <p className="mt-3 text-sm leading-relaxed text-teal-100/70">{cap.text}</p>
+            <p className="mt-3 text-[15px] leading-relaxed text-white">{cap.text}</p>
           </Reveal>
         ))}
       </div>

@@ -479,6 +479,13 @@ import ChatHistoryPage from './pages/ChatHistoryPage';
 import { DraftingOiPage } from './components/drafting-frontend';
 import LandingPage from './pages/LandingPage';
 import ContactPage from './pages/ContactPage';
+import BlogsPage from './pages/BlogsPage';
+import FAQsPage from './pages/FAQsPage';
+import TeamPage from './pages/TeamPage';
+import CommunityPage from './pages/CommunityPage';
+import HelpPage from './pages/HelpPage';
+import ProductsPage from './pages/ProductsPage';
+import ProductDetailPage from './pages/ProductDetailPage';
 import LawFirmRegistrationPage from './pages/auth/LawFirmRegistrationPage';
 import LoginPage from './pages/auth/LoginPage';
 import SetPasswordPage from './pages/auth/SetPasswordPage';
@@ -515,7 +522,6 @@ function ContactPageRoute() {
     <ContactPage
       onBackToHome={() => navigate('/')}
       onNavigateLogin={() => navigate('/login')}
-      onOpenDemo={() => navigate('/')}
       onSectionNav={(sectionId) =>
         navigate('/', { state: { scrollTo: sectionId } })
       }
@@ -541,6 +547,13 @@ function App() {
                 </PublicLayout>
               }
             />
+            <Route path="/blogs" element={<PublicLayout hideHeaderAndFooter={true}><BlogsPage /></PublicLayout>} />
+            <Route path="/faqs" element={<PublicLayout hideHeaderAndFooter={true}><FAQsPage /></PublicLayout>} />
+            <Route path="/team" element={<PublicLayout hideHeaderAndFooter={true}><TeamPage /></PublicLayout>} />
+            <Route path="/community" element={<PublicLayout hideHeaderAndFooter={true}><CommunityPage /></PublicLayout>} />
+            <Route path="/help" element={<PublicLayout hideHeaderAndFooter={true}><HelpPage /></PublicLayout>} />
+            <Route path="/products" element={<PublicLayout hideHeaderAndFooter={true}><ProductsPage /></PublicLayout>} />
+            <Route path="/products/:productId" element={<PublicLayout hideHeaderAndFooter={true}><ProductDetailPage /></PublicLayout>} />
             <Route path="/register" element={<LawFirmRegistrationPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/set-password" element={<SetPasswordPage />} />

@@ -1,7 +1,8 @@
 import { useState } from "react"
 import PropTypes from "prop-types"
 import { motion as Motion, AnimatePresence } from "framer-motion"
-import gavelIcon from "../../assets/JuriNex_gavel_logo.png"
+import gavelIcon from "../../assets/jurinex-mark.png"
+import { markDemoDone } from "../../hooks/useDemoPrompt"
 
 const COUNTRY_CODES = [
   { code: "+91", flag: "🇮🇳", iso: "IN" },
@@ -45,6 +46,7 @@ const BookDemoModal = ({ isOpen, onClose }) => {
 
   const handleSubmit = (e) => {
     e.preventDefault()
+    markDemoDone()
     onClose()
   }
 

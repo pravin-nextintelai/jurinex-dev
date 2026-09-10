@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import { Eye, EyeOff, CheckCircle, ArrowLeft } from "lucide-react";
 import ApiService from '../../services/api';
 import Swal from 'sweetalert2';
-import JuriNexLogo from '../../assets/JuriNex_gavel_logo.png';
+import JuriNexLogo from '../../assets/jurinex-wordmark.png';
 
 const SetPasswordPage = () => {
   const [searchParams] = useSearchParams();
@@ -135,15 +135,13 @@ const SetPasswordPage = () => {
     }
 
     return (
-      <div className={`${size} rounded-lg flex items-center justify-center overflow-hidden bg-gray-100`}>
-        <img
-          src={JuriNexLogo}
-          alt="JuriNex Logo"
-          className="w-full h-full object-contain"
-          onError={() => setLogoError(true)}
-          onLoad={() => setLogoError(false)}
-        />
-      </div>
+      <img
+        src={JuriNexLogo}
+        alt="JURINEX"
+        className="h-12 w-auto object-contain"
+        onError={() => setLogoError(true)}
+        onLoad={() => setLogoError(false)}
+      />
     );
   };
 

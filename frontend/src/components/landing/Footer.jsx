@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { CONTACT_INFO, FOOTER_COLUMNS, SOCIAL_LINKS } from "../../utils/landingConstants"
 import { Icon } from "./primitives"
 import BrandLogo from "./BrandLogo"
+import wordmark from "../../assets/jurinex-wordmark.png"
 
 /** Brand icons lucide doesn't ship (Pinterest, X). */
 const PinterestIcon = () => (
@@ -26,10 +27,12 @@ const SocialIcon = ({ icon }) => {
 SocialIcon.propTypes = { icon: PropTypes.string.isRequired }
 
 /**
- * Light enterprise footer with the full company record from jurinex.ai —
- * columns, legal documents, social profiles, and statutory identifiers.
- * Anchor links scroll in place on the landing page and route home (with a
- * scroll target) from other pages; policy links open PolicyModal.
+ * Editorial enterprise footer — monospace eyebrow labels, serif display
+ * headline, hairline-divided sections and a giant faded brand lockup
+ * above the bottom bar. Full company record from jurinex.ai (columns,
+ * legal documents, social profiles, statutory identifiers). Anchor links
+ * scroll in place on the landing page and route home (with a scroll
+ * target) from other pages; policy links open PolicyModal.
  */
 const Footer = ({ onOpenPolicy, onGetInTouch }) => {
   const navigate = useNavigate()
@@ -56,51 +59,56 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
   }
 
   return (
-    <footer className="border-t border-nx-line bg-white" aria-labelledby="footer-heading">
+    <footer
+      className="overflow-hidden rounded-t-[3.5rem] border border-b-0 border-nx-line bg-[#fbfbfa] shadow-[0_-16px_48px_-28px_rgba(6,52,44,0.3)] sm:rounded-t-[5rem]"
+      aria-labelledby="footer-heading"
+    >
       <h2 id="footer-heading" className="sr-only">
         Footer
       </h2>
 
-      {/* Get in touch banner */}
-      <div className="mx-auto max-w-7xl px-5 pt-10 sm:px-8">
-        <div className="flex flex-col items-center justify-between gap-5 rounded-3xl bg-teal-50 px-8 py-9 md:flex-row">
-          <div>
-            <p className="font-display text-xl font-semibold text-nx-ink">
-              Have a question or a use case in mind?
+      {/* Get in touch — editorial split row on the solid brand teal */}
+      <div className="bg-nx-forest">
+        <div className="mx-auto flex max-w-7xl flex-col justify-between gap-8 px-5 py-16 sm:px-8 md:flex-row md:items-center">
+          <div className="max-w-md">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-white/80">
+              Get in touch
             </p>
-            <p className="mt-1 text-sm text-nx-muted">
+            <p className="mt-4 font-display text-3xl text-white">
+              Have a question or a <em className="text-nx-mint">use case</em> in mind?
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-white/85">
               Tell us how your practice works — we'll show you where Jurinex fits.
             </p>
           </div>
           <button
             type="button"
             onClick={() => (onGetInTouch ? onGetInTouch() : navigate("/contact"))}
-            className="inline-flex flex-none items-center gap-2 rounded-full bg-teal-600 px-6 py-3 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all duration-200 hover:bg-teal-700 active:scale-[0.98]"
+            className="inline-flex flex-none items-center gap-3 bg-white px-8 py-4 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-nx-teal-deep transition-colors hover:bg-teal-50"
           >
             Get in touch
-            <Icon name="ArrowRight" className="h-4 w-4" />
+            <Icon name="ArrowRight" className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
       {/* Main columns */}
-      <div className="mx-auto max-w-7xl px-5 pb-10 pt-14 sm:px-8">
-        <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1.3fr_2.7fr]">
-          {/* Brand + contact */}
+      <div className="mx-auto max-w-7xl px-5 sm:px-8">
+        <div className="grid grid-cols-1 gap-12 pt-14 lg:grid-cols-[1.3fr_2.7fr]">
+          {/* Brand + contact + statutory record */}
           <div>
             <BrandLogo size="lg" />
-            <p className="mt-4 max-w-xs text-sm leading-relaxed text-nx-muted">
+            <p className="mt-5 max-w-xs text-sm leading-relaxed text-nx-muted">
               {CONTACT_INFO.tagline}
             </p>
-            <address className="mt-6 space-y-1 text-sm not-italic leading-relaxed text-nx-muted">
-              <p className="font-semibold text-nx-ink">{CONTACT_INFO.company}</p>
+            <address className="mt-7 space-y-1 text-sm not-italic leading-relaxed text-nx-muted">
               {CONTACT_INFO.addressLines.map((line) => (
                 <p key={line}>{line}</p>
               ))}
               <p className="pt-2">
                 <a
                   href={`tel:${CONTACT_INFO.phone.replace(/\s/g, "")}`}
-                  className="transition-colors hover:text-teal-700"
+                  className="transition-colors hover:text-nx-teal-deep"
                 >
                   {CONTACT_INFO.phone}
                 </a>
@@ -108,7 +116,7 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
               <p>
                 <a
                   href={`mailto:${CONTACT_INFO.email}`}
-                  className="font-medium text-teal-700 transition-colors hover:text-teal-800"
+                  className="font-medium text-nx-teal-deep transition-colors hover:text-nx-teal-ink"
                 >
                   {CONTACT_INFO.email}
                 </a>
@@ -116,22 +124,39 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
             </address>
 
             {/* Social */}
-            <div className="mt-6 flex items-center gap-2.5">
-              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-nx-faint">
-                Follow
-              </span>
-              {SOCIAL_LINKS.map((social) => (
-                <a
-                  key={social.label}
-                  href={social.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label={`Jurinex on ${social.label}`}
-                  className="grid h-8 w-8 place-items-center rounded-full border border-nx-line text-nx-muted transition-colors hover:border-teal-600 hover:text-teal-700"
-                >
-                  <SocialIcon icon={social.icon} />
-                </a>
-              ))}
+            <div className="mt-7">
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-nx-faint">
+                Follow Jurinex
+              </p>
+              <div className="mt-3 flex items-center gap-2.5">
+                {SOCIAL_LINKS.map((social) => (
+                  <a
+                    key={social.label}
+                    href={social.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Jurinex on ${social.label}`}
+                    className="grid h-9 w-9 place-items-center border border-nx-line text-nx-muted transition-colors hover:border-nx-teal-deep hover:text-nx-teal-deep"
+                  >
+                    <SocialIcon icon={social.icon} />
+                  </a>
+                ))}
+              </div>
+            </div>
+
+            {/* Statutory identifiers */}
+            <div className="mt-8 space-y-1.5 font-mono text-xs leading-relaxed text-nx-faint">
+              <p className="font-semibold text-nx-ink">{CONTACT_INFO.company}</p>
+              <p>
+                <span className="text-nx-muted">CIN:</span> {CONTACT_INFO.cin}
+              </p>
+              <p>
+                <span className="text-nx-muted">GSTIN:</span> {CONTACT_INFO.gstin}
+              </p>
+              <p>
+                <span className="text-nx-muted">Registered Office:</span>{" "}
+                {CONTACT_INFO.registeredOffice}
+              </p>
             </div>
           </div>
 
@@ -142,14 +167,16 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
           >
             {FOOTER_COLUMNS.map((column) => (
               <div key={column.heading}>
-                <p className="text-sm font-semibold text-nx-ink">{column.heading}</p>
-                <ul className="mt-4 space-y-2.5">
+                <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-nx-faint">
+                  {column.heading}
+                </p>
+                <ul className="mt-5 space-y-3">
                   {column.links.map((link) => (
                     <li key={`${column.heading}-${link.title}`}>
                       <button
                         type="button"
                         onClick={() => followLink(link)}
-                        className="text-left text-sm text-nx-muted transition-colors hover:text-teal-700"
+                        className="text-left text-sm text-nx-muted transition-colors hover:text-nx-ink"
                       >
                         {link.title}
                         {link.type === "external" && link.href.startsWith("https") && (
@@ -164,26 +191,32 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
           </nav>
         </div>
 
-        {/* Statutory identifiers */}
-        <div className="mt-14 flex flex-col gap-1.5 border-t border-nx-line pt-7 text-xs leading-relaxed text-nx-faint sm:flex-row sm:flex-wrap sm:gap-x-8">
-          <p>
-            <span className="font-semibold text-nx-muted">CIN:</span> {CONTACT_INFO.cin}
-          </p>
-          <p>
-            <span className="font-semibold text-nx-muted">GSTIN:</span> {CONTACT_INFO.gstin}
-          </p>
-          <p>
-            <span className="font-semibold text-nx-muted">Registered Office:</span>{" "}
-            {CONTACT_INFO.registeredOffice}
-          </p>
+        {/* Giant brand lockup — the same artwork as the header */}
+        <div
+          aria-hidden="true"
+          className="mt-16 flex select-none justify-center overflow-hidden border-t border-nx-line py-10"
+        >
+          <img
+            src={wordmark}
+            alt=""
+            className="h-[clamp(3rem,9vw,8rem)] w-auto"
+            loading="lazy"
+          />
         </div>
 
         {/* Bottom bar */}
-        <div className="mt-6 flex flex-col items-center justify-between gap-3 border-t border-nx-line pt-6 sm:flex-row">
-          <p className="text-sm text-nx-faint">
-            © {year} {CONTACT_INFO.company}. {CONTACT_INFO.incorporation}
+        <div className="flex flex-col items-start justify-between gap-3 border-t border-nx-line py-7 sm:flex-row sm:items-center">
+          <div>
+            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-nx-faint">
+              © {year} {CONTACT_INFO.company}
+            </p>
+            <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-nx-faint/80">
+              {CONTACT_INFO.incorporation}
+            </p>
+          </div>
+          <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-nx-faint">
+            All rights reserved
           </p>
-          <p className="text-sm text-nx-faint">All rights reserved.</p>
         </div>
       </div>
     </footer>

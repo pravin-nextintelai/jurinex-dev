@@ -15,7 +15,7 @@ import TokenTopupModal from '../components/TokenTopupModal';
 import StorageAddonModal from '../components/StorageAddonModal';
 import { getPlanDisplayName } from '../utils/planUtils';
 import { SUBSCRIPTION_PLANS_PATH } from '../utils/planUpgrade';
-import jurinexLogoUrl from '../assets/JuriNex_gavel_logo.png';
+import jurinexLogoUrl from '../assets/jurinex-wordmark.png';
 import {
   buildProformaBillingHtml,
   getDefaultCompanyLines,

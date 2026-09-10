@@ -21,7 +21,7 @@
  *                                     completion paths (bursts are collapsed)
  */
 
-import jurinexLogo from '../assets/JuriNex_gavel_logo.png';
+import jurinexLogo from '../assets/jurinex-mark.png';
 import { notificationsEnabled } from './notificationPrefs';
 
 const BRAND_TEAL = '#0aa396';

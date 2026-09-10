@@ -199,6 +199,7 @@ const CaseStoragePage = () => {
   const [activeTab, setActiveTab] = useState('documents');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('activity');
+  const [casesPage, setCasesPage] = useState(1); // pagination — My Cases tab only
   const [viewMode, setViewMode] = useState('grid');
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -291,6 +292,18 @@ const CaseStoragePage = () => {
     });
 
   const visibleFiles = files.filter((f) => f.name.toLowerCase().includes(searchQuery.toLowerCase()));
+
+  // Pagination (My Cases tab only — My Documents keeps the full list).
+  const CASES_PAGE_SIZE = 9;
+  const isCasesTab = activeTab === 'cases';
+  const totalCasePages = Math.max(1, Math.ceil(visibleFolders.length / CASES_PAGE_SIZE));
+  const safeCasesPage = Math.min(casesPage, totalCasePages); // clamps after deletes/filtering
+  const pagedFolders = isCasesTab
+    ? visibleFolders.slice((safeCasesPage - 1) * CASES_PAGE_SIZE, safeCasesPage * CASES_PAGE_SIZE)
+    : visibleFolders;
+
+  // Back to page 1 whenever the visible set changes shape.
+  useEffect(() => { setCasesPage(1); }, [activeTab, searchQuery, sortBy]);
 
   const handleCreateFolder = async (folderName) => {
     try {
@@ -847,7 +860,7 @@ const CaseStoragePage = () => {
           </div>
         ) : viewMode === 'grid' ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {visibleFolders.map((folder) => (
+            {pagedFolders.map((folder) => (
               <FolderCard
                 key={folder.id || folder.name}
                 folder={folder}
@@ -858,7 +871,7 @@ const CaseStoragePage = () => {
           </div>
         ) : (
           <div className="space-y-2">
-            {visibleFolders.map((folder) => (
+            {pagedFolders.map((folder) => (
               <FolderRow
                 key={folder.id || folder.name}
                 folder={folder}
@@ -869,9 +882,43 @@ const CaseStoragePage = () => {
           </div>
         )}
 
+        {/* Pagination — My Cases tab */}
+        {!inFolder && isCasesTab && totalCasePages > 1 && !tabLoading && (
+          <div className="mt-6 flex items-center justify-center gap-1.5">
+            <button
+              onClick={() => setCasesPage((p) => Math.max(1, p - 1))}
+              disabled={safeCasesPage === 1}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            {Array.from({ length: totalCasePages }, (_, i) => i + 1).map((p) => (
+              <button
+                key={p}
+                onClick={() => setCasesPage(p)}
+                className="w-9 h-9 rounded-lg text-sm font-semibold transition-colors"
+                style={p === safeCasesPage
+                  ? { background: TEAL, color: '#fff' }
+                  : { background: '#fff', color: '#6b7280', border: '1px solid #e5e7eb' }}
+              >
+                {p}
+              </button>
+            ))}
+            <button
+              onClick={() => setCasesPage((p) => Math.min(totalCasePages, p + 1))}
+              disabled={safeCasesPage === totalCasePages}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
+        )}
+
         {!inFolder && visibleFolders.length > 0 && !tabLoading && (
           <div className="mt-5 text-center text-xs text-gray-400 font-medium">
-            Showing {visibleFolders.length} folder{visibleFolders.length !== 1 ? 's' : ''}
+            {isCasesTab && totalCasePages > 1
+              ? `Showing ${(safeCasesPage - 1) * CASES_PAGE_SIZE + 1}–${Math.min(safeCasesPage * CASES_PAGE_SIZE, visibleFolders.length)} of ${visibleFolders.length} cases`
+              : `Showing ${visibleFolders.length} folder${visibleFolders.length !== 1 ? 's' : ''}`}
           </div>
         )}
         {inFolder && visibleFiles.length > 0 && !filesLoading && (

@@ -24,7 +24,7 @@ const CTASection = ({ onBookDemo } = {}) => {
             }}
           />
           <div
-            className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-nx-mint/50 to-transparent"
+            className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/60 to-transparent"
             aria-hidden="true"
           />
 
@@ -35,7 +35,7 @@ const CTASection = ({ onBookDemo } = {}) => {
             >
               {CTA_COPY.heading}
             </h2>
-            <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-teal-50/80">
+            <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-white/90">
               {CTA_COPY.text}
             </p>
 
@@ -59,7 +59,7 @@ const CTASection = ({ onBookDemo } = {}) => {
               </button>
             </div>
 
-            <p className="mt-6 text-sm text-teal-100/70">
+            <p className="mt-6 text-sm text-white/85">
               {CTA_COPY.trial} · Developed, tried and tested by experienced lawyers
             </p>
           </div>
