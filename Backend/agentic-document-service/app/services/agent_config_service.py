@@ -172,7 +172,7 @@ def _get_agent_prompts_connection():
             yield conn
         return
 
-    conn = psycopg.connect(override_url, row_factory=dict_row)
+    conn = psycopg.connect(override_url, row_factory=dict_row, connect_timeout=8)
     try:
         yield conn
     finally:

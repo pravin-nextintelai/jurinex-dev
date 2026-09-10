@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import sys
+
+# Printed before the heavy FastAPI / ADK / files-router import so --reload does
+# not look frozen while the child process is still loading.
+print("Loading agentic-document-service (first boot can take 30-90s)...", flush=True)
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -149,7 +154,13 @@ def _mount_adk_runtime(app: FastAPI) -> None:
         return
 
     try:
-        adk_app = get_fast_api_app(agents_dir=str(BASE_DIR / "agents"))
+        # Newer google-adk requires keyword-only `web`. Keep the Dev UI off so
+        # this process only serves Jurinex APIs (the UI is unused at /adk).
+        adk_kwargs: dict = {"agents_dir": str(BASE_DIR / "agents")}
+        parameters = inspect.signature(get_fast_api_app).parameters
+        if "web" in parameters:
+            adk_kwargs["web"] = False
+        adk_app = get_fast_api_app(**adk_kwargs)
         app.mount("/adk", adk_app)
         logger.info("Mounted Google ADK runtime at /adk")
     except Exception as exc:  # pragma: no cover
