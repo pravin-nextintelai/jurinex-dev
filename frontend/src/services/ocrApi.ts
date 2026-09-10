@@ -172,24 +172,29 @@ export const convertBackendOcrToOcrJson = (fileId: string, ocrPayload: any): Ocr
   const structured = unwrapStructured(ocrPayload);
   const pages = Array.isArray(structured?.pages) ? structured.pages : [];
   const extractedText = String(ocrPayload?.extractedText || structured?.text || '').trim();
+  const declaredCount = Number(ocrPayload?.pageCount || structured?.pageCount || 0);
 
-  if (!pages.length && !extractedText) return null;
+  if (!pages.length && !extractedText && declaredCount <= 0) return null;
 
+  // Virtualized responses send pageCount=N but only the visible window in `pages`.
+  // Never collapse that into a single page from the full extractedText blob.
   const convertedPages = pages.length
     ? pages.map(convertPage)
-    : [
-        {
-          page: 1,
-          width: 1000,
-          height: 1414,
-          words: fallbackWordsFromPageText(extractedText, 1000, 1414),
-          avgConfidence: normalizeConfidence(ocrPayload?.confidence, 0.9),
-        },
-      ];
+    : extractedText && declaredCount <= 1
+      ? [
+          {
+            page: 1,
+            width: 1000,
+            height: 1414,
+            words: fallbackWordsFromPageText(extractedText, 1000, 1414),
+            avgConfidence: normalizeConfidence(ocrPayload?.confidence, 0.9),
+          },
+        ]
+      : [];
 
   return {
     documentId: fileId,
-    pageCount: Number(ocrPayload?.pageCount || structured?.pageCount || convertedPages.length || 0),
+    pageCount: declaredCount || convertedPages.length || 0,
     pages: convertedPages,
   };
 };
@@ -228,7 +233,7 @@ const ocrApi = {
       const ocrData = convertBackendOcrToOcrJson(fileId, ocrPayload);
       const doc = viewData?.document || {};
       const pdfUrl = viewData?.viewUrl || viewData?.signedUrl || viewData?.viewUrlWithPage || null;
-      const ocrAvailable = Boolean(ocrData?.pages?.length);
+      const ocrAvailable = Boolean(ocrData?.pageCount || ocrData?.pages?.length);
       return {
         document_id: fileId,
         file_id: fileId,
@@ -271,6 +276,19 @@ const ocrApi = {
   fetchOcrJson: async (fileId: string): Promise<OcrJson | null> => {
     const viewData = await getViewData(fileId);
     return convertBackendOcrToOcrJson(fileId, viewData?.ocr || null);
+  },
+
+  fetchOcrPages: async (
+    fileId: string,
+    fromPage: number,
+    toPage: number,
+  ): Promise<{ pageCount: number; pages: OcrPage[] }> => {
+    const data = await documentApi.getOcrPages(fileId, fromPage, toPage);
+    const converted = convertBackendOcrToOcrJson(fileId, data?.ocr || null);
+    return {
+      pageCount: Number(data?.pageCount || converted?.pageCount || 0),
+      pages: converted?.pages || [],
+    };
   },
 
   fetchMetadataJson: async (fileId: string): Promise<OcrMetadata | null> => {

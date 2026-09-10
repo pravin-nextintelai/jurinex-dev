@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ocrApi from '../services/ocrApi';
-import type { OcrDocumentOverview, OcrJson, OcrMetadata } from '../types/ocr';
+import type { OcrDocumentOverview, OcrJson, OcrMetadata, OcrPage } from '../types/ocr';
 
 export type OcrDisplayMode = 'words' | 'lines' | 'paragraphs';
 export type OcrConfidenceFilter = 'none' | 'all' | 'high' | 'medium' | 'low';
@@ -14,8 +14,6 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
   const [error, setError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(1);
-  // Closed until asked for: the preview opens on the original document, and the OCR panel is opened by
-  // the toolbar's OCR button. Open by default it also halves the width the original gets.
   const [isOcrVisible, setIsOcrVisible] = useState(false);
   const [displayMode, setDisplayMode] = useState<OcrDisplayMode>('words');
   const [confidenceFilter, setConfidenceFilter] = useState<OcrConfidenceFilter>('none');
@@ -24,9 +22,56 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
   const [isPollingOcr, setIsPollingOcr] = useState(false);
   const [reloadVersion, setReloadVersion] = useState(0);
 
+  const loadedPagesRef = useRef<Set<number>>(new Set());
+  const fetchingRangeRef = useRef<string | null>(null);
+
   const reload = useCallback(() => {
     setReloadVersion((version) => version + 1);
   }, []);
+
+  const mergeOcrPages = useCallback(
+    (incoming: OcrPage[], pageCount: number) => {
+      incoming.forEach((page) => loadedPagesRef.current.add(page.page));
+      setOcrData((prev) => {
+        const byNumber = new Map((prev?.pages || []).map((page) => [page.page, page]));
+        incoming.forEach((page) => byNumber.set(page.page, page));
+        return {
+          documentId: documentId || prev?.documentId || '',
+          pageCount: Math.max(prev?.pageCount || 0, pageCount || 0),
+          pages: Array.from(byNumber.values()).sort((a, b) => a.page - b.page),
+        };
+      });
+    },
+    [documentId],
+  );
+
+  const ensureOcrRange = useCallback(
+    async (fromPage: number, toPage: number) => {
+      if (!documentId) return;
+      const start = Math.max(1, fromPage);
+      const end = Math.max(start, toPage);
+      const missing: number[] = [];
+      for (let page = start; page <= end; page += 1) {
+        if (!loadedPagesRef.current.has(page)) missing.push(page);
+      }
+      if (!missing.length) return;
+      const reqFrom = Math.min(...missing);
+      const reqTo = Math.max(...missing);
+      const key = `${documentId}:${reqFrom}-${reqTo}`;
+      if (fetchingRangeRef.current === key) return;
+      fetchingRangeRef.current = key;
+      try {
+        const result = await ocrApi.fetchOcrPages(documentId, reqFrom, reqTo);
+        mergeOcrPages(result.pages, result.pageCount);
+        setHasOcrData(Boolean(result.pageCount || result.pages.length));
+      } catch (err) {
+        console.warn('[OCR PREVIEW] Failed to load OCR page window', reqFrom, reqTo, err);
+      } finally {
+        if (fetchingRangeRef.current === key) fetchingRangeRef.current = null;
+      }
+    },
+    [documentId, mergeOcrPages],
+  );
 
   useEffect(() => {
     if (!documentId) {
@@ -35,10 +80,12 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
       setOcrData(null);
       setMetadata(null);
       setHasOcrData(null);
+      loadedPagesRef.current = new Set();
       return;
     }
 
     let cancelled = false;
+    loadedPagesRef.current = new Set();
 
     const load = async () => {
       setLoading(true);
@@ -49,23 +96,31 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
         if (cancelled) return;
         setOverview(overviewData);
         setPdfUrl(overviewData.pdf_signed_url || null);
-        setOcrProgress(typeof overviewData.progress_percentage === 'number' ? overviewData.progress_percentage : null);
+        setOcrProgress(
+          typeof overviewData.progress_percentage === 'number'
+            ? overviewData.progress_percentage
+            : null,
+        );
 
-        if (overviewData.ocr_available) {
-          const [json, meta] = await Promise.all([
-            ocrApi.fetchOcrJson(documentId),
-            ocrApi.fetchMetadataJson(documentId),
-          ]);
-          if (cancelled) return;
-          setOcrData(json);
-          setMetadata(meta);
-          setHasOcrData(Boolean(json?.pages?.length));
-          setOcrProgress(100);
-        } else {
-          setOcrData(null);
-          setMetadata(null);
-          setHasOcrData(false);
-        }
+        const seed = await ocrApi.fetchOcrJson(documentId);
+        if (cancelled) return;
+        const pageCount = Number(seed?.pageCount || overviewData.page_count || 0);
+        setOcrData(
+          seed || {
+            documentId,
+            pageCount,
+            pages: [],
+          },
+        );
+        seed?.pages?.forEach((page) => loadedPagesRef.current.add(page.page));
+        setMetadata({
+          documentId,
+          pageCount,
+          avgConfidence: overviewData.average_confidence,
+          pages: [],
+        });
+        setHasOcrData(Boolean(pageCount || seed?.pages?.length));
+        setOcrProgress(overviewData.ocr_available ? 100 : overviewData.progress_percentage ?? null);
       } catch (err: any) {
         if (cancelled) return;
         setError(err?.message || 'Unable to load OCR document');
@@ -92,6 +147,12 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
   }, [documentId, reloadVersion, reload]);
 
   useEffect(() => {
+    if (!documentId || !isOcrVisible || !ocrData?.pageCount) return;
+    const around = Math.max(1, currentPage);
+    void ensureOcrRange(around, Math.min(ocrData.pageCount, around + 2));
+  }, [documentId, isOcrVisible, currentPage, ocrData?.pageCount, ensureOcrRange]);
+
+  useEffect(() => {
     if (!documentId || overview?.viewer_status !== 'processing_ocr') {
       setIsPollingOcr(false);
       return;
@@ -103,7 +164,9 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
       try {
         const status = await ocrApi.getOcrStatus(documentId);
         if (cancelled) return;
-        setOcrProgress(typeof status.progress_percentage === 'number' ? status.progress_percentage : null);
+        setOcrProgress(
+          typeof status.progress_percentage === 'number' ? status.progress_percentage : null,
+        );
         if (status.ocr_available || status.viewer_status === 'ready') {
           window.clearInterval(interval);
           setIsPollingOcr(false);
@@ -142,6 +205,7 @@ const useOcrDocumentViewer = (documentId?: string | null) => {
     reload,
     confidenceFilter,
     setConfidenceFilter,
+    ensureOcrRange,
   };
 };
 

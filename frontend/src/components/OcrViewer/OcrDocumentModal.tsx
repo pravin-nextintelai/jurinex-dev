@@ -84,6 +84,7 @@ const OcrDocumentModal: React.FC<OcrDocumentModalProps> = ({
     reload,
     confidenceFilter,
     setConfidenceFilter,
+    ensureOcrRange,
   } = useOcrDocumentViewer(document?.id);
 
   const modalRoot =
@@ -92,10 +93,9 @@ const OcrDocumentModal: React.FC<OcrDocumentModalProps> = ({
       : null;
 
   const totalPagesFromOcr: number =
-    (ocrData as OcrJson | null)?.pageCount ??
-    (overview?.page_count ?? 0) ??
-    (ocrData as OcrJson | null)?.pages?.length ??
-    0;
+    Number((ocrData as OcrJson | null)?.pageCount || 0) ||
+    Number(overview?.page_count || 0) ||
+    Number((ocrData as OcrJson | null)?.pages?.length || 0);
 
   const handleClose = () => {
     console.log('[OCR PREVIEW] Close button clicked, closing modal');
@@ -592,6 +592,7 @@ const OcrDocumentModal: React.FC<OcrDocumentModalProps> = ({
                       ocrData={ocrData}
                       metadata={metadata}
                       onScrollerRef={onRightScrollerRef}
+                      onVisibleRange={ensureOcrRange}
                       displayMode={displayMode}
                       zoom={zoom}
                       confidenceFilter={confidenceFilter}

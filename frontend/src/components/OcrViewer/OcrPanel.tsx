@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import type { OcrJson, OcrMetadata } from '../../types/ocr';
+import type { OcrJson, OcrMetadata, OcrPage } from '../../types/ocr';
 import type {
   OcrDisplayMode,
   OcrConfidenceFilter,
@@ -33,6 +33,7 @@ export interface OcrPanelProps {
   zoom: number;
   confidenceFilter: OcrConfidenceFilter;
   onScrollerRef?: (el: HTMLDivElement | null) => void;
+  onVisibleRange?: (fromPage: number, toPage: number) => void;
 }
 
 const OcrPanel: React.FC<OcrPanelProps> = ({
@@ -42,10 +43,21 @@ const OcrPanel: React.FC<OcrPanelProps> = ({
   zoom,
   confidenceFilter,
   onScrollerRef,
+  onVisibleRange,
 }) => {
-  const hasOcrPages = !!ocrData?.pages?.length;
+  const totalPages =
+    ocrData?.pageCount ||
+    metadata?.pageCount ||
+    ocrData?.pages?.length ||
+    0;
+  const hasOcrPages = totalPages > 0;
 
-  // Must keep a stable identity: Virtuoso re-invokes scrollerRef whenever the callback changes.
+  const pageByNumber = useMemo(() => {
+    const map = new Map<number, OcrPage>();
+    (ocrData?.pages || []).forEach((page) => map.set(page.page, page));
+    return map;
+  }, [ocrData?.pages]);
+
   const handleScrollerRef = useCallback(
     (el: HTMLElement | Window | null) => {
       onScrollerRef?.(el instanceof HTMLDivElement ? el : null);
@@ -53,15 +65,12 @@ const OcrPanel: React.FC<OcrPanelProps> = ({
     [onScrollerRef],
   );
 
-  const pagesInOrder = useMemo(() => {
-    if (!hasOcrPages) return [];
-    const pages = [...(ocrData?.pages ?? [])];
-    pages.sort((a, b) => (a.page ?? 0) - (b.page ?? 0));
-    return pages;
-  }, [hasOcrPages, ocrData?.pages]);
-
-  const totalPages =
-    metadata?.pageCount ?? ocrData?.pageCount ?? pagesInOrder.length ?? 0;
+  const handleRangeChanged = useCallback(
+    (range: { startIndex: number; endIndex: number }) => {
+      onVisibleRange?.(range.startIndex + 1, range.endIndex + 1);
+    },
+    [onVisibleRange],
+  );
 
   // Scroll position is owned by OcrDocumentModal, which drives this panel's scroller directly and
   // mirrors it to the PDF panel; both lists share PDF_VIEWER_PAGE_HEIGHT so their offsets map 1:1.
@@ -98,25 +107,26 @@ const OcrPanel: React.FC<OcrPanelProps> = ({
       <div className="flex-1 min-h-0 rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
         <Virtuoso
           style={{ height: '100%' }}
-          totalCount={pagesInOrder.length}
+          totalCount={totalPages}
           fixedItemHeight={PDF_VIEWER_PAGE_HEIGHT}
           defaultItemHeight={PDF_VIEWER_PAGE_HEIGHT}
-          computeItemKey={(index) => pagesInOrder[index]?.page ?? index}
+          computeItemKey={(index) => index + 1}
           scrollerRef={handleScrollerRef}
           increaseViewportBy={{ top: 1200, bottom: 1800 }}
+          rangeChanged={handleRangeChanged}
           itemContent={(index) => {
-            const p = pagesInOrder[index];
+            const pageNumber = index + 1;
+            const p = pageByNumber.get(pageNumber);
             if (!p) {
               return (
                 <div
                   className="flex items-center justify-center text-xs text-gray-500 bg-gray-50"
                   style={{ height: PDF_VIEWER_PAGE_HEIGHT }}
                 >
-                  Loading page…
+                  Loading page {pageNumber}…
                 </div>
               );
             }
-            const pageNumber = (p?.page as number) ?? index + 1;
             return (
               <div
                 data-page={pageNumber}

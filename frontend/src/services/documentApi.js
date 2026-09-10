@@ -725,6 +725,15 @@ const documentApi = {
     return response.data;
   },
 
+  /** Virtualized OCR text for a page window. Does not download the original PDF. */
+  getOcrPages: async (fileId, fromPage = 1, toPage = 1) => {
+    const response = await axios.get(`${API_BASE_URL}/file/${fileId}/ocr-pages`, {
+      params: { from: fromPage, to: toPage },
+      headers: getAuthHeader(),
+    });
+    return response.data;
+  },
+
   queryFolderDocuments: async (folderName, question, sessionId = null, options = {}) => {
     if (!folderName) {
       throw new Error('Folder name is required to query documents');
