@@ -670,6 +670,34 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("STT_MAX_CONCURRENT"),
     )
 
+    # ── Controlled memory system (JRNX-ENG-2026-008) ─────────────────────────
+    # Global kill switches. Per-advocate, per-firm and per-case toggles live in
+    # the memory_settings table; these turn the whole feature off for the
+    # deployment (e.g. before migration 170 has been applied).
+    memory_enabled: bool = Field(default=True, validation_alias=AliasChoices("MEMORY_ENABLED"))
+    memory_write_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("MEMORY_WRITE_ENABLED"),
+    )
+    # Extraction model used by the post-turn memory writer. A cheap flash model
+    # is right here: the task is structured extraction against strict rules, and
+    # it runs once per substantive turn.
+    memory_extraction_model: str = Field(
+        default="gemini-2.5-flash",
+        validation_alias=AliasChoices("MEMORY_EXTRACTION_MODEL"),
+    )
+    # Reading memory sits in the chat's critical path, so it is time-boxed; on
+    # timeout the turn proceeds with no memory rather than stalling.
+    memory_context_timeout_s: float = Field(
+        default=2.5,
+        validation_alias=AliasChoices("MEMORY_CONTEXT_TIMEOUT_S"),
+    )
+    # Writing happens after the answer has streamed, so it may take longer.
+    memory_writer_timeout_s: float = Field(
+        default=12.0,
+        validation_alias=AliasChoices("MEMORY_WRITER_TIMEOUT_S"),
+    )
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: object) -> object:

@@ -19,6 +19,9 @@ These migrations align the new Python `agentic-document-service` with the shared
    - adds `file_id` to `document_ai_extractions`
    - fixes `prompt_extractions.input_template_id` to reference `input_templates(id)`
 4. adds `preset_prompts` for hidden named workflows
+5. adds the controlled memory system (migration `170`): standing preferences,
+   case instructions, case memory sections/lines, memory settings, the assembly
+   log and proposals. See `app/services/memory/` for the code that owns them.
 
 ## Suggested Run Order
 
