@@ -1222,7 +1222,7 @@ def _get_file_record_for_user(file_id: str, user_id: str) -> dict[str, Any] | No
         cur.execute(
             """
             SELECT id, user_id, originalname, mimetype, size, gcs_path, status, created_at,
-                   full_text_content, processed_at, updated_at
+                   full_text_content, processed_at, updated_at, page_count
             FROM user_files
             WHERE id::text = %s
               AND is_folder = false
@@ -1262,6 +1262,97 @@ def _parse_jsonish(value: Any) -> Any:
     return value
 
 
+def _page_texts_from_stamped_ocr(text: str) -> list[str]:
+    """Split stored OCR on [PAGE n] / form-feed stamps into a dense 1..N list."""
+    from app.services.chronology.pages import split_into_pages
+
+    slices = split_into_pages(text or "")
+    if not slices:
+        return []
+    max_number = max(item.number for item in slices)
+    by_number = {item.number: item.text for item in slices}
+    return [by_number.get(index, "") for index in range(1, max_number + 1)]
+
+
+_MAX_OCR_PAGE_WINDOW = 8
+
+
+def _ocr_page_texts_for_record(record: dict[str, Any] | None) -> list[str]:
+    if not record:
+        return []
+    text = str(record.get("full_text_content") or "")
+    stamped = _page_texts_from_stamped_ocr(text)
+    if stamped:
+        return stamped
+    cleaned = text.strip()
+    return [cleaned] if cleaned else []
+
+
+def _ocr_text_page_dict(page_number: int, page_text: str) -> dict[str, Any]:
+    body = str(page_text or "").strip()
+    lines = [
+        {"type": "line", "text": line.strip()}
+        for line in body.splitlines()
+        if line.strip()
+    ]
+    return {
+        "pageNumber": page_number,
+        "dimension": {"width": None, "height": None, "unit": ""},
+        "text": body,
+        "blocks": [],
+        "paragraphs": [],
+        "lines": lines,
+        "tables": [],
+    }
+
+
+def _virtualized_ocr_payload(
+    record: dict[str, Any] | None,
+    *,
+    page_from: int,
+    page_to: int,
+) -> dict[str, Any] | None:
+    """Return OCR for a small page window. The original PDF is served via signed URL, not here."""
+    texts = _ocr_page_texts_for_record(record)
+    try:
+        stored_count = int((record or {}).get("page_count") or 0)
+    except (TypeError, ValueError):
+        stored_count = 0
+    page_count = max(len(texts), stored_count)
+    if page_count <= 0:
+        return None
+    start = max(1, min(int(page_from or 1), page_count))
+    end = max(start, min(int(page_to or start), page_count))
+    if end - start + 1 > _MAX_OCR_PAGE_WINDOW:
+        end = start + _MAX_OCR_PAGE_WINDOW - 1
+    pages = [
+        _ocr_text_page_dict(number, texts[number - 1] if number <= len(texts) else "")
+        for number in range(start, end + 1)
+    ]
+    window_text = "\n\n".join(item["text"] for item in pages if item.get("text"))
+    return {
+        "available": True,
+        "pageCount": page_count,
+        "page": start,
+        "pageTo": end,
+        "virtualized": True,
+        "structuredJson": {
+            "schemaVersion": 1,
+            "source": "virtualized_page_text",
+            "provider": "user_files.full_text_content",
+            "text": window_text,
+            "pageCount": page_count,
+            "pages": pages,
+        },
+        "extractedText": window_text,
+        "metadata": {
+            "virtualized": True,
+            "pageSource": "page_stamps",
+            "returnedPages": [start, end],
+        },
+    }
+
+
 def _split_text_evenly_by_pages(text: str, page_count: int) -> list[str]:
     cleaned = (text or "").strip()
     if not cleaned or page_count <= 1:
@@ -1291,12 +1382,25 @@ def _split_text_evenly_by_pages(text: str, page_count: int) -> list[str]:
     return pages[:page_count]
 
 
+# Never pull a large original off GCS just to reconstruct OCR pages for the viewer.
+# A 49MB writ petition was adding ~15–20s to GET /file/{id}/view before the modal opened.
+_MAX_PDF_FALLBACK_BYTES = 8 * 1024 * 1024
+
+
 def _pdf_page_texts_from_record(record: dict[str, Any] | None) -> list[str]:
     if not record:
         return []
     mime = str(record.get("mimetype") or "").lower()
     name = str(record.get("originalname") or "").lower()
     if "pdf" not in mime and not name.endswith(".pdf"):
+        return []
+    size = int(record.get("size") or 0)
+    if size > _MAX_PDF_FALLBACK_BYTES:
+        logger.info(
+            "[files.ocr] skip original PDF download for page-text fallback file_id=%s size=%s",
+            record.get("id"),
+            size,
+        )
         return []
     gs_uri = _normalize_gs_uri_from_record(record.get("gcs_path"))
     if not gs_uri:
@@ -1359,12 +1463,25 @@ def _fallback_structured_ocr_from_text(
     }
 
 
-def _fallback_file_ocr_payload(record: dict[str, Any] | None) -> dict[str, Any] | None:
+def _fallback_file_ocr_payload(
+    record: dict[str, Any] | None,
+    *,
+    download_original_pdf: bool = False,
+) -> dict[str, Any] | None:
     if not record:
         return None
     text = str(record.get("full_text_content") or "").strip()
-    pdf_page_texts = _pdf_page_texts_from_record(record)
-    page_count = len(pdf_page_texts)
+    # Viewer path must not download the original PDF. Stored Document AI JSON / full_text_content
+    # is enough; the browser already fetches the file via the signed URL for the left panel.
+    pdf_page_texts = _pdf_page_texts_from_record(record) if download_original_pdf else []
+    if not any(pdf_page_texts):
+        pdf_page_texts = _page_texts_from_stamped_ocr(text)
+    stored_page_count = 0
+    try:
+        stored_page_count = int(record.get("page_count") or 0)
+    except (TypeError, ValueError):
+        stored_page_count = 0
+    page_count = len(pdf_page_texts) or stored_page_count
     if not any(pdf_page_texts) and text and page_count > 1:
         pdf_page_texts = _split_text_evenly_by_pages(text, page_count)
     if not text and any(pdf_page_texts):
@@ -1442,7 +1559,10 @@ def _get_file_ocr_extraction(file_id: str, *, include_structure: bool = False) -
     try:
         with get_db_connection() as conn, conn.cursor() as cur:
             columns = _get_public_table_columns(cur, "document_ai_extractions")
-            if not columns or "file_id" not in columns:
+            file_column = "file_id" if "file_id" in columns else (
+                "template_file_id" if "template_file_id" in columns else None
+            )
+            if not file_column:
                 return None
 
             wanted = [
@@ -1455,18 +1575,19 @@ def _get_file_ocr_extraction(file_id: str, *, include_structure: bool = False) -
                 "created_at",
             ]
             if include_structure:
-                wanted.extend(["extracted_text", "metadata", "structured_schema", "raw_response"])
+                # Prefer structured_schema over raw Document AI JSON — raw_response is often tens of MB.
+                wanted.extend(["extracted_text", "metadata", "structured_schema"])
             select_columns = [column for column in wanted if column in columns]
             if not select_columns:
                 return None
 
             order_columns = [column for column in ("processed_at", "updated_at", "created_at") if column in columns]
-            order_expr = ", ".join(f"{column} DESC NULLS LAST" for column in order_columns) or "file_id"
+            order_expr = ", ".join(f"{column} DESC NULLS LAST" for column in order_columns) or file_column
             cur.execute(
                 f"""
                 SELECT {", ".join(select_columns)}
                 FROM document_ai_extractions
-                WHERE file_id::text = %s
+                WHERE {file_column}::text = %s
                 ORDER BY {order_expr}
                 LIMIT 1
                 """,
@@ -1489,7 +1610,26 @@ def _get_file_ocr_extraction(file_id: str, *, include_structure: bool = False) -
         "processedAt": processed_at.isoformat() if hasattr(processed_at, "isoformat") else processed_at,
     }
     if include_structure:
-        structured = _parse_jsonish(row.get("structured_schema")) or _parse_jsonish(row.get("raw_response"))
+        structured = _parse_jsonish(row.get("structured_schema"))
+        if not structured:
+            raw_response = None
+            if "raw_response" in columns:
+                try:
+                    with get_db_connection() as conn, conn.cursor() as cur:
+                        cur.execute(
+                            f"""
+                            SELECT raw_response
+                            FROM document_ai_extractions
+                            WHERE {file_column}::text = %s
+                            LIMIT 1
+                            """,
+                            [file_id],
+                        )
+                        raw_row = cur.fetchone() or {}
+                        raw_response = raw_row.get("raw_response")
+                except Exception:
+                    raw_response = None
+            structured = _parse_jsonish(raw_response)
         out.update({
             "structuredJson": structured,
             "extractedText": row.get("extracted_text") or "",
@@ -1704,9 +1844,16 @@ async def view_file(
         raise HTTPException(status_code=500, detail="Could not generate document view URL") from exc
 
     page_number = max(1, page or 1)
-    stored_ocr_payload = _get_file_ocr_extraction(file_id, include_structure=True)
-    fallback_ocr_payload = _fallback_file_ocr_payload(record)
-    ocr_payload = _choose_ocr_payload(stored_ocr_payload, fallback_ocr_payload)
+    # Signed URL for the original PDF. OCR is virtualized: only the requested page of text,
+    # never the whole file from GCS and never every page of structured JSON.
+    ocr_payload = _virtualized_ocr_payload(record, page_from=page_number, page_to=page_number)
+    logger.info(
+        "[Route:view_file] file_id=%s page=%s ocr_page_count=%s returned_pages=%s virtualized=true",
+        file_id,
+        page_number,
+        (ocr_payload or {}).get("pageCount") or 0,
+        1 if ocr_payload else 0,
+    )
     return {
         "success": True,
         "document": {
@@ -1720,6 +1867,41 @@ async def view_file(
         "viewUrl": signed_url,
         "viewUrlWithPage": f"{signed_url}#page={page_number}",
         "page": page_number,
+        "ocr": ocr_payload,
+    }
+
+
+@router.get("/file/{file_id}/ocr-pages")
+async def get_ocr_pages(
+    file_id: str,
+    from_page: int = Query(default=1, alias="from", ge=1),
+    to_page: int | None = Query(default=None, alias="to", ge=1),
+    x_user_id: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Windowed OCR text for the virtualized right-hand panel. Does not touch GCS."""
+    user_id = _resolve_user_id(x_user_id, authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    record = _get_file_record_for_user(file_id, user_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Document not found")
+    end = to_page if to_page is not None else from_page
+    ocr_payload = _virtualized_ocr_payload(record, page_from=from_page, page_to=end)
+    if not ocr_payload:
+        raise HTTPException(status_code=404, detail="OCR text is not available")
+    logger.info(
+        "[Route:ocr_pages] file_id=%s from=%s to=%s page_count=%s",
+        file_id,
+        ocr_payload.get("page"),
+        ocr_payload.get("pageTo"),
+        ocr_payload.get("pageCount"),
+    )
+    return {
+        "success": True,
+        "pageCount": ocr_payload.get("pageCount"),
+        "from": ocr_payload.get("page"),
+        "to": ocr_payload.get("pageTo"),
         "ocr": ocr_payload,
     }
 
