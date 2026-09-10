@@ -53,6 +53,26 @@ async function postJson(path, body) {
   return response.json();
 }
 
+async function getJson(path, failMsg) {
+  let response;
+  try {
+    response = await fetch(`${JUDGEMENT_SERVICE_URL}${path}`, { headers: getAuthHeader() });
+  } catch {
+    throw new Error(NETWORK_ERROR_MSG);
+  }
+  if (!response.ok) {
+    let detail = `${failMsg} (${response.status})`;
+    try {
+      const data = await response.json();
+      if (data?.detail) detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+    } catch { /* keep default detail */ }
+    const err = new Error(detail);
+    err.status = response.status;
+    throw err;
+  }
+  return response.json();
+}
+
 export const judgementApi = {
   /** GET /health — service + store status. */
   async health() {
@@ -263,24 +283,23 @@ export const judgementApi = {
   },
 
   /**
+   * Local library document view — GET /api/v1/local-search/doc/{docId}.
+   * Served ONLY from Elasticsearch: a judgment the library never collected
+   * comes back 404 ("not in your library") instead of billing Indian Kanoon.
+   */
+  localSearchDoc(docId) {
+    return getJson(`/api/v1/local-search/doc/${encodeURIComponent(docId)}`,
+      'Document fetch failed');
+  },
+
+  /**
    * Advanced Search document view — GET /api/v1/advanced-search/doc/{docId}.
    * The full judgment as Indian Kanoon serves it (its own HTML) plus
    * bench/author metadata and cites/cited-by, for in-app rendering.
    */
-  async advancedSearchDoc(docId) {
-    const response = await fetch(
-      `${JUDGEMENT_SERVICE_URL}/api/v1/advanced-search/doc/${encodeURIComponent(docId)}`,
-      { headers: getAuthHeader() },
-    );
-    if (!response.ok) {
-      let detail = `Document fetch failed (${response.status})`;
-      try {
-        const data = await response.json();
-        if (data?.detail) detail = data.detail;
-      } catch { /* keep default */ }
-      throw new Error(detail);
-    }
-    return response.json();
+  advancedSearchDoc(docId) {
+    return getJson(`/api/v1/advanced-search/doc/${encodeURIComponent(docId)}`,
+      'Document fetch failed');
   },
 
   /**

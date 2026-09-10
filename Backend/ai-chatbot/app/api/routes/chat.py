@@ -69,8 +69,8 @@ async def chat_history(session_id: str, limit: int = 20) -> list[dict]:
 
 
 def _get_text_model() -> str:
-    from app.services.chatbot import load_chatbot_config
+    from app.services.chatbot import TEXT_MODEL, load_chatbot_config
     try:
         return load_chatbot_config().model_text
     except Exception:
-        return "gemini-2.5-flash"
+        return TEXT_MODEL

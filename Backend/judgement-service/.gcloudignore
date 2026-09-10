@@ -1,0 +1,22 @@
+# Files NOT uploaded to Cloud Build when deploying with `gcloud run deploy --source .`
+# Keep in sync with .dockerignore. Secrets reach the service via deploy.ps1
+# (--env-vars-file), never through the source upload or the image.
+.gcloudignore
+.git
+.gitignore
+.env
+.env.*
+*.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+.pytest_cache/
+tests/
+evals/
+*.log
+*.db
+node_modules/
+deploy.ps1

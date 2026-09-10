@@ -86,10 +86,12 @@ function buildSecretsApiBases() {
 
   add(SECRET_PROMPTS_API_BASE);
   add(`${GATEWAY_BASE_URL}/chat`);
-  add(DOCS_BASE_URL);
-  // CHAT_MODEL_BASE_URL is the service host; secrets live at /api/chat/secrets
+  // agentic-chat-service direct. It resolves the caller's plan itself, so it is
+  // tried before the document service, whose /secrets returns [] when the
+  // gateway-injected x-user-plan-id header is absent (direct calls).
   const chatHost = String(CHAT_MODEL_BASE_URL || '').replace(/\/api\/chat\/?$/, '').replace(/\/$/, '');
   if (chatHost) add(`${chatHost}/api/chat`);
+  add(DOCS_BASE_URL);
 
   return bases;
 }
@@ -103,6 +105,7 @@ async function requestSecretsFromApi(includeValues) {
   const bases = buildSecretsApiBases();
   let lastStatus = null;
   let lastError = null;
+  let sawEmptyList = false;
 
   for (const base of bases) {
     const url = `${base}/secrets?${query}`;
@@ -111,9 +114,16 @@ async function requestSecretsFromApi(includeValues) {
       lastStatus = response.status;
       if (response.ok) {
         const data = await response.json();
-        return Array.isArray(data) ? data : [];
+        if (Array.isArray(data) && data.length) return data;
+        // An empty list may just mean this host could not resolve the plan —
+        // keep going; a later base may know better. Return [] only at the end.
+        sawEmptyList = true;
+        continue;
       }
-      if ([502, 503, 504].includes(response.status)) {
+      // 404/405: this host does not serve the secrets route (e.g. a gateway
+      // whose CHAT_SERVICE_URL is unset) — fall through to the next base.
+      // 502/503/504: upstream unavailable — same.
+      if ([404, 405, 502, 503, 504].includes(response.status)) {
         continue;
       }
       throw new Error(`Failed to fetch secrets: ${response.status}`);
@@ -128,6 +138,9 @@ async function requestSecretsFromApi(includeValues) {
     }
   }
 
+  if (sawEmptyList) {
+    return [];
+  }
   if (lastStatus != null) {
     throw new Error(`Failed to fetch secrets: ${lastStatus}`);
   }
@@ -183,7 +196,7 @@ export async function fetchSecretById(secretId) {
     if (response.ok) {
       return response.json();
     }
-    if ([502, 503, 504].includes(response.status)) {
+    if ([404, 405, 502, 503, 504].includes(response.status)) {
       continue;
     }
     throw new Error(`Failed to fetch secret value: ${response.status}`);

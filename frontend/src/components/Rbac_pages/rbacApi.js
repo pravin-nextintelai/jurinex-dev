@@ -101,7 +101,11 @@
 import axios from 'axios';
 import { USER_RESOURCES_SERVICE_URL } from '../../config/apiConfig';
 
-const BASE_URL = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5000/api';
+//const BASE_URL = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5000/api';
+
+const GATEWAY_HOST = (import.meta.env.VITE_GATEWAY_URL || 'http://localhost:5000').replace(/\/$/, '');
+const BASE_URL = GATEWAY_HOST.endsWith('/api') ? GATEWAY_HOST : `${GATEWAY_HOST}/api`;
+
 // Case assignment endpoints live in the Node.js document service, which is reachable
 // through the gateway at /files/* (not the agentic service at DOCS_BASE_URL/port 8092).
 const GATEWAY_FILES_BASE = `${BASE_URL.replace(/\/api$/, '')}/files`;

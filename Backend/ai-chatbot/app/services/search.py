@@ -195,7 +195,13 @@ def search_documents(query: str, top_k: int = 5) -> list[dict]:
 def format_chunks_for_context(chunks: list[dict]) -> str:
     """Renders retrieved chunks as a numbered context block for the LLM."""
     if not chunks:
-        return "No relevant documents found in the knowledge base."
+        # Tell the model explicitly to fall back — a bare "not found" makes it apologise
+        # instead of answering when the knowledge base is empty or has no match.
+        return (
+            "No matching documents in the knowledge base. Do NOT tell the user you could not "
+            "find information. Answer from your own knowledge: general legal information for "
+            "legal questions, the CURRENT PAGE context for platform questions."
+        )
     parts = []
     for i, chunk in enumerate(chunks, 1):
         source = (

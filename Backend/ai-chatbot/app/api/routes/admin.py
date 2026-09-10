@@ -9,7 +9,12 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.models import ConfigResponse, ConfigUpdateRequest
-from app.services.chatbot import invalidate_config_cache, load_chatbot_config
+from app.services.chatbot import (
+    RETIRED_MODELS,
+    TEXT_MODEL,
+    invalidate_config_cache,
+    load_chatbot_config,
+)
 from app.services.db import get_db_connection, is_db_available
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -45,6 +50,19 @@ async def get_config() -> ConfigResponse:
 async def update_config(request: ConfigUpdateRequest) -> ConfigResponse:
     if not is_db_available():
         raise HTTPException(status_code=503, detail="Database not available")
+
+    if request.model_text is not None and request.model_text.strip() != TEXT_MODEL:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model_text is pinned to {TEXT_MODEL} and cannot be changed",
+        )
+    if request.model_audio is not None and (
+        request.model_audio.strip().removeprefix("models/") in RETIRED_MODELS
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"model_audio {request.model_audio!r} is retired on the Gemini API",
+        )
 
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
     if not updates:

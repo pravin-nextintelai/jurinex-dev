@@ -1,5 +1,7 @@
 # Jurinex Judgement Service — Architecture & Prompt Documentation
 
+> Library layer (Indian Kanoon → Elasticsearch → free reuse on later runs): see [LIBRARY_ARCHITECTURE.md](LIBRARY_ARCHITECTURE.md).
+
 FastAPI service on **port 8005**. Finds verified-relevant Indian judgments per legal
 issue of a lawyer's case, from Indian Kanoon (official paid API), with support/contra
 separation, verified outcomes, and adversarial prep. Frontend: sidebar → Citation

@@ -676,6 +676,10 @@ class ElasticStore:
     def __init__(self) -> None:
         self._client = None
         self._failed = False
+        # Why the connection failed, verbatim — the API surfaces it in the
+        # 503 so "not reachable" never hides a missing driver or a bad
+        # credential behind a generic "check ELASTICSEARCH_URL".
+        self.failure_reason: str | None = None
         # Indexing is fired from executor THREADS (12 doc fetches can land
         # together) — without this lock they all raced into the connect
         # attempt before the failure latch was set, printing the warning
@@ -691,6 +695,7 @@ class ElasticStore:
             settings = get_settings()
             if not settings.elasticsearch_url:
                 self._failed = True
+                self.failure_reason = "ELASTICSEARCH_URL is not set"
                 return None
             try:
                 # The per-request transport logs are INFO-noisy; failures
@@ -699,6 +704,10 @@ class ElasticStore:
                 from elasticsearch import Elasticsearch
                 kwargs: dict[str, Any] = {
                     "request_timeout": settings.elastic_request_timeout,
+                    "max_retries": settings.elastic_max_retries,
+                    # Off by default in elasticsearch-py — without it a
+                    # single slow query fails outright instead of retrying.
+                    "retry_on_timeout": True,
                     "verify_certs": settings.elastic_verify_certs,
                     "ssl_show_warn": False,
                 }
@@ -714,10 +723,18 @@ class ElasticStore:
                 logger.info("[stores] Elasticsearch connected — judgment library "
                             "index '%s'", settings.elastic_index)
             except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, ModuleNotFoundError):
+                    # Running the service under an interpreter that lacks the
+                    # driver — the usual cause is starting it with the system
+                    # python instead of this service's venv.
+                    reason += (" — install requirements.txt, or start the "
+                               "service with venv/Scripts/python.exe")
                 logger.warning("[stores] Elasticsearch unavailable (%s) — local "
-                               "judgment library disabled until restart", exc)
+                               "judgment library disabled until restart", reason)
                 self._client = None
                 self._failed = True
+                self.failure_reason = reason
             return self._client
 
     @property
@@ -816,6 +833,32 @@ class ElasticStore:
                           doc={k: v for k, v in fields.items() if v})
         except Exception:
             pass  # not indexed yet, or ES hiccup — nothing depends on this
+
+    def suggest_words(self, words: list[str]) -> dict[str, str]:
+        """Spelling suggestions for words the library does NOT contain, drawn
+        from the judgment text itself (term suggester, suggest_mode=missing):
+        {"queshing": "quashing"}. A word the index holds is never suggested
+        against. {} when ES is down or there is nothing to suggest."""
+        client = self._get()
+        wanted = [w for w in dict.fromkeys((w or "").strip().lower() for w in words) if w]
+        if client is None or not wanted:
+            return {}
+        try:
+            resp = client.search(
+                index=get_settings().elastic_index, size=0,
+                suggest={f"w{i}": {"text": w, "term": {
+                    "field": "text", "suggest_mode": "missing", "size": 1}}
+                    for i, w in enumerate(wanted)})
+            out: dict[str, str] = {}
+            for i, w in enumerate(wanted):
+                entries = (resp.get("suggest") or {}).get(f"w{i}") or []
+                options = (entries[0].get("options") if entries else None) or []
+                if options and options[0].get("text"):
+                    out[w] = str(options[0]["text"])
+            return out
+        except Exception as exc:
+            logger.warning("[stores] ES suggest failed (%s)", exc)
+            return {}
 
     def search_judgments(self, query: dict[str, Any], sort: list | None,
                          pagenum: int, size: int = 10) -> dict[str, Any] | None:

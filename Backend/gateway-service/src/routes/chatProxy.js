@@ -2,6 +2,7 @@
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
 const { authMiddleware } = require("../middlewares/authMiddleware");
+const { resolveChatServiceTarget } = require("../utils/chatServiceTarget");
 
 const router = express.Router();
 
@@ -18,7 +19,7 @@ router.use(
   "/chat",
   authMiddleware, // Protect chat routes with JWT
   createProxyMiddleware({
-    target: process.env.CHAT_SERVICE_URL || "http://localhost:8080",
+    target: resolveChatServiceTarget(),
     changeOrigin: true,
     pathRewrite: (path) => {
       // When router matches /chat, the remaining path (e.g., /ask) is passed here

@@ -2,6 +2,7 @@ const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
 const axios = require("axios");
 const { authMiddleware } = require("../middlewares/authMiddleware");
+const { resolveChatServiceTarget } = require("../utils/chatServiceTarget");
 
 const router = express.Router();
 
@@ -40,17 +41,23 @@ router.get("/files/secrets", async (req, res, next) => {
   next();
 });
 
-// Analysis prompts: ChatModel implements the same /secrets contract and is the
-// service used for /chat in local dev. Proxying here avoids 504s when
+// Analysis prompts: agentic-chat-service implements the same /secrets contract
+// and is the service used for /chat. Proxying here avoids 504s when
 // agentic-document-service (FILE_SERVICE_URL :8092) is not running.
-const chatServiceTarget = process.env.CHAT_SERVICE_URL || "http://localhost:8080";
+const chatServiceTarget = resolveChatServiceTarget();
 
 router.use(
   "/files/secrets",
   createProxyMiddleware({
     target: chatServiceTarget,
     changeOrigin: true,
-    pathRewrite: (path) => `/api/chat/secrets${path || ""}`,
+    // Express hands us the remainder after the mount point, so a bare list
+    // request arrives as "/?fetch=false". Drop that lone slash: FastAPI treats
+    // "/api/chat/secrets/" as a different (unrouted) path.
+    pathRewrite: (path) => {
+      const rest = String(path || "").replace(/^\/(?=\?|$)/, "");
+      return `/api/chat/secrets${rest}`;
+    },
     onProxyReq: (proxyReq, req) => {
       if (req.user?.id) {
         proxyReq.setHeader("x-user-id", String(req.user.id));

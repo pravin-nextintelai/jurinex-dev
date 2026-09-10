@@ -13,3 +13,8 @@ evals/
 *.log
 *.db
 node_modules/
+*.env
+judgement.env
+.venv/
+.gcloudignore
+deploy.ps1

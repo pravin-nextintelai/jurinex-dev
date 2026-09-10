@@ -24,6 +24,7 @@ import re
 import time
 from typing import Any
 
+from agent_config import THINKING_LEVELS, get_agent_config, model_caps
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.runners import InMemoryRunner
 from google.genai import types as genai_types
@@ -151,7 +152,7 @@ def _gen_config(temperature: float,
     # Fixed seed: temperature 0 alone is not bit-reproducible on Gemini —
     # the seed pins sampling so the same prompt yields the same output.
     config = genai_types.GenerateContentConfig(temperature=0.0, seed=42)
-    if model and model.startswith("gemini-3"):
+    if model and model_caps(model).thinking_level:
         # Gemini 3 models think at a HIGH level by default; LOW keeps the
         # structured-extraction quality while cutting latency substantially
         # (user directive 2026-08-10 — these are the primary analysis
@@ -160,14 +161,155 @@ def _gen_config(temperature: float,
     return config
 
 
+# ─── Admin-console agent configuration ───────────────────────────────────────
+# Model, system prompt and generation parameters come from public.agent_prompts
+# (see agent_config.py). With no row for an agent, everything below behaves
+# exactly as it always has.
+
+def _agent_prompt(agent_name: str, default: str) -> str:
+    """The instruction in force for an agent whose real prompt does NOT sit
+    in the ADK `instruction` field: the cache-aligned agents send it at the
+    end of the message (so it shares Gemini's implicit-cache prefix), and
+    the Claude paths send it as the system prompt. Both must honour the
+    admin console, or editing those rows would change nothing that matters."""
+    return get_agent_config(agent_name, default_prompt=default).prompt
+
+
+def _claude_agent(agent_name: str, default: str) -> tuple[str, str | None]:
+    """(prompt, model) for an agent that runs through claude_llm. The model
+    comes back only when the admin picked a Claude one — otherwise None, so
+    claude_llm keeps its own default rather than being handed a Gemini id."""
+    cfg = get_agent_config(agent_name, default_prompt=default)
+    model = (cfg.model_name if cfg.from_db
+             and cfg.model_name.lower().startswith("claude") else None)
+    return cfg.prompt, model
+
+
+# ADK resolves {placeholder} in an instruction from session state and RAISES
+# when one is missing, so a placeholder an admin leaves in a prompt would fail
+# the whole run. Matches identifier-like placeholders only — ADK ignores the
+# rest (JSON braces in a prompt are safe).
+_ADK_PLACEHOLDER_RE = re.compile("[{]([A-Za-z_][A-Za-z0-9_.]*)[?]?[}]")
+
+
+def _safe_adk_prompt(cfg, prompt: str, supplied: tuple[str, ...] = ()) -> str:
+    """Make an admin prompt safe to hand to ADK: any placeholder this agent
+    does not actually supply is marked optional, so ADK substitutes an empty
+    string instead of raising. Reported, so the admin can fix the prompt."""
+    if not cfg.from_db:
+        return prompt
+    unknown = sorted({m.group(1) for m in _ADK_PLACEHOLDER_RE.finditer(prompt)}
+                     - set(supplied))
+    if not unknown:
+        return prompt
+    logger.warning(
+        "[AgentConfig] agent=%s: admin prompt contains placeholder(s) %s that "
+        "nothing fills — treating them as optional (they render as empty). "
+        "Remove them from the prompt, or use one of: %s",
+        cfg.agent_name, ", ".join("{" + u + "}" for u in unknown),
+        ", ".join("{" + s + "}" for s in supplied) or "none for this agent")
+    for name in unknown:
+        prompt = prompt.replace("{" + name + "}", "{" + name + "?}")
+    return prompt
+
+
+def _adk_model(cfg, fallback: str) -> str:
+    """The model string for an ADK LlmAgent. ADK talks to Gemini/Gemma
+    directly; an admin row naming a Claude/DeepSeek model cannot drive these
+    agents, so that is reported and the hardcoded model stands rather than
+    failing at generation time."""
+    name = (cfg.model_name or "").strip()
+    if not name:
+        return fallback
+    if name.lower().startswith(("gemini", "gemma", "models/")):
+        return name
+    if cfg.from_db:
+        logger.warning(
+            "[AgentConfig] agent=%s: admin model %r is not a Gemini/Gemma model — "
+            "ADK cannot run it here, using %s. Pick a Gemini model for this agent, "
+            "or leave it unset.", cfg.agent_name, name, fallback)
+    return fallback
+
+
+def _thinking_config(params: dict, model: str):
+    """thinking_budget / thinking_level from the admin's llm_parameters,
+    filtered by what the chosen model actually accepts (see model_caps).
+
+    The console writes `false` for an unticked toggle — that means "not set",
+    NOT "a budget of zero"; reading it as 0 is what broke gemini-2.5-pro. A
+    parameter the model would reject is dropped with a warning rather than
+    sent, because a rejected parameter fails the entire request.
+    """
+    caps = model_caps(model)
+
+    # The console may write any case ("MINIMAL", "low"); "default"/"" mean
+    # "not set". MINIMAL is newer than the rest and several models reject it.
+    level = str(params.get("thinking_level") or "").strip().lower()
+    if level in THINKING_LEVELS:
+        if not caps.thinking_level:
+            logger.warning(
+                "[AgentConfig] thinking_level=%r is not accepted by %s — ignoring "
+                "it; the model runs at its own default.", level.upper(), model)
+        elif level == "minimal" and not caps.minimal_level:
+            # Closest the model does accept, rather than dropping the intent.
+            logger.warning(
+                "[AgentConfig] %s does not support thinking_level MINIMAL — "
+                "using LOW, the least thinking it accepts.", model)
+            return genai_types.ThinkingConfig(thinking_level="LOW")
+        else:
+            return genai_types.ThinkingConfig(thinking_level=level.upper())
+
+    budget = params.get("thinking_budget")
+    if budget is None or isinstance(budget, bool):
+        return None                      # a toggle, not a budget
+    if not isinstance(budget, (int, float)):
+        return None
+    budget = int(budget)
+    if budget == 0 and not caps.zero_budget:
+        logger.warning(
+            "[AgentConfig] thinking_budget=0 is not accepted by %s (it always "
+            "thinks) — sending no budget instead so the run does not fail.", model)
+        return None
+    if not caps.thinking_budget:
+        logger.warning(
+            "[AgentConfig] %s does not accept a thinking budget — ignoring "
+            "thinking_budget=%s.", model, budget)
+        return None
+    return genai_types.ThinkingConfig(thinking_budget=budget)
+
+
+def _gen_config_for(cfg, model: str) -> genai_types.GenerateContentConfig:
+    """Generation config for one agent. Without an admin row this is exactly
+    what the service has always sent (temperature 0 + seed 42 — the
+    determinism requirement). With a row, the console's temperature and
+    llm_parameters decide, and determinism is the admin's call."""
+    if not cfg.from_db:
+        return _gen_config(cfg.temperature, model)
+
+    params = cfg.llm_parameters or {}
+    config = genai_types.GenerateContentConfig(temperature=float(cfg.temperature))
+    seed = params.get("seed")
+    config.seed = (int(seed) if isinstance(seed, (int, float))
+                   and not isinstance(seed, bool) else 42)
+    for keys, attr, cast in ((("top_p", "topP"), "top_p", float),
+                             (("top_k", "topK"), "top_k", int),
+                             (("max_output_tokens", "maxOutputTokens"),
+                              "max_output_tokens", int)):
+        for key in keys:
+            value = params.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                setattr(config, attr, cast(value))
+                break
+    thinking = _thinking_config(params, model)
+    if thinking is not None:
+        config.thinking_config = thinking
+    return config
+
+
 # ─── Agentic Document Context Service (Section 5) ────────────────────────────
 
 def build_classify_agent() -> LlmAgent:
-    return LlmAgent(
-        name="doc_classify",
-        model=get_settings().gemini_model,
-        description="Classifies the uploaded legal document type.",
-        instruction=(
+    default_prompt = (
             "You are a legal document classifier for Indian legal practice. "
             "Read the document text provided by the user and classify it as one of: "
             "petition, judgment, brief, note, mixed.\n"
@@ -177,8 +319,15 @@ def build_classify_agent() -> LlmAgent:
             "- note: an informal note, email or rough case description\n"
             "- mixed: combination (e.g. judgment plus lawyer's instruction)\n"
             "Return strict JSON matching the schema."
-        ),
-        generate_content_config=_gen_config(0.1),
+    )
+    cfg = get_agent_config("doc_classify", default_prompt=default_prompt)
+    model = _adk_model(cfg, get_settings().gemini_model)
+    return LlmAgent(
+        name="doc_classify",
+        model=model,
+        description="Classifies the uploaded legal document type.",
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=DocClassification,
         output_key="doc_classification",
         disallow_transfer_to_parent=True,
@@ -208,12 +357,24 @@ def build_extract_agent(document_type: str | None = None) -> LlmAgent:
         # Standalone fast path: the type is already known — inject it as a
         # literal so this agent needs no session state from a classifier.
         instruction = instruction.replace("{doc_classification}", document_type)
+    cfg = get_agent_config("context_extract", default_prompt=instruction)
+    model = _adk_model(cfg, get_settings().gemini_model)
+    prompt = cfg.prompt
+    if document_type:
+        # Standalone fast path: the type is known, so it is injected here —
+        # into the prompt actually in use, admin-authored or not.
+        prompt = prompt.replace("{doc_classification}", document_type)
+        supplied: tuple[str, ...] = ()
+    else:
+        # Sequential flow: the classifier writes doc_classification to
+        # session state and ADK substitutes it.
+        supplied = ("doc_classification",)
     return LlmAgent(
         name="context_extract",
-        model=get_settings().gemini_model,
+        model=model,
         description="Extracts structured case context from the document.",
-        instruction=instruction,
-        generate_content_config=_gen_config(0.1),
+        instruction=_safe_adk_prompt(cfg, prompt, supplied),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=CaseContextDraft,
         output_key="case_context_draft",
         disallow_transfer_to_parent=True,
@@ -350,12 +511,17 @@ ISSUE_SPLIT_PROMPT = (
 def build_issue_split_agent() -> LlmAgent:
     """Cache-aligned: the shared system line only — the full ISSUE_SPLIT_PROMPT
     rides at the END of the message, after the implicit-cache prefix."""
+    # The admin row drives the model and parameters; its prompt replaces
+    # ISSUE_SPLIT_PROMPT inside the message (see spot_issues), not this
+    # structural system line.
+    cfg = get_agent_config("issue_split", default_prompt=ISSUE_SPLIT_PROMPT)
+    model = _adk_model(cfg, get_settings().gemini_fallback_model)
     return LlmAgent(
         name="issue_split",
-        model=get_settings().gemini_fallback_model,
+        model=model,
         description="Splits a case summary into distinct legal issues.",
         instruction=_CACHE_ALIGNED_SYSTEM,
-        generate_content_config=_gen_config(0.25, get_settings().gemini_fallback_model),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=IssueList,
         output_key="issues",
         disallow_transfer_to_parent=True,
@@ -422,11 +588,7 @@ _KEYWORD_SYNTAX_ADVANCED = (
 
 
 def build_keyword_extract_agent(style: str = "simple") -> LlmAgent:
-    return LlmAgent(
-        name="keyword_extract",
-        model=get_settings().gemini_keyword_fallback_model,
-        description="Generates anchor queries + four-axis search terms for one legal issue.",
-        instruction=(
+    default_prompt = (
             "You are an expert Indian legal-research librarian building Indian Kanoon "
             "queries for ONE legal issue in live litigation. A lawyer will cite what "
             "these queries find to a court, so precision matters more than volume.\n\n"
@@ -460,8 +622,15 @@ def build_keyword_extract_agent(style: str = "simple") -> LlmAgent:
             "5. Factual terms must come from THIS case's distinctive facts, not "
             "generic filler like 'criminal case' or 'court proceedings'.\n"
             "Return strict JSON matching the schema."
-        ),
-        generate_content_config=_gen_config(0.25, get_settings().gemini_keyword_fallback_model),
+    )
+    cfg = get_agent_config("keyword_extract", default_prompt=default_prompt)
+    model = _adk_model(cfg, get_settings().gemini_keyword_fallback_model)
+    return LlmAgent(
+        name="keyword_extract",
+        model=model,
+        description="Generates anchor queries + four-axis search terms for one legal issue.",
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=KeywordSet,
         output_key="keywords",
         disallow_transfer_to_parent=True,
@@ -789,15 +958,17 @@ def build_judgment_verifier_agent() -> LlmAgent:
     # issue — the deterministic enforce_verifier_rules layer is the real
     # precision guard, so the verifier runs thinking-off. Guarded to
     # 2.5-era models; Gemini 3 models use thinking_level (see _gen_config).
-    model = get_settings().gemini_model
-    config = _gen_config(0.1, model)
-    if model.startswith("gemini-2"):
+    cfg = get_agent_config("judgment_verifier",
+                           default_prompt=JUDGMENT_VERIFIER_SYSTEM)
+    model = _adk_model(cfg, get_settings().gemini_model)
+    config = _gen_config_for(cfg, model)
+    if not cfg.from_db and model_caps(model).zero_budget:
         config.thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
     return LlmAgent(
         name="judgment_verifier",
         model=model,
         description="Verifies whether ONE fetched judgment is usable for ONE issue.",
-        instruction=JUDGMENT_VERIFIER_SYSTEM,
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
         generate_content_config=config,
         output_schema=JudgmentVerification,
         output_key="judgment_verification",
@@ -945,7 +1116,9 @@ async def _verifier_cached_name(model: str) -> str | None:
             cache = await asyncio.to_thread(
                 _genai_direct().caches.create, model=model,
                 config=genai_types.CreateCachedContentConfig(
-                    system_instruction=JUDGMENT_VERIFIER_SYSTEM,
+                    system_instruction=get_agent_config(
+                        "judgment_verifier",
+                        default_prompt=JUDGMENT_VERIFIER_SYSTEM).prompt,
                     ttl=f"{_VERIFIER_CACHE_TTL_S}s"))
             # Storage is billed at RELEASE (actual lifetime), not here.
             stored_tokens = int(getattr(getattr(cache, "usage_metadata", None),
@@ -969,18 +1142,17 @@ async def _verify_direct_cached(message: str) -> JudgmentVerification | None:
     settings = get_settings()
     if not settings.verifier_context_cache or not settings.google_api_key:
         return None
-    model = settings.gemini_model
+    cfg = get_agent_config("judgment_verifier",
+                           default_prompt=JUDGMENT_VERIFIER_SYSTEM)
+    model = _adk_model(cfg, settings.gemini_model)
     cache_name = await _verifier_cached_name(model)
     if not cache_name:
         return None
-    config = genai_types.GenerateContentConfig(
-        temperature=0.0,
-        seed=42,
-        cached_content=cache_name,
-        response_mime_type="application/json",
-        response_schema=JudgmentVerification,
-    )
-    if model.startswith("gemini-2"):
+    config = _gen_config_for(cfg, model)
+    config.cached_content = cache_name
+    config.response_mime_type = "application/json"
+    config.response_schema = JudgmentVerification
+    if not cfg.from_db and model_caps(model).zero_budget:
         config.thinking_config = genai_types.ThinkingConfig(thinking_budget=0)
     try:
         resp = await asyncio.to_thread(
@@ -1164,9 +1336,17 @@ async def verify_judgments(issue: Issue, context: CaseContext,
             # Claude first (sharper on shelf/field-of-law distinctions than
             # flash); Gemini agent is the automatic fallback.
             if settings.verifier_use_claude and claude_available():
+                # Same admin row as the Gemini verifier: its prompt always
+                # applies, and its model applies here when the admin picked
+                # a Claude one (this path is the Claude path).
+                vcfg = get_agent_config("judgment_verifier",
+                                        default_prompt=JUDGMENT_VERIFIER_SYSTEM)
+                claude_model = settings.judgement_verifier_claude_model
+                if vcfg.from_db and vcfg.model_name.lower().startswith("claude"):
+                    claude_model = vcfg.model_name
                 verdict = await claude_parse(
-                    JUDGMENT_VERIFIER_SYSTEM, message, JudgmentVerification,
-                    max_tokens=3000, model=settings.judgement_verifier_claude_model)
+                    vcfg.prompt, message, JudgmentVerification,
+                    max_tokens=3000, model=claude_model)
             if verdict is None:
                 # Fast path: direct Gemini call with the CACHED system
                 # prompt (billed once/hour, not per call). None → ADK path.
@@ -1204,11 +1384,7 @@ async def verify_judgments(issue: Issue, context: CaseContext,
 # ─── Per-citation report analysis ────────────────────────────────────────────
 
 def build_citation_analysis_agent() -> LlmAgent:
-    return LlmAgent(
-        name="citation_analysis",
-        model=get_settings().gemini_model,
-        description="Drafts a grounded legal-intelligence report for one judgment.",
-        instruction=(
+    default_prompt = (
             "You are preparing a citation report for an Indian lawyer, analysing ONE "
             "judgment against ONE legal issue from their case.\n\n"
             "Produce:\n"
@@ -1228,8 +1404,15 @@ def build_citation_analysis_agent() -> LlmAgent:
             "3. Do NOT assess how strong the match is — relevance scores are computed "
             "separately; write analysis, not scores.\n"
             "Return strict JSON matching the schema."
-        ),
-        generate_content_config=_gen_config(0.15),
+    )
+    cfg = get_agent_config("citation_analysis", default_prompt=default_prompt)
+    model = _adk_model(cfg, get_settings().gemini_model)
+    return LlmAgent(
+        name="citation_analysis",
+        model=model,
+        description="Drafts a grounded legal-intelligence report for one judgment.",
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=CitationAnalysis,
         output_key="citation_analysis",
         disallow_transfer_to_parent=True,
@@ -1303,12 +1486,14 @@ CASE_SUMMARY_SYSTEM = (
 
 
 def build_case_summary_agent() -> LlmAgent:
+    cfg = get_agent_config("case_summary", default_prompt=CASE_SUMMARY_SYSTEM)
+    model = _adk_model(cfg, get_settings().gemini_model)
     return LlmAgent(
         name="case_summary",
-        model=get_settings().gemini_model,
+        model=model,
         description="Advocate-grade 100-word summary + 8-line structured note for one judgment.",
-        instruction=CASE_SUMMARY_SYSTEM,
-        generate_content_config=_gen_config(0.1),
+        instruction=_safe_adk_prompt(cfg, cfg.prompt),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=JudgmentCaseSummary,
         output_key="case_summary",
         disallow_transfer_to_parent=True,
@@ -1339,9 +1524,48 @@ async def generate_case_summary(title: str, doc_text: str, matter_context: str,
 
 # ─── Runner helper ────────────────────────────────────────────────────────────
 
+# Upstream failures that say "try again", not "your request is wrong": a
+# capacity blip on Gemini (503 UNAVAILABLE) used to fail an entire analysis
+# run, throwing away every stage that had already succeeded.
+_TRANSIENT_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_TRANSIENT_MARKERS = ("UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED",
+                      "INTERNAL", "overloaded", "try again")
+# 2s then 6s: long enough for a capacity blip to pass, short enough that a
+# genuinely down model fails fast.
+_RETRY_DELAYS = (2.0, 6.0)
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """Is this worth retrying, or is the request itself wrong?"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code in _TRANSIENT_STATUSES
+    text = str(exc)
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
 async def run_agent_once(agent, message: str, output_keys: list[str]) -> dict[str, Any]:
     """Run one ADK agent (or SequentialAgent) in a fresh in-memory session
-    and return the requested session-state outputs (written via output_key)."""
+    and return the requested session-state outputs (written via output_key).
+    A transient upstream error is retried with backoff — one 503 from Gemini
+    must not discard a whole run."""
+    task = str(getattr(agent, "name", "") or "agent")
+    for attempt, delay in enumerate((*_RETRY_DELAYS, None), start=1):
+        try:
+            return await _run_agent_attempt(agent, message, output_keys)
+        except Exception as exc:
+            if delay is None or not _is_transient_llm_error(exc):
+                raise
+            logger.warning(
+                "[agents] %s on %s: %s — retrying in %.0fs (attempt %d of %d)",
+                task, getattr(agent, "model", "?"), str(exc)[:120], delay,
+                attempt, len(_RETRY_DELAYS) + 1)
+            await asyncio.sleep(delay)
+    raise RuntimeError("unreachable")            # loop always returns or raises
+
+
+async def _run_agent_attempt(agent, message: str,
+                             output_keys: list[str]) -> dict[str, Any]:
     runner = InMemoryRunner(agent=agent, app_name=_APP)
     session = await runner.session_service.create_session(app_name=_APP, user_id="pipeline")
     content = genai_types.Content(role="user", parts=[genai_types.Part(text=message[:_llm_budget()])])
@@ -1393,7 +1617,10 @@ async def spot_issues(raw_text: str, context: CaseContext,
         f"{role_note}"
     )
     if claude_available():
-        result = await claude_parse(ISSUE_SPOTTER_SYSTEM, user, IssueSpotResult)
+        spotter_prompt, spotter_model = _claude_agent(
+            "issue_spotter", ISSUE_SPOTTER_SYSTEM)
+        result = await claude_parse(spotter_prompt, user, IssueSpotResult,
+                                    model=spotter_model)
         if result is not None:
             context.procedural_stage = result.procedural_stage.strip() or None
             context.forum = result.forum.strip() or None
@@ -1420,7 +1647,8 @@ async def spot_issues(raw_text: str, context: CaseContext,
     # so it shares Gemini's implicit-cache prefix with the grounds call.
     out = await run_agent_once(
         build_issue_split_agent(),
-        _cache_aligned(_stage1_prefix(raw_text, context), ISSUE_SPLIT_PROMPT,
+        _cache_aligned(_stage1_prefix(raw_text, context),
+                       _agent_prompt("issue_split", ISSUE_SPLIT_PROMPT),
                        extra=covered_note + role_note),
         ["issues"])
     issue_list = IssueList.model_validate(out.get("issues") or {"issues": []})
@@ -1456,8 +1684,10 @@ async def enrich_custom_issue(issue: Issue, context: CaseContext) -> Issue:
         f"Procedural stage: {context.procedural_stage or 'not specified'}\n"
         f"Relief sought: {context.relief_sought[:300]}"
     )
-    result = await claude_parse(CUSTOM_ISSUE_ENRICH_SYSTEM, user, SpottedIssue,
-                                max_tokens=1000)
+    enrich_prompt, enrich_model = _claude_agent(
+        "custom_issue_enrich", CUSTOM_ISSUE_ENRICH_SYSTEM)
+    result = await claude_parse(enrich_prompt, user, SpottedIssue,
+                                max_tokens=1000, model=enrich_model)
     if result is None or not result.issue.strip():
         logger.warning("[custom-issue] enrichment unavailable — searching as typed")
         return issue
@@ -1480,12 +1710,15 @@ def build_grounds_extract_agent() -> LlmAgent:
     schema as the Claude path. Cache-aligned: the shared system line only;
     GROUNDS_EXTRACTOR_SYSTEM rides at the END of the message, after the
     implicit-cache prefix."""
+    cfg = get_agent_config("grounds_extract",
+                           default_prompt=GROUNDS_EXTRACTOR_SYSTEM)
+    model = _adk_model(cfg, get_settings().gemini_fallback_model)
     return LlmAgent(
         name="grounds_extract",
-        model=get_settings().gemini_fallback_model,
+        model=model,
         description="Extracts the legal grounds pleaded in a filing.",
         instruction=_CACHE_ALIGNED_SYSTEM,
-        generate_content_config=_gen_config(0.1, get_settings().gemini_fallback_model),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=GroundsExtractResult,
         output_key="grounds_extract",
         disallow_transfer_to_parent=True,
@@ -1542,8 +1775,10 @@ async def extract_grounds(raw_text: str, context: CaseContext,
     )
     result: GroundsExtractResult | None = None
     if claude_available():
-        result = await claude_parse(GROUNDS_EXTRACTOR_SYSTEM, user,
-                                    GroundsExtractResult, max_tokens=8000)
+        g_prompt, g_model = _claude_agent("grounds_extract",
+                                          GROUNDS_EXTRACTOR_SYSTEM)
+        result = await claude_parse(g_prompt, user, GroundsExtractResult,
+                                    max_tokens=8000, model=g_model)
         if result is None:
             logger.warning("[claude] grounds extractor unavailable — Gemini fallback")
     if result is None:
@@ -1551,7 +1786,9 @@ async def extract_grounds(raw_text: str, context: CaseContext,
             out = await run_agent_once(
                 build_grounds_extract_agent(),
                 _cache_aligned(_stage1_prefix(raw_text, context),
-                               GROUNDS_EXTRACTOR_SYSTEM, extra=role_note),
+                               _agent_prompt("grounds_extract",
+                                             GROUNDS_EXTRACTOR_SYSTEM),
+                               extra=role_note),
                 ["grounds_extract"])
             result = GroundsExtractResult.model_validate(out.get("grounds_extract") or {})
         except Exception:
@@ -1590,12 +1827,14 @@ async def extract_grounds(raw_text: str, context: CaseContext,
 def build_fresh_extract_agent() -> LlmAgent:
     """Gemini fallback for the fresh-matter extractor — same system prompt
     and schema as the Claude path, so downstream conversion is identical."""
+    cfg = get_agent_config("fresh_extract", default_prompt=FRESH_CASE_SYSTEM)
+    model = _adk_model(cfg, get_settings().gemini_fallback_model)
     return LlmAgent(
         name="fresh_extract",
-        model=get_settings().gemini_fallback_model,
+        model=model,
         description="Formulates proposed grounds for a fresh, unfiled matter.",
         instruction=_CACHE_ALIGNED_SYSTEM,
-        generate_content_config=_gen_config(0.1, get_settings().gemini_fallback_model),
+        generate_content_config=_gen_config_for(cfg, model),
         output_schema=GroundsExtractResult,
         output_key="fresh_extract",
         disallow_transfer_to_parent=True,
@@ -1625,8 +1864,9 @@ async def extract_fresh(raw_text: str, context: CaseContext, objective: str,
     async def _fresh_grounds() -> GroundsExtractResult:
         result: GroundsExtractResult | None = None
         if claude_available():
-            result = await claude_parse(FRESH_CASE_SYSTEM, user,
-                                        GroundsExtractResult, max_tokens=8000)
+            f_prompt, f_model = _claude_agent("fresh_extract", FRESH_CASE_SYSTEM)
+            result = await claude_parse(f_prompt, user, GroundsExtractResult,
+                                        max_tokens=8000, model=f_model)
             if result is None:
                 logger.warning("[claude] fresh extractor unavailable — Gemini fallback")
         if result is None:
@@ -1634,7 +1874,8 @@ async def extract_fresh(raw_text: str, context: CaseContext, objective: str,
                 out = await run_agent_once(
                     build_fresh_extract_agent(),
                     _cache_aligned(
-                        _stage1_prefix(raw_text, context), FRESH_CASE_SYSTEM,
+                        _stage1_prefix(raw_text, context),
+                        _agent_prompt("fresh_extract", FRESH_CASE_SYSTEM),
                         extra=("\n\nCLIENT'S OBJECTIVE (the only instruction "
                                f"you follow):\n{objective[:2000]}{role_note}")),
                     ["fresh_extract"])
@@ -2040,7 +2281,9 @@ async def generate_queries(issue: Issue, context: CaseContext,
             f"{retry_note}"
         )
         system = QUERY_GEN_SYSTEM_ADVANCED if style == "advanced" else QUERY_GEN_SYSTEM_SIMPLE
-        result = await claude_parse(system, user, KeywordSet, max_tokens=4000)
+        qg_prompt, qg_model = _claude_agent("query_generation", system)
+        result = await claude_parse(qg_prompt, user, KeywordSet,
+                                    max_tokens=4000, model=qg_model)
         if result is not None and result.all_terms():
             return _wire_queries(_merge_ground_statutes(result, issue))
         logger.warning("[claude] query generation unavailable — Gemini keyword fallback")

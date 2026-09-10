@@ -540,8 +540,13 @@ async def stream_document_chat(ctx: dict[str, Any]) -> AsyncIterator[str]:
         if conv:
             cache_question = f"PREVIOUS CONVERSATION:\n{conv}\n\nCURRENT QUESTION:\n{cache_question}"
 
-        async def _pipe_llm_events(events: AsyncIterator[dict[str, Any]]) -> AsyncIterator[str]:
+        async def _pipe_llm_events(
+            events: AsyncIterator[dict[str, Any]],
+            *,
+            swallow_error_before_output: bool = False,
+        ) -> AsyncIterator[str]:
             nonlocal full_answer, chunk_count, captured_usage
+            emitted_here = 0  # chunks this generator has sent to the client
             async for ev in events:
                 # Authoritative stitched answer from the generator (excludes
                 # degenerate/restarted rounds that were streamed live) — replaces
@@ -565,6 +570,7 @@ async def stream_document_chat(ctx: dict[str, Any]) -> AsyncIterator[str]:
                 elif ev.get("type") == "chunk":
                     full_answer += ev.get("text", "")
                     chunk_count += 1
+                    emitted_here += 1
                     yield sse({"type": "chunk", "text": ev.get("text", "")})
                     if delay_ms > 0:
                         await asyncio.sleep(delay_ms / 1000.0)
@@ -575,6 +581,17 @@ async def stream_document_chat(ctx: dict[str, Any]) -> AsyncIterator[str]:
                         yield sse({"type": "cache_session", "cache_session_metrics": metrics})
                     yield sse({"type": "usage", "tokenUsage": ev, "sessionMetrics": metrics})
                 elif ev.get("type") == "error":
+                    if swallow_error_before_output and emitted_here == 0:
+                        # Nothing has reached the client yet, so let the caller
+                        # fall back (ADK context-cache path -> direct GCS
+                        # streaming) instead of surfacing an internal failure
+                        # such as ADK's "Context variable not found" as the reply.
+                        logger.warning(
+                            "LLM stream error before any output (%s: %s) — falling back",
+                            ev.get("code", "LLM_STREAM_ERROR"),
+                            ev.get("message"),
+                        )
+                        break
                     logger.warning("LLM stream error: %s", ev.get("message"))
                     yield sse({"type": "error", "message": ev.get("message", "LLM stream error"), "code": ev.get("code", "LLM_STREAM_ERROR")})
                     break
@@ -595,7 +612,9 @@ async def stream_document_chat(ctx: dict[str, Any]) -> AsyncIterator[str]:
                         model_name=cache_model,
                         llm_config=llm_req,
                         chat_session_id=final_session,
-                    )
+                    ),
+                    # The direct GCS path below is the fallback for this one.
+                    swallow_error_before_output=True,
                 ):
                     yield line
 

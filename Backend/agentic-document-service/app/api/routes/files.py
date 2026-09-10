@@ -728,6 +728,12 @@ def _build_document_context(doc_texts: list[dict[str, Any]], char_limit: int) ->
     return "\n\n---\n\n".join(parts)
 
 
+class InternalAnalyticsRequest(BaseModel):
+    userIds: list[int | str] = []
+    startDate: str | None = None
+    endDate: str | None = None
+
+
 @router.post("/internal/analytics/users")
 def get_internal_user_analytics(body: InternalAnalyticsRequest) -> dict[str, Any]:
     normalized_user_ids = _normalize_internal_user_ids(body.userIds)
@@ -911,11 +917,6 @@ class DriveImportRequest(BaseModel):
     file_ids: list[str]
     # process=false → Case Storage import: keep the files, skip OCR/chunking/embeddings.
     process: bool = True
-
-class InternalAnalyticsRequest(BaseModel):
-    userIds: list[int | str] = []
-    startDate: str | None = None
-    endDate: str | None = None
 
 
 class DraftExportDocxRequest(BaseModel):

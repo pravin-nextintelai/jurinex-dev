@@ -192,3 +192,7 @@ frontend/rz/
 ~$*
 .~*
 .~lock.*#
+
+# Service env files with live credentials (deploy scripts read them locally)
+*.env
+Backend/judgement-service/judgement.env

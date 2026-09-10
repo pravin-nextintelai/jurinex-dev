@@ -30,6 +30,34 @@ _MIN_GOOGLE_GENAI_LIVE_VERSION = (1, 60, 0)
 _MIN_TEXT_OUTPUT_TOKENS = 1
 _MAX_TEXT_OUTPUT_TOKENS = 8192
 
+# Text chat (landing page + in-app panel) is pinned to Gemini 2.5 Flash.
+# The chatbot_config DB row / admin API may still carry another model_text value,
+# but it is ignored: a retired model stored there (gemini-1.5-flash) made every
+# /api/chat call fail with "404 NOT_FOUND ... is not found for API version v1beta".
+TEXT_MODEL = "gemini-2.5-flash"
+
+# Gemini Live (voice) needs a bidiGenerateContent model; plain gemini-2.5-flash
+# does not support the Live API, so audio keeps its own default.
+DEFAULT_AUDIO_MODEL = "gemini-3.1-flash-live-preview"
+
+# Model names that no longer exist on the Gemini API. If one is still stored in
+# the DB config we fall back to the code default instead of failing every request.
+RETIRED_MODELS = frozenset({
+    "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-flash-8b",
+    "gemini-1.5-pro", "gemini-1.5-pro-latest",
+    "gemini-2.0-flash-live", "gemini-2.0-flash-live-001",
+})
+
+# Placeholder prompt left in chatbot_config by the original schema. It carries no
+# instructions (no search, no legal focus, no language rules) so it is treated as unset.
+_LEGACY_STUB_PROMPTS = frozenset({"You are the Nexintel AI Support Agent."})
+_MIN_PROMPT_CHARS = 60
+
+# gemini-2.5-flash counts its internal "thinking" tokens inside max_output_tokens.
+# Thinking gets a fixed budget on top of the configured answer length so a long
+# reasoning pass can never truncate (or blank out) the visible answer.
+_THINKING_BUDGET_TOKENS = 1024
+
 _DEFAULT_SYSTEM_PROMPT = """
 You are the JuriNex AI Legal Assistant on the JuriNex landing page.
 
@@ -42,6 +70,10 @@ LEGAL ASSISTANCE:
 - Search the knowledge base using search_documents for every legal question.
 - Provide legal information, not legal advice.
 - Prioritize retrieved RAG context (BNS, BNSS, BSA, IPC, CrPC, IEA, etc.) over general knowledge.
+- If search_documents returns nothing relevant, STILL answer the question fully from your own
+  knowledge of Indian law. Never reply that you "could not find information". Begin such answers
+  with "Based on general legal principles:" and name the sections you rely on (e.g. BNS s.303 for
+  theft, with its IPC equivalent s.378/379).
 - Use Markdown formatting (bold, lists, tables, blockquotes). Keep answers concise.
 
 LANGUAGE:
@@ -190,8 +222,8 @@ Greeting words (hi/hello/hii/hey) before the name are NOT part of the name — i
 
 @dataclass
 class ChatbotConfig:
-    model_text: str             = "gemini-2.5-flash"
-    model_audio: str            = "gemini-3.1-flash-live-preview"
+    model_text: str             = TEXT_MODEL
+    model_audio: str            = DEFAULT_AUDIO_MODEL
     max_tokens: int             = 2048
     temperature: float          = 0.1
     top_p: float                = 0.95
@@ -263,6 +295,22 @@ def _ensure_current_live_sdk() -> None:
     logger.debug("google-genai SDK version ok: %s", version)
 
 
+def _prompt_from_db(value: object, default: str) -> str:
+    """Use the DB prompt only when it is a real prompt; blank/stub values fall back to the code default."""
+    text = value.strip() if isinstance(value, str) else ""
+    if not text or text in _LEGACY_STUB_PROMPTS or len(text) < _MIN_PROMPT_CHARS:
+        return default
+    return text
+
+
+def _audio_model_from_db(value: object) -> str:
+    """Return the stored audio model unless it is blank or retired."""
+    name = value.strip().removeprefix("models/") if isinstance(value, str) else ""
+    if not name or name in RETIRED_MODELS:
+        return DEFAULT_AUDIO_MODEL
+    return name
+
+
 def load_chatbot_config(bypass_cache: bool = False) -> ChatbotConfig:
     global _config_cache, _config_loaded_at
     now = time.monotonic()
@@ -285,8 +333,20 @@ def load_chatbot_config(bypass_cache: bool = False) -> ChatbotConfig:
                 row = cur.fetchone()
         if row:
             cfg = ChatbotConfig()
-            cfg.model_text       = row["model_text"]           if row.get("model_text") is not None else cfg.model_text
-            cfg.model_audio      = row["model_audio"]          if row.get("model_audio") is not None else cfg.model_audio
+            db_model_text = (row.get("model_text") or "").strip()
+            if db_model_text and db_model_text != TEXT_MODEL:
+                logger.warning(
+                    "chatbot_config.model_text=%r ignored — text chat is pinned to %s",
+                    db_model_text, TEXT_MODEL,
+                )
+            cfg.model_text = TEXT_MODEL
+            db_model_audio = row.get("model_audio")
+            cfg.model_audio = _audio_model_from_db(db_model_audio)
+            if isinstance(db_model_audio, str) and db_model_audio.strip().removeprefix("models/") != cfg.model_audio:
+                logger.warning(
+                    "chatbot_config.model_audio=%r is retired/blank — using %s",
+                    db_model_audio, cfg.model_audio,
+                )
             cfg.max_tokens       = int(row["max_tokens"])       if row.get("max_tokens")    is not None else cfg.max_tokens
             cfg.temperature      = float(row["temperature"])    if row.get("temperature")   is not None else cfg.temperature
             cfg.top_p            = float(row["top_p"])          if row.get("top_p")         is not None else cfg.top_p
@@ -296,10 +356,10 @@ def load_chatbot_config(bypass_cache: bool = False) -> ChatbotConfig:
             cfg.speaking_rate    = float(row["speaking_rate"]) if row.get("speaking_rate") is not None else cfg.speaking_rate
             cfg.pitch            = float(row["pitch"])          if row.get("pitch")         is not None else cfg.pitch
             cfg.volume_gain_db   = float(row["volume_gain_db"]) if row.get("volume_gain_db") is not None else cfg.volume_gain_db
-            cfg.system_prompt         = row["system_prompt"]          if row.get("system_prompt")          is not None else cfg.system_prompt
-            cfg.audio_system_prompt   = row["audio_system_prompt"]    if row.get("audio_system_prompt")    is not None else cfg.audio_system_prompt
-            cfg.in_app_system_prompt  = row["in_app_system_prompt"]   if row.get("in_app_system_prompt")   is not None else cfg.in_app_system_prompt
-            cfg.in_app_audio_override = row["in_app_audio_override"]  if row.get("in_app_audio_override")  is not None else cfg.in_app_audio_override
+            cfg.system_prompt         = _prompt_from_db(row.get("system_prompt"),         cfg.system_prompt)
+            cfg.audio_system_prompt   = _prompt_from_db(row.get("audio_system_prompt"),   cfg.audio_system_prompt)
+            cfg.in_app_system_prompt  = _prompt_from_db(row.get("in_app_system_prompt"),  cfg.in_app_system_prompt)
+            cfg.in_app_audio_override = _prompt_from_db(row.get("in_app_audio_override"), cfg.in_app_audio_override)
             # lead_text_addendum and lead_audio_addendum always use code defaults (not DB-configurable)
             logger.info(
                 "Loaded chatbot config from DB: model_text=%s model_audio=%s voice=%s",
@@ -385,9 +445,10 @@ def _run_agentic_loop(
     gen_cfg = gt.GenerateContentConfig(
         system_instruction=system_instruction,
         temperature=cfg.temperature,
-        max_output_tokens=effective_max_tokens,
+        max_output_tokens=effective_max_tokens + _THINKING_BUDGET_TOKENS,
         top_p=cfg.top_p,
         tools=tools,
+        thinking_config=gt.ThinkingConfig(thinking_budget=_THINKING_BUDGET_TOKENS),
     )
 
     # Prior turns (history) + current question
