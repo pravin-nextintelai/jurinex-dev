@@ -19,6 +19,8 @@ from typing import Any, Iterable, NamedTuple, Sequence
 
 from app.services.memory.schemas import (
     MAX_CASE_CHARS,
+    MAX_INSTRUCTION_ITEM_CHARS,
+    MAX_INSTRUCTION_ITEMS,
     MAX_INSTRUCTIONS_CHARS,
     MAX_LINE_CHARS,
     MAX_PREFERENCES_CHARS,
@@ -341,6 +343,147 @@ def validate_instructions(text: str) -> list[Rejection]:
     if hit:
         problems.append(hit)
     return problems
+
+
+# ── Instruction items ────────────────────────────────────────────────────────
+# One instruction per item, at case or universal scope. A universal instruction
+# is loaded into every case the advocate works on, so it may carry working style
+# only: a date, a case number, a party's name or anything else that belongs to
+# one matter is refused there, however it is worded.
+
+# Party names that are really institutions appear in many unrelated matters, so
+# they do not mark an instruction as case-specific.
+_GENERIC_PARTY_RE = re.compile(
+    r"^(?:the\s+)?(?:state|union|government|govt|central|police|commissioner|collector|registrar|"
+    r"municipal|corporation|authority|board|department|ministry|secretary|director|officer|"
+    r"tribunal|court|bank|india|maharashtra|karnataka|delhi|gujarat|kerala|tamil|nadu|bengal|punjab)\b",
+    re.IGNORECASE,
+)
+# Words that are part of many business names and say nothing about one case.
+_NAME_STOPWORDS = frozenset(
+    """
+    limited private company industries enterprises traders services builders developers
+    construction infrastructure textiles mills agencies associates brothers sons trust society
+    association foundation institute hospital school college university insurance finance bank
+    branch through proprietor partner director manager mahila nagari sahakari others another
+    state government union india shri smt kumari dr adv advocate mr mrs ms
+    """.split()
+)
+
+_INSTRUCTION_SET_CAPS: dict[str, int] = {"case": MAX_INSTRUCTIONS_CHARS, "user": MAX_PREFERENCES_CHARS}
+
+
+def party_name_in(text: str, party_names: Iterable[str]) -> str | None:
+    """The first party name that appears in `text`, or None.
+
+    A full name matches as a phrase; a distinctive part of it ("Pawar" for
+    "Sunil Pawar") matches as a whole word. Institutional parties and generic
+    business words are ignored so "cite State of Maharashtra judgments first"
+    can still be a universal instruction.
+    """
+    haystack = f" {normalize_for_compare(text)} "
+    if not haystack.strip():
+        return None
+    for name in party_names or ():
+        norm = normalize_for_compare(str(name or ""))
+        if len(norm) < 4 or _GENERIC_PARTY_RE.match(norm):
+            continue
+        if f" {norm} " in haystack:
+            return str(name)
+        for token in norm.split():
+            if len(token) >= 5 and token not in _NAME_STOPWORDS and f" {token} " in haystack:
+                return str(name)
+    return None
+
+
+def validate_instruction_item(
+    text: str,
+    *,
+    scope_type: str,
+    party_names: Iterable[str] = (),
+) -> list[Rejection]:
+    """Whether one instruction may be stored at this scope. Empty means yes."""
+    clean = " ".join(str(text or "").split())
+    if not clean:
+        return [Rejection("empty", "The instruction is empty.")]
+    problems: list[Rejection] = []
+    if len(clean) > MAX_INSTRUCTION_ITEM_CHARS:
+        problems.append(
+            Rejection(
+                "too_long",
+                f"One instruction is capped at {MAX_INSTRUCTION_ITEM_CHARS} characters; split it into two.",
+            )
+        )
+    hit = _first_match(clean, PII_RULES)
+    if hit:
+        problems.append(hit)
+    hit = _first_match(clean, GUARDRAIL_RULES)
+    if hit:
+        problems.append(hit)
+    if str(scope_type) == "user":
+        hit = _first_match(clean, CASE_DATA_RULES)
+        if hit:
+            problems.append(
+                Rejection(
+                    hit.code,
+                    "This applies in every case, so it must carry no case details. "
+                    "Put facts about one matter in that case's instructions instead.",
+                )
+            )
+        name = party_name_in(clean, party_names)
+        if name:
+            problems.append(
+                Rejection(
+                    "universal_party_name",
+                    f"Names '{name}', a party in one of your cases. An instruction for every case "
+                    "must not carry case details; add it to that case instead.",
+                )
+            )
+    return problems
+
+
+def instruction_set_room(
+    items: Sequence[dict[str, Any]],
+    new_text: str,
+    *,
+    scope_type: str,
+) -> Rejection | None:
+    """Whether the set has room for one more instruction."""
+    if len(items) >= MAX_INSTRUCTION_ITEMS:
+        return Rejection(
+            "set_full",
+            f"There are already {MAX_INSTRUCTION_ITEMS} instructions here; remove one before adding another.",
+        )
+    cap = _INSTRUCTION_SET_CAPS.get(str(scope_type), MAX_INSTRUCTIONS_CHARS)
+    total = sum(len(str(item.get("text") or "")) for item in items) + len(" ".join(str(new_text or "").split()))
+    if total > cap:
+        return Rejection(
+            "set_too_long",
+            f"These instructions are capped at {cap} characters in total because they load into every chat; "
+            "shorten or remove one first.",
+        )
+    return None
+
+
+def split_instruction_text(text: str) -> list[str]:
+    """Turn free text into instruction items: one per line, long lines split at sentences."""
+    out: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = " ".join(raw.split()).strip(" -•*•")
+        if not line:
+            continue
+        while len(line) > MAX_INSTRUCTION_ITEM_CHARS:
+            cut = line.rfind(". ", 0, MAX_INSTRUCTION_ITEM_CHARS)
+            if cut < MAX_INSTRUCTION_ITEM_CHARS // 2:
+                cut = line.rfind(" ", 0, MAX_INSTRUCTION_ITEM_CHARS)
+            if cut <= 0:
+                cut = MAX_INSTRUCTION_ITEM_CHARS - 1
+            head, line = line[: cut + 1].strip(), line[cut + 1 :].strip()
+            if head:
+                out.append(head)
+        if line:
+            out.append(line)
+    return out
 
 
 # ── Dedupe ───────────────────────────────────────────────────────────────────

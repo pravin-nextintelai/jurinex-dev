@@ -25,13 +25,18 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from app.services.db import get_db_connection, is_db_available
 from app.services.memory.schemas import (
+    INSTRUCTION_ORIGINS,
+    INSTRUCTION_SCOPES,
+    MAX_INSTRUCTION_ITEM_CHARS,
+    MAX_INSTRUCTION_ITEMS,
     MAX_SECTION_LINES,
     MAX_SUMMARY_LINES,
+    OVERRIDE_TYPES,
     SECTIONS,
     SETTINGS_FLAGS,
     MemorySettings,
 )
-from app.services.memory.validator import ResolvedOp
+from app.services.memory.validator import ResolvedOp, split_instruction_text
 
 logger = logging.getLogger("agentic_document_service.memory.repository")
 
@@ -183,6 +188,51 @@ CREATE TABLE IF NOT EXISTS memory_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_proposals_case_status
     ON memory_proposals (case_key, status, created_at DESC);
+CREATE TABLE IF NOT EXISTS memory_instruction_sets (
+    scope_type  TEXT        NOT NULL,
+    scope_id    TEXT        NOT NULL,
+    version     INTEGER     NOT NULL DEFAULT 1,
+    updated_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT memory_instruction_sets_scope_check CHECK (scope_type IN ('user','case')),
+    CONSTRAINT memory_instruction_sets_pkey PRIMARY KEY (scope_type, scope_id)
+);
+CREATE TABLE IF NOT EXISTS memory_instructions (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope_type  TEXT        NOT NULL,
+    scope_id    TEXT        NOT NULL,
+    ord         INTEGER     NOT NULL DEFAULT 1,
+    text        TEXT        NOT NULL,
+    enabled     BOOLEAN     NOT NULL DEFAULT TRUE,
+    origin      TEXT        NOT NULL DEFAULT 'user',
+    source_ref  JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    created_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT memory_instructions_text_len_check CHECK (char_length(text) <= 400),
+    CONSTRAINT memory_instructions_origin_check
+        CHECK (origin IN ('user','chat','learned','import','migrated')),
+    CONSTRAINT memory_instructions_set_fk
+        FOREIGN KEY (scope_type, scope_id)
+        REFERENCES memory_instruction_sets (scope_type, scope_id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memory_instructions_scope
+    ON memory_instructions (scope_type, scope_id, ord);
+CREATE TABLE IF NOT EXISTS memory_instruction_overrides (
+    instruction_id UUID        NOT NULL REFERENCES memory_instructions (id) ON DELETE CASCADE,
+    override_type  TEXT        NOT NULL,
+    override_id    TEXT        NOT NULL,
+    enabled        BOOLEAN     NOT NULL,
+    created_by     TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT memory_instruction_overrides_type_check CHECK (override_type IN ('case','session')),
+    CONSTRAINT memory_instruction_overrides_pkey PRIMARY KEY (instruction_id, override_type, override_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_instruction_overrides_target
+    ON memory_instruction_overrides (override_type, override_id);
 """
 
 # Tables purged when a case is deleted, in FK-safe order.
@@ -193,6 +243,14 @@ _CASE_TABLES: tuple[tuple[str, str], ...] = (
     ("case_instructions", "case_key"),
     ("memory_assembly_log", "case_key"),
     ("memory_proposals", "case_key"),
+)
+# Instruction rows a case owns, or that were switched off for it. Items follow
+# their set through the FK; a universal instruction's per-case override is the
+# case's row, not the instruction's.
+_CASE_INSTRUCTION_PURGES: tuple[tuple[str, str], ...] = (
+    ("memory_instructions", "scope_type = 'case' AND scope_id = ANY(%s::text[])"),
+    ("memory_instruction_sets", "scope_type = 'case' AND scope_id = ANY(%s::text[])"),
+    ("memory_instruction_overrides", "override_type = 'case' AND override_id = ANY(%s::text[])"),
 )
 
 # Tables whose case_key moves when an intake folder becomes a real case.
@@ -976,12 +1034,14 @@ def purge_case_keys(cur: Any, keys: Sequence[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not clean:
         return counts
-    for table, column in _CASE_TABLES:
+    statements = [(table, f"{column} = ANY(%s::text[])") for table, column in _CASE_TABLES]
+    statements += list(_CASE_INSTRUCTION_PURGES)
+    for table, where in statements:
         savepoint = f"sp_memory_{table}"
         try:
             cur.execute(f"SAVEPOINT {savepoint}")
-            cur.execute(f"DELETE FROM {table} WHERE {column} = ANY(%s::text[])", (clean,))
-            counts[table] = int(cur.rowcount or 0)
+            cur.execute(f"DELETE FROM {table} WHERE {where}", (clean,))
+            counts[table] = counts.get(table, 0) + int(cur.rowcount or 0)
             cur.execute(f"RELEASE SAVEPOINT {savepoint}")
         except Exception as exc:  # noqa: BLE001
             cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -1069,9 +1129,445 @@ def rebind_case_key(
         except Exception as exc:  # noqa: BLE001
             logger.debug("[Memory] settings rebind skipped: %s", exc)
 
+        # Case instructions and the per-case overrides of universal ones. The
+        # set moves only when the destination has none, like memory sections.
+        try:
+            cur.execute(
+                "SELECT 1 FROM memory_instruction_sets WHERE scope_type = 'case' AND scope_id = %s LIMIT 1",
+                (new,),
+            )
+            if cur.fetchone() is None:
+                cur.execute(
+                    "UPDATE memory_instruction_sets SET scope_id = %s "
+                    "WHERE scope_type = 'case' AND scope_id = %s",
+                    (new, old),
+                )
+                counts["memory_instruction_sets"] = int(cur.rowcount or 0)
+                cur.execute(
+                    "UPDATE memory_instructions SET scope_id = %s WHERE scope_type = 'case' AND scope_id = %s",
+                    (new, old),
+                )
+                moved = int(cur.rowcount or 0)
+                if moved:
+                    counts["memory_instructions"] = moved
+            cur.execute(
+                "UPDATE memory_instruction_overrides SET override_id = %s "
+                "WHERE override_type = 'case' AND override_id = %s",
+                (new, old),
+            )
+            counts["memory_instruction_overrides"] = int(cur.rowcount or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Memory] instruction rebind skipped: %s", exc)
+
         connection.commit()
     logger.info("[Memory] rebind %s -> %s moved=%s", old, new, counts)
     return counts
+
+
+# ── Instructions: one item per row, at universal ("user") or case scope ──────
+# The set row holds the version token, exactly like a memory section; every
+# item write goes through it. Reading a scope for the first time moves any text
+# saved in the old one-box tables across as items, so nothing the advocate wrote
+# is lost when this replaces the text boxes.
+
+_INSTRUCTION_COLUMNS = "id, ord, text, enabled, origin, source_ref, created_by, created_at, updated_at"
+_LEGACY_INSTRUCTION_SOURCES: dict[str, tuple[str, str]] = {
+    "case": ("case_instructions", "case_key"),
+    "user": ("user_standing_preferences", "user_id"),
+}
+
+
+def _require_scope(scope_type: str, scope_id: str | None) -> tuple[str, str]:
+    kind = str(scope_type or "").strip()
+    if kind not in INSTRUCTION_SCOPES:
+        raise ValueError(f"Unknown instruction scope '{scope_type}'.")
+    sid = str(scope_id or "").strip()
+    if not sid:
+        raise ValueError("scope_id is required for every instruction operation.")
+    return kind, sid
+
+
+def _fetch_instructions(cur: Any, kind: str, sid: str) -> list[dict[str, Any]]:
+    cur.execute(
+        f"SELECT {_INSTRUCTION_COLUMNS} FROM memory_instructions "
+        "WHERE scope_type = %s AND scope_id = %s ORDER BY ord ASC, created_at ASC",
+        (kind, sid),
+    )
+    return [_out(row) or {} for row in cur.fetchall()]
+
+
+def _instruction_set_version(cur: Any, kind: str, sid: str) -> int | None:
+    cur.execute(
+        "SELECT version FROM memory_instruction_sets WHERE scope_type = %s AND scope_id = %s",
+        (kind, sid),
+    )
+    row = cur.fetchone()
+    return int(row["version"]) if row else None
+
+
+def _legacy_instruction_text(cur: Any, kind: str, sid: str) -> str:
+    """Text from the one-box table this scope used before items existed."""
+    table, column = _LEGACY_INSTRUCTION_SOURCES[kind]
+    try:
+        cur.execute("SAVEPOINT sp_memory_legacy_read")
+        cur.execute(f"SELECT content FROM {table} WHERE {column} = %s", (sid,))
+        row = cur.fetchone()
+        cur.execute("RELEASE SAVEPOINT sp_memory_legacy_read")
+    except Exception as exc:  # noqa: BLE001 — the old table may be absent on a fresh deployment
+        cur.execute("ROLLBACK TO SAVEPOINT sp_memory_legacy_read")
+        logger.debug("[Memory] no legacy instructions for %s/%s: %s", kind, sid, exc)
+        return ""
+    return str((row or {}).get("content") or "")
+
+
+def _ensure_instruction_set(cur: Any, kind: str, sid: str, actor: str | None) -> int:
+    """Create the set if absent, moving legacy text into it; return the version."""
+    version = _instruction_set_version(cur, kind, sid)
+    if version is not None:
+        return version
+    cur.execute(
+        "INSERT INTO memory_instruction_sets (scope_type, scope_id, updated_by) VALUES (%s, %s, %s) "
+        "ON CONFLICT (scope_type, scope_id) DO NOTHING RETURNING version",
+        (kind, sid, actor),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return int(_instruction_set_version(cur, kind, sid) or 1)
+    for index, text in enumerate(split_instruction_text(_legacy_instruction_text(cur, kind, sid)), start=1):
+        cur.execute(
+            "INSERT INTO memory_instructions (scope_type, scope_id, ord, text, enabled, origin, source_ref, created_by) "
+            "VALUES (%s, %s, %s, %s, TRUE, 'migrated', '{}'::jsonb, %s)",
+            (kind, sid, index, text[:MAX_INSTRUCTION_ITEM_CHARS], "migration"),
+        )
+    return int(row["version"])
+
+
+def _bump_instruction_set(cur: Any, kind: str, sid: str, expected_version: int | None) -> int:
+    """Optimistic lock on the set. Raises VersionConflict carrying the live items."""
+    if expected_version is None:
+        cur.execute(
+            "UPDATE memory_instruction_sets SET version = version + 1, updated_at = NOW() "
+            "WHERE scope_type = %s AND scope_id = %s RETURNING version",
+            (kind, sid),
+        )
+    else:
+        cur.execute(
+            "UPDATE memory_instruction_sets SET version = version + 1, updated_at = NOW() "
+            "WHERE scope_type = %s AND scope_id = %s AND version = %s RETURNING version",
+            (kind, sid, int(expected_version)),
+        )
+    row = cur.fetchone()
+    if row is None:
+        raise VersionConflict(
+            f"instructions:{kind}",
+            expected_version,
+            _instruction_set_version(cur, kind, sid),
+            _fetch_instructions(cur, kind, sid),
+        )
+    return int(row["version"])
+
+
+def get_instruction_set(scope_type: str, scope_id: str, *, conn: Any = None) -> dict[str, Any]:
+    """The items of one scope with the set's version; `version` is None when nothing is stored."""
+    kind, sid = _require_scope(scope_type, scope_id)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        version = _instruction_set_version(cur, kind, sid)
+        if version is None:
+            if not split_instruction_text(_legacy_instruction_text(cur, kind, sid)):
+                return {"scope_type": kind, "scope_id": sid, "version": None, "items": []}
+            try:
+                version = _ensure_instruction_set(cur, kind, sid, "migration")
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        items = _fetch_instructions(cur, kind, sid)
+    return {"scope_type": kind, "scope_id": sid, "version": version, "items": items}
+
+
+def _next_instruction_ord(cur: Any, kind: str, sid: str) -> int:
+    cur.execute(
+        "SELECT COALESCE(MAX(ord), 0) + 1 AS next_ord FROM memory_instructions "
+        "WHERE scope_type = %s AND scope_id = %s",
+        (kind, sid),
+    )
+    row = cur.fetchone()
+    return int((row or {}).get("next_ord") or 1)
+
+
+def _insert_instruction(
+    cur: Any,
+    kind: str,
+    sid: str,
+    ord_: int,
+    text: str,
+    *,
+    enabled: bool,
+    origin: str,
+    source_ref: dict[str, Any] | None,
+    actor: str | None,
+) -> dict[str, Any]:
+    if origin not in INSTRUCTION_ORIGINS:
+        raise ValueError(f"Unknown instruction origin '{origin}'.")
+    cur.execute(
+        "INSERT INTO memory_instructions (scope_type, scope_id, ord, text, enabled, origin, source_ref, created_by) "
+        f"VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING {_INSTRUCTION_COLUMNS}",
+        (kind, sid, ord_, text, bool(enabled), origin, _json(source_ref or {}), actor),
+    )
+    return _out(cur.fetchone()) or {}
+
+
+def _clean_instruction_text(text: str) -> str:
+    body = " ".join(str(text or "").split())
+    if not body:
+        raise ValueError("An instruction needs some text.")
+    return body[:MAX_INSTRUCTION_ITEM_CHARS]
+
+
+def add_instruction(
+    scope_type: str,
+    scope_id: str,
+    text: str,
+    expected_version: int | None = None,
+    *,
+    enabled: bool = True,
+    origin: str = "user",
+    source_ref: dict[str, Any] | None = None,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Append one instruction under the set's version token. Returns {version, item}."""
+    kind, sid = _require_scope(scope_type, scope_id)
+    body = _clean_instruction_text(text)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            existing = _ensure_instruction_set(cur, kind, sid, actor)
+            effective = expected_version
+            if effective is not None and existing == 1 and expected_version == 0:
+                # A caller that saw "nothing stored" may send 0 for a set created just now.
+                effective = 1
+            version = _bump_instruction_set(cur, kind, sid, effective)
+            item = _insert_instruction(
+                cur, kind, sid, _next_instruction_ord(cur, kind, sid), body,
+                enabled=enabled, origin=origin, source_ref=source_ref, actor=actor,
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "item": item}
+
+
+def append_instructions(
+    scope_type: str,
+    scope_id: str,
+    items: Sequence[dict[str, Any]],
+    *,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Append several instructions with one version bump (import, migration)."""
+    kind, sid = _require_scope(scope_type, scope_id)
+    rows = [item for item in items if str(item.get("text") or "").strip()]
+    if not rows:
+        return {"version": None, "added": 0}
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            _ensure_instruction_set(cur, kind, sid, actor)
+            room = max(0, MAX_INSTRUCTION_ITEMS - len(_fetch_instructions(cur, kind, sid)))
+            if room == 0:
+                connection.rollback()
+                return {"version": _instruction_set_version(cur, kind, sid), "added": 0}
+            version = _bump_instruction_set(cur, kind, sid, None)
+            next_ord = _next_instruction_ord(cur, kind, sid)
+            added = 0
+            for item in rows[:room]:
+                _insert_instruction(
+                    cur, kind, sid, next_ord + added, _clean_instruction_text(item.get("text")),
+                    enabled=bool(item.get("enabled", True)),
+                    origin=str(item.get("origin") or "import"),
+                    source_ref=dict(item.get("source_ref") or {}),
+                    actor=actor,
+                )
+                added += 1
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "added": added}
+
+
+def update_instruction(
+    scope_type: str,
+    scope_id: str,
+    instruction_id: str,
+    expected_version: int | None = None,
+    *,
+    text: str | None = None,
+    enabled: bool | None = None,
+    source_ref_extra: dict[str, Any] | None = None,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Change an item's text or switch. Raises LookupError when the item is not in this scope."""
+    kind, sid = _require_scope(scope_type, scope_id)
+    body = _clean_instruction_text(text) if text is not None else None
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute(
+                "SELECT 1 FROM memory_instructions WHERE id = %s::uuid AND scope_type = %s AND scope_id = %s",
+                (str(instruction_id), kind, sid),
+            )
+            if cur.fetchone() is None:
+                connection.rollback()
+                raise LookupError("That instruction no longer exists.")
+            version = _bump_instruction_set(cur, kind, sid, expected_version)
+            cur.execute(
+                "UPDATE memory_instructions SET text = COALESCE(%s, text), enabled = COALESCE(%s, enabled), "
+                "source_ref = source_ref || %s::jsonb, updated_at = NOW() "
+                f"WHERE id = %s::uuid AND scope_type = %s AND scope_id = %s RETURNING {_INSTRUCTION_COLUMNS}",
+                (body, enabled, _json(source_ref_extra or {}), str(instruction_id), kind, sid),
+            )
+            item = _out(cur.fetchone()) or {}
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "item": item}
+
+
+def delete_instruction(
+    scope_type: str,
+    scope_id: str,
+    instruction_id: str,
+    expected_version: int | None = None,
+    *,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Remove one item (its overrides go with it). Returns {version, deleted, item}."""
+    kind, sid = _require_scope(scope_type, scope_id)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute(
+                f"SELECT {_INSTRUCTION_COLUMNS} FROM memory_instructions "
+                "WHERE id = %s::uuid AND scope_type = %s AND scope_id = %s",
+                (str(instruction_id), kind, sid),
+            )
+            row = cur.fetchone()
+            if row is None:
+                version = _instruction_set_version(cur, kind, sid)
+                connection.rollback()
+                return {"version": version, "deleted": False, "item": None}
+            version = _bump_instruction_set(cur, kind, sid, expected_version)
+            cur.execute(
+                "DELETE FROM memory_instructions WHERE id = %s::uuid AND scope_type = %s AND scope_id = %s",
+                (str(instruction_id), kind, sid),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "deleted": True, "item": _out(row)}
+
+
+def replace_instruction_set(
+    scope_type: str,
+    scope_id: str,
+    items: Sequence[dict[str, Any]],
+    expected_version: int | None = None,
+    *,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Swap every item of one scope for `items`, in one transaction."""
+    kind, sid = _require_scope(scope_type, scope_id)
+    rows = [item for item in items if str(item.get("text") or "").strip()][:MAX_INSTRUCTION_ITEMS]
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            _ensure_instruction_set(cur, kind, sid, actor)
+            version = _bump_instruction_set(cur, kind, sid, expected_version)
+            cur.execute(
+                "DELETE FROM memory_instructions WHERE scope_type = %s AND scope_id = %s",
+                (kind, sid),
+            )
+            written: list[dict[str, Any]] = []
+            for index, item in enumerate(rows, start=1):
+                written.append(
+                    _insert_instruction(
+                        cur, kind, sid, index, _clean_instruction_text(item.get("text")),
+                        enabled=bool(item.get("enabled", True)),
+                        origin=str(item.get("origin") or "user"),
+                        source_ref=dict(item.get("source_ref") or {}),
+                        actor=actor,
+                    )
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "items": written}
+
+
+def get_instruction_overrides(
+    instruction_ids: Sequence[str],
+    *,
+    case_key: str | None = None,
+    session_id: str | None = None,
+    conn: Any = None,
+) -> dict[str, dict[str, bool | None]]:
+    """Per-case and per-session switches for these items: {id: {"case": bool|None, "session": bool|None}}."""
+    ids = [str(i) for i in instruction_ids if str(i or "").strip()]
+    case = str(case_key or "").strip()
+    session = str(session_id or "").strip()
+    out: dict[str, dict[str, bool | None]] = {i: {"case": None, "session": None} for i in ids}
+    if not ids or not (case or session):
+        return out
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "SELECT instruction_id::text AS instruction_id, override_type, enabled "
+            "FROM memory_instruction_overrides WHERE instruction_id = ANY(%s::uuid[]) "
+            "AND ((override_type = 'case' AND override_id = %s) OR (override_type = 'session' AND override_id = %s))",
+            (ids, case or "", session or ""),
+        )
+        for row in cur.fetchall():
+            slot = out.setdefault(str(row.get("instruction_id")), {"case": None, "session": None})
+            slot[str(row.get("override_type"))] = bool(row.get("enabled"))
+    return out
+
+
+def set_instruction_override(
+    instruction_id: str,
+    override_type: str,
+    override_id: str,
+    enabled: bool | None,
+    *,
+    actor: str | None = None,
+    conn: Any = None,
+) -> None:
+    """Switch one item off (or on) for one case or session; `enabled=None` clears the override."""
+    kind = str(override_type or "").strip()
+    if kind not in OVERRIDE_TYPES:
+        raise ValueError(f"Unknown override type '{override_type}'.")
+    target = str(override_id or "").strip()
+    if not target:
+        raise ValueError("override_id is required.")
+    with _conn(conn) as connection, connection.cursor() as cur:
+        if enabled is None:
+            cur.execute(
+                "DELETE FROM memory_instruction_overrides "
+                "WHERE instruction_id = %s::uuid AND override_type = %s AND override_id = %s",
+                (str(instruction_id), kind, target),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO memory_instruction_overrides (instruction_id, override_type, override_id, enabled, created_by) "
+                "VALUES (%s::uuid, %s, %s, %s, %s) "
+                "ON CONFLICT (instruction_id, override_type, override_id) "
+                "DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()",
+                (str(instruction_id), kind, target, bool(enabled), actor),
+            )
+        connection.commit()
 
 
 # ── Settings ─────────────────────────────────────────────────────────────────
@@ -1320,16 +1816,48 @@ def list_proposals(
         return [_out(row) or {} for row in cur.fetchall()]
 
 
-def list_saved_from_chat(case_key: str, limit: int = 10, *, conn: Any = None) -> list[dict[str, Any]]:
-    """Instructions the writer saved on its own from an explicit request, newest first."""
-    key = _require_case_key(case_key)
+def list_user_proposals(
+    user_id: str,
+    statuses: Sequence[str] = ("pending", "accepted"),
+    *,
+    exclude_case_key: str | None = None,
+    limit: int = 200,
+    conn: Any = None,
+) -> list[dict[str, Any]]:
+    """This advocate's suggestions across their cases, newest first.
+
+    Used to notice a request that keeps coming up in more than one case. The
+    advocate's own universal suggestions ("user:<id>" keys) are left out.
+    """
+    uid = str(user_id or "").strip()
+    wanted = [str(s) for s in statuses if str(s) in _PROPOSAL_STATUSES]
+    if not uid or not wanted:
+        return []
     with _conn(conn) as connection, connection.cursor() as cur:
         cur.execute(
-            "SELECT * FROM memory_proposals WHERE case_key = %s AND status = 'accepted' "
-            "AND source_ref->>'auto' = 'true' ORDER BY created_at DESC LIMIT %s",
-            (key, max(1, min(int(limit or 10), 50))),
+            "SELECT id, case_key, kind, text, status, created_at FROM memory_proposals "
+            "WHERE user_id = %s AND status = ANY(%s::text[]) AND case_key NOT LIKE 'user:%%' "
+            "AND case_key <> %s ORDER BY created_at DESC LIMIT %s",
+            (uid, wanted, str(exclude_case_key or ""), max(1, min(int(limit or 200), 1000))),
         )
         return [_out(row) or {} for row in cur.fetchall()]
+
+
+def reject_proposals_for_instruction(instruction_id: str, *, conn: Any = None) -> int:
+    """When the advocate deletes an instruction JuriNex saved from chat, the
+    record behind it is marked rejected so the writer does not save it again."""
+    target = str(instruction_id or "").strip()
+    if not target:
+        return 0
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "UPDATE memory_proposals SET status = 'rejected', resolved_at = NOW() "
+            "WHERE status = 'accepted' AND source_ref->>'instruction_id' = %s",
+            (target,),
+        )
+        count = int(cur.rowcount or 0)
+        connection.commit()
+    return count
 
 
 def get_proposal(case_key: str, proposal_id: str, *, conn: Any = None) -> dict[str, Any] | None:

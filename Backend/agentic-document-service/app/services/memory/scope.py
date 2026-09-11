@@ -175,6 +175,14 @@ def firm_context_for(user_id: str) -> tuple[str | None, bool]:
     return firm_id, bool(firm.get("isFirmAdmin"))
 
 
+def accessible_user_ids_for(user_id: str) -> tuple[str, ...]:
+    """The user ids whose cases this advocate can see (their own, plus the firm's)."""
+    if not is_real_user(user_id):
+        return ()
+    accessible, _ = _access_context(str(user_id))
+    return tuple(accessible)
+
+
 def resolve_case_scope(
     folder_name: str | None,
     user_id: str | None,

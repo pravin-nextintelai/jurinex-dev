@@ -50,6 +50,26 @@ MAX_PREFERENCES_CHARS = 2_000
 MAX_PREFERENCES_WORDS = 300
 MAX_OPS_PER_TURN = 8
 
+# Instructions are stored one per item so each can be switched on and off. The
+# per-scope character caps above still bound the whole set: case instructions at
+# MAX_INSTRUCTIONS_CHARS, the advocate's universal ones at MAX_PREFERENCES_CHARS.
+MAX_INSTRUCTION_ITEM_CHARS = 400
+MAX_INSTRUCTION_ITEMS = 40
+
+# Where an instruction set lives: "user" applies in every case the advocate
+# works on; "case" applies in one case only.
+INSTRUCTION_SCOPES: tuple[str, ...] = ("user", "case")
+InstructionScope = Literal["user", "case"]
+
+# Where an instruction item came from. "chat": the writer saved a rule the
+# advocate stated in so many words. "learned": accepted from a suggestion.
+INSTRUCTION_ORIGINS: tuple[str, ...] = ("user", "chat", "learned", "import", "migrated")
+
+# An override switches one item off (or on) for one case or one chat session
+# without changing the item itself.
+OVERRIDE_TYPES: tuple[str, ...] = ("case", "session")
+OverrideType = Literal["case", "session"]
+
 
 class MemoryLine(BaseModel):
     """One fact line."""

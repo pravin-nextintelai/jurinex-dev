@@ -699,6 +699,12 @@ class Settings(BaseSettings):
         default="gemini-2.5-flash",
         validation_alias=AliasChoices("MEMORY_EXTRACTION_MODEL"),
     )
+    # Tidies an instruction the advocate typed, on request ("Polish"). A small,
+    # fast model: it rewrites one sentence and adds nothing.
+    memory_polish_model: str = Field(
+        default="gemini-3.1-flash-lite",
+        validation_alias=AliasChoices("MEMORY_POLISH_MODEL"),
+    )
     # Reading memory sits in the chat's critical path, so it is time-boxed; on
     # timeout the turn proceeds with no memory rather than stalling.
     memory_context_timeout_s: float = Field(

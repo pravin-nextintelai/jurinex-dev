@@ -60,6 +60,8 @@ from pydantic import ValidationError
 
 from app.core.config import get_settings
 from app.services.memory import repository
+from app.services.memory.instructions import user_proposal_key
+from app.services.memory.parties import party_names_for_user
 from app.services.memory.recall import RecallHit, recent_turns
 from app.services.memory.repository import VersionConflict
 from app.services.memory.schemas import (
@@ -77,12 +79,11 @@ from app.services.memory.validator import (
     ResolvedOp,
     case_over_cap,
     find_duplicate,
-    normalize_for_compare,
+    instruction_set_room,
     redact_or_reject_pii,
-    validate_instructions,
+    validate_instruction_item,
     validate_line,
     validate_ops,
-    validate_preferences,
 )
 
 logger = logging.getLogger("agentic_document_service.memory.writer")
@@ -131,6 +132,27 @@ STANDING_RULE_RE = re.compile(
 def has_standing_rule(text: str | None) -> bool:
     """True when the text states a rule for how to work from here on."""
     return bool(STANDING_RULE_RE.search(str(text or "")))
+
+
+# Words that widen a rule from this case to all of the advocate's work. A rule
+# is saved as universal only when the advocate's own message says so; the
+# extractor's label alone is not trusted for that.
+UNIVERSAL_CUE_RE = re.compile(
+    r"\b(?:(?:in|for|across|on|with)\s+(?:all|every|any)\s+(?:of\s+)?(?:my\s+|our\s+|the\s+)?"
+    r"(?:cases?|matters?|files?|work|drafts?|chats?|briefs?|answers?|repl(?:y|ies))"
+    r"|all\s+(?:my|our)\s+(?:cases|matters|work|drafts|files|chats)"
+    r"|every\s+(?:case|matter)\b"
+    r"|whatever\s+the\s+(?:case|matter)"
+    r"|regardless\s+of\s+(?:the\s+)?(?:case|matter)"
+    r"|in\s+general\b|as\s+a\s+general\s+rule|universally"
+    r"|not\s+(?:just|only)\s+(?:for\s+|in\s+)?this\s+(?:case|matter))\b",
+    re.IGNORECASE,
+)
+
+
+def has_universal_cue(text: str | None) -> bool:
+    """True when the advocate says a rule is for all their cases, not just this one."""
+    return bool(UNIVERSAL_CUE_RE.search(str(text or "")))
 
 
 # ── The extractor's instructions ─────────────────────────────────────────────

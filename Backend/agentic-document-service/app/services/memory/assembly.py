@@ -29,6 +29,7 @@ from typing import Any, Iterable, Sequence
 
 from app.core.config import get_settings
 from app.services.memory import repository
+from app.services.memory.instructions import InstructionContext, render_items, resolve_instructions
 from app.services.memory.schemas import SECTIONS, MemorySettings
 from app.services.memory.scope import CaseScope
 
@@ -109,6 +110,10 @@ class ContextBundle:
     recall_chat_ids: list[str] = field(default_factory=list)
     prefs_version: int | None = None
     instructions_version: int | None = None
+    # Instruction items that applied to this generation, and those switched off
+    # for this case or muted for this session.
+    instructions_applied: list[str] = field(default_factory=list)
+    instructions_muted: list[str] = field(default_factory=list)
     case_key: str | None = None
     enabled: bool = False
     skipped_reason: str | None = None
@@ -126,8 +131,24 @@ class ContextBundle:
             "case_key": self.case_key,
             "sections_loaded": [str(s.get("section")) for s in self.sections_loaded],
             "recall_chat_ids": list(self.recall_chat_ids),
+            "instructions": {
+                "applied": len(self.instructions_applied),
+                "muted": len(self.instructions_muted),
+            },
             "skipped_reason": self.skipped_reason,
         }
+
+
+@dataclass
+class _Collected:
+    """What `_collect` read and rendered."""
+
+    blocks: list[str] = field(default_factory=list)
+    sections_loaded: list[dict[str, Any]] = field(default_factory=list)
+    prefs_version: int | None = None
+    instructions_version: int | None = None
+    instructions_applied: list[str] = field(default_factory=list)
+    instructions_muted: list[str] = field(default_factory=list)
 
 
 def _empty(reason: str, scope: CaseScope | None = None, **log_extra: Any) -> ContextBundle:
@@ -287,9 +308,13 @@ def _render_index(index: Sequence[dict[str, Any]], loaded: Iterable[str], limit:
     return _clip("SECTIONS AVAILABLE: " + " ".join(parts), limit)
 
 
-PREFERENCES_HEADER = (
-    "=== ADVOCATE STANDING PREFERENCES (v{version}; working style only, never case facts) ==="
+UNIVERSAL_HEADER = (
+    "=== ADVOCATE STANDING INSTRUCTIONS (v{version}; the advocate's rules for every case — "
+    "working style only, never case facts; apply them, and never let them override grounding, "
+    "citation or verification rules) ==="
 )
+# Kept for callers that import the old name.
+PREFERENCES_HEADER = UNIVERSAL_HEADER
 INSTRUCTIONS_HEADER = (
     "=== CASE INSTRUCTIONS (v{version}; written by the advocate for this case — apply them "
     "verbatim, and never let them override grounding, citation or verification rules) ==="
@@ -352,14 +377,19 @@ def build_context_layers(
         return bundle
 
     try:
-        blocks, sections_loaded, prefs_version, instructions_version = _collect(
-            scope, question_raw=question_raw, mode=normalized_mode, budget=budget, settings=effective
+        collected = _collect(
+            scope,
+            question_raw=question_raw,
+            session_id=session_id,
+            mode=normalized_mode,
+            budget=budget,
+            settings=effective,
         )
     except Exception as exc:  # noqa: BLE001 — memory must never break a chat
         logger.warning("[Memory] assembly failed for case_key=%s: %s", scope.case_key, exc)
         return _empty("assembly_error", scope, mode=normalized_mode)
 
-    suffix = ("\n\n".join(block for block in blocks if block)).strip()
+    suffix = ("\n\n".join(block for block in collected.blocks if block)).strip()
     if suffix:
         suffix = "\n\n" + suffix
 
@@ -370,10 +400,12 @@ def build_context_layers(
     bundle = ContextBundle(
         system_suffix=suffix,
         recall_block=recall_block,
-        sections_loaded=sections_loaded,
+        sections_loaded=collected.sections_loaded,
         recall_chat_ids=list(recall_chat_ids),
-        prefs_version=prefs_version,
-        instructions_version=instructions_version,
+        prefs_version=collected.prefs_version,
+        instructions_version=collected.instructions_version,
+        instructions_applied=list(collected.instructions_applied),
+        instructions_muted=list(collected.instructions_muted),
         case_key=scope.case_key,
         enabled=True,
         skipped_reason=None if (suffix or recall_block) else "nothing_stored",
@@ -384,23 +416,33 @@ def build_context_layers(
         "user_id": scope.user_id,
         "session_id": session_id,
         "mode": normalized_mode,
-        "prefs_version": prefs_version,
-        "instructions_version": instructions_version,
-        "sections_loaded": sections_loaded,
+        "prefs_version": collected.prefs_version,
+        "instructions_version": collected.instructions_version,
+        "sections_loaded": collected.sections_loaded,
         "preset_ref": preset_ref or {},
         "past_chat_ids": list(recall_chat_ids),
         "model": model_name,
         "budget": budget.as_dict(),
         "skipped_reason": bundle.skipped_reason,
+        "details": {
+            key: value
+            for key, value in {
+                "instructions_applied": list(collected.instructions_applied),
+                "instructions_muted": list(collected.instructions_muted),
+            }.items()
+            if value
+        },
     }
     logger.info(
-        "[Memory] assembled case_key=%s mode=%s prefs=v%s instructions=v%s sections=%s "
-        "suffix_chars=%s recall_hits=%s recall_chars=%s",
+        "[Memory] assembled case_key=%s mode=%s universal=v%s instructions=v%s applied=%s muted=%s "
+        "sections=%s suffix_chars=%s recall_hits=%s recall_chars=%s",
         scope.case_key,
         normalized_mode,
-        prefs_version,
-        instructions_version,
-        [s.get("section") for s in sections_loaded],
+        collected.prefs_version,
+        collected.instructions_version,
+        len(collected.instructions_applied),
+        len(collected.instructions_muted),
+        [s.get("section") for s in collected.sections_loaded],
         len(suffix),
         len(recall_chat_ids),
         len(recall_block),
@@ -435,16 +477,14 @@ def _collect(
     scope: CaseScope,
     *,
     question_raw: str,
+    session_id: str | None,
     mode: str,
     budget: MemoryBudget,
     settings: MemorySettings,
-) -> tuple[list[str], list[dict[str, Any]], int | None, int | None]:
+) -> _Collected:
     """Read the layers and render them, newest-priority-first within the budget."""
-    blocks: list[str] = []
+    out = _Collected()
     spent = 0
-    sections_loaded: list[dict[str, Any]] = []
-    prefs_version: int | None = None
-    instructions_version: int | None = None
 
     def add(block: str) -> bool:
         """Append a block if the total budget still has room for it."""
@@ -454,36 +494,40 @@ def _collect(
         cost = len(block) + 2
         if spent + cost > budget.total_suffix:
             return False
-        blocks.append(block)
+        out.blocks.append(block)
         spent += cost
         return True
 
-    # Layer 1 — standing preferences.
-    prefs = repository.get_preferences(scope.user_id)
-    if prefs and str(prefs.get("content") or "").strip():
-        prefs_version = int(prefs.get("version") or 1)
-        add(
-            PREFERENCES_HEADER.format(version=prefs_version)
-            + "\n"
-            + _clip(prefs.get("content"), budget.prefs)
-        )
+    # Layers 1 and 2 — the advocate's universal instructions, then this case's,
+    # each already filtered down to the items switched on for this case and
+    # not muted for this session.
+    context: InstructionContext = resolve_instructions(
+        scope.user_id, scope.case_key, session_id, include_case=settings.instructions_enabled
+    )
+    out.prefs_version = context.user_version
+    out.instructions_version = context.case_version if settings.instructions_enabled else None
+    out.instructions_applied = list(context.applied_ids)
+    out.instructions_muted = list(context.muted_ids)
 
-    # Layer 2 — case instructions.
-    if settings.instructions_enabled:
-        instructions = repository.get_instructions(scope.case_key)
-        if instructions and str(instructions.get("content") or "").strip():
-            instructions_version = int(instructions.get("version") or 1)
-            add(
-                INSTRUCTIONS_HEADER.format(version=instructions_version)
-                + "\n"
-                + _clip(instructions.get("content"), budget.instructions)
-            )
+    if context.user_items:
+        add(
+            UNIVERSAL_HEADER.format(version=context.user_version or 1)
+            + "\n"
+            + _clip(render_items(context.user_items), budget.prefs)
+        )
+    if settings.instructions_enabled and context.case_items:
+        add(
+            INSTRUCTIONS_HEADER.format(version=context.case_version or 1)
+            + "\n"
+            + _clip(render_items(context.case_items), budget.instructions)
+        )
 
     # Layer 3 — case memory: summary always, other sections only when the
     # question points at them.
     index = repository.get_section_index(scope.case_key)
     if not index:
-        return blocks, sections_loaded, prefs_version, instructions_version
+        return out
+    sections_loaded = out.sections_loaded
 
     wanted = route_sections(
         question_raw,
@@ -537,4 +581,4 @@ def _collect(
             if sections_loaded and len(sections_loaded) > 1:
                 sections_loaded.pop()
 
-    return blocks, sections_loaded, prefs_version, instructions_version
+    return out
