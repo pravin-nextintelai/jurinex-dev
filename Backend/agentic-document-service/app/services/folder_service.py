@@ -2145,6 +2145,8 @@ class FolderWorkflowService:
         self._append_message(session, "user", display_question)
         self._append_message(session, "assistant", query_response.answer)
         citations = [citation for segment in query_response.answer_segments for citation in segment.citations]
+        # Pre-minted so memory written about this turn can point at this exact row.
+        memory_chat_id = str(uuid.uuid4())
         self._save_folder_chat_to_db(
             user_id=user_id,
             folder_name=folder_name,
@@ -2155,17 +2157,33 @@ class FolderWorkflowService:
             used_secret_prompt=bool(secret_id),
             prompt_label=display_question if secret_id else None,
             secret_id=secret_id,
+            chat_id=memory_chat_id,
         )
-        if memory_bundle is not None and memory_bundle.log_entry:
+        # Post-turn memory, as on the streaming route: submitted to the writer's
+        # own threads so this response is not delayed by an extraction call.
+        writer_scope = locals().get("memory_scope")
+        if writer_scope is not None:
             try:
-                from app.services.memory import repository as memory_repository
+                from app.services.memory.writer import TurnInput, submit_post_turn
 
-                entry = dict(memory_bundle.log_entry)
-                entry.update({"session_id": session.id, "model": selected_model})
-                memory_repository.write_assembly_log(entry)
-            except Exception as memory_log_exc:  # noqa: BLE001
-                logger.debug(
-                    "[FolderService] task=answer_folder_chat assembly log skipped: %s", memory_log_exc
+                question_text = str(request.question or "")
+                label = str(request.prompt_label or "").strip()
+                submit_post_turn(
+                    TurnInput(
+                        scope=writer_scope,
+                        question_raw=question_text,
+                        answer=query_response.answer,
+                        session_id=session.id,
+                        chat_id=memory_chat_id,
+                        mode="preset" if secret_id else "chat",
+                        model=selected_model,
+                        log_entry=dict((memory_bundle.log_entry if memory_bundle is not None else None) or {}),
+                        saved_prompt=bool(secret_id or (label and label != question_text.strip())),
+                    )
+                )
+            except Exception as memory_writer_exc:  # noqa: BLE001
+                logger.warning(
+                    "[FolderService] task=answer_folder_chat memory writer not started: %s", memory_writer_exc
                 )
         return FolderChatResponse(
             success=True,

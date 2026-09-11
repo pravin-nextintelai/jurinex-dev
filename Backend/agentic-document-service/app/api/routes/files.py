@@ -6009,6 +6009,10 @@ async def intelligent_chat_stream(
                     base = source_by_name.get(key, {"document_name": nm, "filename": nm})
                     citations_payload.append(base)
 
+                # Pre-minted so memory written about this turn can point at this
+                # exact chat row (source_ref.chat_id) and the assembly log can too.
+                memory_chat_id = str(uuid.uuid4())
+
                 def _persist_stream_chat() -> None:
                     folder_service._save_folder_chat_to_db(
                         user_id=user_id,
@@ -6026,6 +6030,7 @@ async def intelligent_chat_stream(
                             else ((chat_request.prompt_label or "").strip() or None)
                         ),
                         secret_id=sec_id,
+                        chat_id=memory_chat_id,
                     )
 
                 await loop.run_in_executor(None, _persist_stream_chat)
@@ -6217,18 +6222,44 @@ async def intelligent_chat_stream(
                 "draft_legal_section_doc": locals().get("_draft_legal_section_doc"),
             })
 
-            # Assembly log: record which layer versions and sections produced this
-            # answer. Without it, "why did the output change?" is unanswerable.
-            # Phase 5 extends this call site with the post-turn memory writer.
-            if memory_bundle.log_entry:
-                _mem_log_entry = dict(memory_bundle.log_entry)
-                _mem_log_entry.update({"session_id": session_id, "model": actual_model_name})
+            # Post-turn memory: file what this turn established, and record the
+            # assembly log with its write counts (one row per turn). Handed to the
+            # writer's own threads and deliberately not awaited: the answer is
+            # already delivered, the chat UI finishes on `done`, and memory must
+            # never hold the stream open or fail a chat.
+            if memory_scope is not None:
+                _mem_question = str(chat_request.question or "")
+                _mem_label = str(chat_request.prompt_label or "").strip()
                 try:
-                    await loop.run_in_executor(
-                        None, lambda: memory_repository.write_assembly_log(_mem_log_entry)
+                    from app.services.memory.writer import TurnInput, submit_post_turn
+
+                    submit_post_turn(
+                        TurnInput(
+                            scope=memory_scope,
+                            question_raw=_mem_question,
+                            answer=answer,
+                            session_id=session_id,
+                            chat_id=locals().get("memory_chat_id"),
+                            mode=_memory_mode,
+                            model=actual_model_name,
+                            log_entry=dict(memory_bundle.log_entry or {}),
+                            # A preset, or a saved custom prompt whose label differs
+                            # from the text sent, is not the advocate's own words.
+                            saved_prompt=bool(
+                                (chat_request.secret_id or "").strip()
+                                or (_mem_label and _mem_label != _mem_question.strip())
+                            ),
+                            draft_template=(
+                                str(getattr(chat_request, "template_gcs_path", "") or "") if is_draft else None
+                            ),
+                        )
                     )
-                except Exception as _mem_log_exc:  # noqa: BLE001
-                    logger.debug("[Route:intelligent_chat_stream] assembly log skipped: %s", _mem_log_exc)
+                except Exception as _mem_writer_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[Route:intelligent_chat_stream] memory writer not started folder=%s: %s",
+                        folder_name,
+                        _mem_writer_exc,
+                    )
 
         except Exception as exc:
             logger.exception("[Route:intelligent_chat_stream] folder=%s DB-Gemini fallback failed: %s", folder_name, exc)
