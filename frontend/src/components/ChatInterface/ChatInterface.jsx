@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { FileManagerContext } from "../../context/FileManagerContext";
 import documentApi from "../../services/documentApi";
 import { API_BASE_URL, DOCS_BASE_URL, CHAT_MODEL_BASE_URL, SECRET_PROMPTS_API_BASE, DOCUMENT_SERVICE_URL, getUserIdForDrafting } from "../../config/apiConfig";
+import { announceChatTurn } from "../../utils/memoryLabels";
 import {
   Plus,
   Search,
@@ -2557,6 +2558,8 @@ const ChatInterface = () => {
                 newSessionId = doneSid;
                 setSelectedChatSessionId(doneSid);
               }
+              // The case page shows what memory did after this answer.
+              announceChatTurn(folder, finalMetadata.chat_id);
               console.log('[ChatInterface] Done metadata (secret prompt):', finalMetadata);
               console.log('[ChatInterface] used_chunk_ids:', finalMetadata?.used_chunk_ids);
               console.log('[ChatInterface] citations:', finalMetadata?.citations);
@@ -3076,6 +3079,8 @@ const ChatInterface = () => {
                   newSessionId = doneSessionId;
                   setSelectedChatSessionId(doneSessionId);
                 }
+                // The case page shows what memory did after this answer.
+                announceChatTurn(folderName, finalMetadata.chat_id);
                 console.log('[ChatInterface] Final metadata received:', finalMetadata);
                 console.log('[ChatInterface] used_chunk_ids:', finalMetadata?.used_chunk_ids);
                 console.log('[ChatInterface] citations:', finalMetadata?.citations);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from "react";
+import React, { useState, useEffect, useContext, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { FileManagerContext } from "../context/FileManagerContext";
 import documentApi from "../services/documentApi";
@@ -12,8 +12,11 @@ import FolderContent from "../components/FolderContent/FolderContent";
 import DocumentPreviewModal from "../components/DocumentPreviewModal";
 import ChatInterface from "../components/ChatInterface/ChatInterface";
 import { ChronologyButton, ChronologyModal } from "../components/Chronology";
+import { toast } from "react-toastify";
 import { CaseMemoryModal, MemoryButton } from "../components/CaseMemory";
 import useMemorySettings from "../hooks/useMemorySettings";
+import useMemoryTurnWatcher from "../hooks/useMemoryTurnWatcher";
+import { describeTurnActivity, turnActivityTab } from "../utils/memoryLabels";
 
 const FolderDetailPage = () => {
   const { folderName } = useParams();
@@ -26,6 +29,10 @@ const FolderDetailPage = () => {
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [isChronologyOpen, setIsChronologyOpen] = useState(false);
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
+  const [memoryTab, setMemoryTab] = useState('memory');
+  const [memoryChanged, setMemoryChanged] = useState(false);
+  const [memoryRefresh, setMemoryRefresh] = useState(0);
+  const memoryOpenRef = useRef(false);
   const [isStarred, setIsStarred] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -35,6 +42,36 @@ const FolderDetailPage = () => {
   // still shows the button, which is how the advocate switches it back on.
   const { effective: memoryEffective, loading: memorySettingsLoading } = useMemorySettings();
   const showMemoryButton = !memorySettingsLoading && memoryEffective.enabled;
+
+  useEffect(() => {
+    memoryOpenRef.current = isMemoryOpen;
+  }, [isMemoryOpen]);
+
+  // After each answer, say what memory did: an instruction saved, details
+  // remembered, the case filled in from its details, or a suggestion waiting.
+  const handleMemoryTurn = useCallback((turn) => {
+    const message = describeTurnActivity(turn);
+    if (!message) return;
+    const tab = turnActivityTab(turn);
+    setMemoryRefresh((count) => count + 1);
+    if (!memoryOpenRef.current) {
+      setMemoryTab(tab);
+      setMemoryChanged(true);
+    }
+    toast.info(message, {
+      autoClose: 8000,
+      onClick: () => {
+        setMemoryTab(tab);
+        setMemoryChanged(false);
+        setIsMemoryOpen(true);
+      },
+    });
+  }, []);
+
+  useMemoryTurnWatcher(folderName || selectedFolder, {
+    enabled: showMemoryButton,
+    onTurn: handleMemoryTurn,
+  });
 
   useEffect(() => {
     if (folderName) {
@@ -67,11 +104,13 @@ const FolderDetailPage = () => {
   };
 
   const handleOpenMemory = () => {
+    setMemoryChanged(false);
     setIsMemoryOpen(true);
   };
 
   const handleCloseMemory = () => {
     setIsMemoryOpen(false);
+    setMemoryTab('memory');
   };
 
   const handleToggleStar = () => {
@@ -169,7 +208,7 @@ const FolderDetailPage = () => {
                 </div>
                 <h3 className="text-xs font-semibold text-gray-600">Files</h3>
                 <div className="ml-auto flex items-center gap-0.5">
-                  {showMemoryButton && <MemoryButton onClick={handleOpenMemory} />}
+                  {showMemoryButton && <MemoryButton onClick={handleOpenMemory} badge={memoryChanged} />}
                   <ChronologyButton onClick={handleOpenChronology} />
                 </div>
               </div>
@@ -196,6 +235,8 @@ const FolderDetailPage = () => {
           folderName={folderName || selectedFolder}
           caseTitle={selectedFolder || folderName}
           onClose={handleCloseMemory}
+          initialTab={memoryTab}
+          refreshToken={memoryRefresh}
         />
       )}
     </div>
