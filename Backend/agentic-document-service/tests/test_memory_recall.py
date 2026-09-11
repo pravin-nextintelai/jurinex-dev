@@ -123,8 +123,15 @@ class RenderTests(unittest.TestCase):
         block, _ = format_recall_block(
             [hit(question="Bail Checklist", prompt_label="Bail Checklist", used_saved_prompt=True)], 3_000
         )
-        self.assertIn('ADVOCATE RAN A SAVED PROMPT: "Bail Checklist"', block)
-        self.assertNotIn("ADVOCATE SAID", block)
+        # Only the hit lines: the usage note below them names every label.
+        entry_lines = block[len(RECALL_HEADER) : block.index(RECALL_FOOTER)].splitlines()
+        self.assertIn('ADVOCATE RAN A SAVED PROMPT: "Bail Checklist"', entry_lines)
+        self.assertFalse(any(line.startswith("ADVOCATE SAID") for line in entry_lines))
+
+    def test_the_usage_note_explains_every_label(self) -> None:
+        for label in ("ADVOCATE SAID", "ADVOCATE RAN A SAVED PROMPT", "ASSISTANT ANSWERED"):
+            with self.subTest(label=label):
+                self.assertIn(f'"{label}"', RECALL_FOOTER)
 
     def test_a_long_answer_is_clipped(self) -> None:
         block, _ = format_recall_block([hit(answer="word " * 2_000)], 5_000)

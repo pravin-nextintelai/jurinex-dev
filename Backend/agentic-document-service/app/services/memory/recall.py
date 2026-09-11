@@ -321,9 +321,10 @@ RECALL_HEADER = (
     "earlier discussion; the current conversation overrides anything here) ==="
 )
 RECALL_FOOTER = (
-    'How to use these: "ADVOCATE SAID" is the advocate\'s own words. "ASSISTANT ANSWERED" is an '
-    "earlier AI answer: treat it as something previously suggested, never as a decision the advocate "
-    "made, and never as a source to cite. If none of these is what the advocate means, say so and ask."
+    'How to use these: "ADVOCATE SAID" is the advocate\'s own words. "ADVOCATE RAN A SAVED PROMPT" '
+    'names a stored prompt they ran, not words they wrote. "ASSISTANT ANSWERED" is an earlier AI '
+    "answer: treat it as something previously suggested, never as a decision the advocate made, and "
+    "never as a source to cite. If none of these is what the advocate means, say so and ask."
 )
 
 

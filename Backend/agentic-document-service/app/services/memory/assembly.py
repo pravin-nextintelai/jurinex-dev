@@ -320,8 +320,10 @@ def build_context_layers(
     resolved query text is the preset body, and routing on that would load
     sections chosen by the preset's wording rather than the user's.
 
-    `load_recall` is accepted now and honoured in phase 4, when past-session
-    retrieval lands; until then `recall_block` is always empty.
+    Past-session recall runs only when the advocate's words refer back to an
+    earlier discussion and the recall toggle is on; `load_recall=False` skips it.
+    Its block is returned separately, for the query, and never enters
+    `system_suffix`.
     """
     if scope is None:
         return _empty("no_scope")
