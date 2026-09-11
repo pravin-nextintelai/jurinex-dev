@@ -203,23 +203,47 @@ def parse_import(payload: Any, *, doc_names: Sequence[str] | None = None) -> Par
     parsed.lines = {name: lines for name, lines in parsed.lines.items() if lines}
 
     raw_instructions = payload.get("instructions")
-    content = ""
+    candidates: list[dict[str, Any]] = []
     if isinstance(raw_instructions, dict):
-        content = str(raw_instructions.get("content") or "").strip()
-    if content:
-        problems = validate_instructions(content)
-        if problems:
-            for problem in problems:
-                parsed.rejected.append(
-                    {
-                        "section": "instructions",
-                        "text": content[:120],
-                        "code": problem.code,
-                        "message": problem.detail,
-                    }
-                )
+        raw_items = raw_instructions.get("items")
+        if isinstance(raw_items, list):
+            for raw in raw_items:
+                if isinstance(raw, dict):
+                    candidates.append(
+                        {
+                            "text": raw.get("text"),
+                            "enabled": raw.get("enabled", True),
+                            "origin": raw.get("origin"),
+                        }
+                    )
+                elif isinstance(raw, str):
+                    candidates.append({"text": raw, "enabled": True, "origin": None})
         else:
-            parsed.instructions = content
+            # An older export: one text box, one instruction per line.
+            for text in split_instruction_text(str(raw_instructions.get("content") or "")):
+                candidates.append({"text": text, "enabled": True, "origin": None})
+    if candidates:
+        parsed.instructions = []
+        for candidate in candidates:
+            text = " ".join(str(candidate.get("text") or "").split())
+            if not text:
+                continue
+            problems = validate_instruction_item(text, scope_type="case")
+            if problems:
+                for problem in problems:
+                    parsed.rejected.append(
+                        {"section": "instructions", "text": text[:120], "code": problem.code, "message": problem.detail}
+                    )
+                continue
+            if any(normalize_for_compare(item["text"]) == normalize_for_compare(text) for item in parsed.instructions):
+                continue
+            origin = str(candidate.get("origin") or "")
+            ref: dict[str, Any] = {"kind": "import"}
+            if origin and origin != "import" and origin in INSTRUCTION_ORIGINS:
+                ref["imported_origin"] = origin
+            parsed.instructions.append(
+                {"text": text, "enabled": bool(candidate.get("enabled", True)), "origin": "import", "source_ref": ref}
+            )
 
     raw_settings = payload.get("settings")
     if isinstance(raw_settings, dict):
@@ -238,8 +262,8 @@ def import_case(
 ) -> dict[str, Any]:
     """Write a validated export into one case.
 
-    `replace=False` (the default) merges: incoming lines that duplicate what the
-    case already holds are skipped, and existing instructions are kept.
+    `replace=False` (the default) merges: incoming lines and instructions that
+    duplicate what the case already holds are skipped, and nothing is removed.
     `replace=True` swaps the case's memory sections, instructions and case-level
     settings for the file's; the assembly log and proposals are never touched.
     """
@@ -270,17 +294,25 @@ def import_case(
                 written[name] = int(result.get("added") or 0)
 
     instructions_imported = False
+    instructions_written = 0
     if parsed.instructions is not None:
-        current = repository.get_instructions(key) or {}
-        if replace or not str(current.get("content") or "").strip():
-            repository.put_instructions(
-                key,
-                parsed.instructions,
-                current.get("version"),
-                updated_by=actor,
-                folder_name=scope.folder_name,
-            )
+        if replace:
+            result = repository.replace_instruction_set("case", key, parsed.instructions, actor=actor)
+            instructions_written = len(result.get("items") or [])
             instructions_imported = True
+        else:
+            # A merge adds what the case does not already say; nothing is removed.
+            current = list(repository.get_instruction_set("case", key).get("items") or [])
+            fresh: list[dict[str, Any]] = []
+            for item in parsed.instructions:
+                if find_duplicate(item["text"], current + fresh) is not None:
+                    duplicates += 1
+                    continue
+                fresh.append(item)
+            if fresh:
+                result = repository.append_instructions("case", key, fresh, actor=actor)
+                instructions_written = int(result.get("added") or 0)
+                instructions_imported = instructions_written > 0
 
     settings_imported = False
     if replace and parsed.settings is not None:
@@ -303,5 +335,6 @@ def import_case(
         "duplicates_skipped": duplicates,
         "rejected": parsed.rejected,
         "instructions_imported": instructions_imported,
+        "instructions_written": instructions_written,
         "settings_imported": settings_imported,
     }
