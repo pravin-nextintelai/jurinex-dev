@@ -40,7 +40,7 @@ class CaseIsolationDbTests(unittest.TestCase):
             repository.append_lines(
                 key, "facts", [{"tag": "stated", "text": f"Fact {token}", "source_ref": {"kind": "test"}}], actor="test"
             )
-            repository.put_instructions(key, f"Instruction {token}", None, updated_by="test")
+            repository.add_instruction("case", key, f"Instruction {token}", None, actor="test")
             repository.add_proposal(key, "0", "instruction", f"Proposal {token}", {"kind": "test"})
             repository.write_assembly_log({"case_key": key, "user_id": "0", "mode": f"test {token}"})
             repository.put_settings("case", key, {flag: True for flag in SETTINGS_FLAGS}, updated_by=f"test {token}")
@@ -54,7 +54,7 @@ class CaseIsolationDbTests(unittest.TestCase):
         return "\n".join(
             [
                 repr(repository.get_sections(key)),
-                repr(repository.get_instructions(key)),
+                repr(repository.get_instruction_set("case", key)),
                 repr(repository.list_proposals(key, None)),
                 repr(repository.list_assembly_log(key, 50)),
                 repr(repository.get_settings("case", key)),
