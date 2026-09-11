@@ -10,7 +10,7 @@ from unittest.mock import patch
 from app.services.memory import writer as writer_mod
 from app.services.memory.recall import RecallHit
 from app.services.memory.repository import VersionConflict
-from app.services.memory.schemas import MemoryLine, MemoryOp, MemoryOps, MemoryProposal, MemorySettings
+from app.services.memory.schemas import MAX_INSTRUCTION_ITEMS, MemoryLine, MemoryOp, MemoryOps, MemoryProposal, MemorySettings
 from app.services.memory.scope import CaseScope
 from app.services.memory.writer import (
     SNAPSHOT_CHARS,
@@ -22,6 +22,7 @@ from app.services.memory.writer import (
     draft_status_line,
     extract_ops,
     has_standing_rule,
+    has_universal_cue,
     is_grounded,
     parse_extraction,
     render_snapshot,
@@ -34,6 +35,7 @@ from app.services.memory.writer import (
 TODAY = date(2026, 9, 11)
 CHAT = "44444444-4444-4444-4444-444444444444"
 SCOPE = CaseScope(case_key="512", folder_name="State_v_Pawar", user_id="42", case_id="512")
+USER_KEY = "user:42"
 
 HEART = "My client Sunil Pawar has a heart condition, that is the medical ground."
 MEDICAL_LINE = "Medical ground to be pleaded: accused's cardiac condition"
@@ -60,6 +62,10 @@ def op(
             tag=tag, text=text, source=source, document=document, changed=changed, sensitive=sensitive
         ),
     )
+
+
+def proposal(text: str, kind: str = "instruction") -> Extraction:
+    return Extraction(proposals=[MemoryProposal(kind=kind, text=text)])
 
 
 def turn(message: str, **overrides) -> TurnInput:
@@ -99,8 +105,14 @@ def _apply_ok():
     return apply
 
 
-def _put_ok(key, content, version, updated_by=None, folder_name=None):
-    return {"content": content, "version": (version or 0) + 1}
+def _add_ok():
+    counter = {"n": 0}
+
+    def add(scope_type, scope_id, text, expected=None, *, enabled=True, origin="user", source_ref=None, actor=None):
+        counter["n"] += 1
+        return {"version": 3, "item": {"id": f"ins-{counter['n']}", "text": text, "enabled": True, "origin": origin}}
+
+    return add
 
 
 @contextmanager
@@ -111,13 +123,13 @@ def harness(
     extraction=None,
     extract_error=None,
     apply=None,
-    instructions=None,
-    instructions_rows=None,
-    preferences=None,
+    instruction_items=None,
+    add_instruction=None,
     available=True,
     write_enabled=True,
     history=None,
-    put_instructions=None,
+    elsewhere=None,
+    party_names=(),
     turns=None,
     turns_error=None,
     seeded=None,
@@ -146,14 +158,17 @@ def harness(
             },
         )
         repo("add_proposal", return_value="proposal-1")
-        if instructions_rows is not None:
-            repo("get_instructions", side_effect=list(instructions_rows))
-        else:
-            repo("get_instructions", return_value={"content": instructions} if instructions else None)
-        repo("get_preferences", return_value={"content": preferences} if preferences else None)
-        repo("list_proposals", return_value=list(history or []))
-        repo("put_instructions", side_effect=put_instructions if put_instructions is not None else _put_ok)
+        repo(
+            "get_instruction_set",
+            side_effect=lambda kind, sid: {
+                "scope_type": kind, "scope_id": sid, "version": 2, "items": list((instruction_items or {}).get(kind) or [])
+            },
+        )
+        repo("add_instruction", side_effect=add_instruction if add_instruction is not None else _add_ok())
+        repo("list_proposals", side_effect=lambda key, status=None: list((history or {}).get(key) or []))
+        repo("list_user_proposals", return_value=list(elsewhere or []))
         repo("write_assembly_log", return_value="log-1")
+        module("party_names_for_user", return_value=tuple(party_names))
         if turns_error is not None:
             module("recent_turns", side_effect=turns_error)
         else:
@@ -223,6 +238,20 @@ class StandingRuleTests(unittest.TestCase):
         for text in ("Give me tabular events output", "Summarise this case", "Show this as a table", "", None):
             with self.subTest(text=text):
                 self.assertFalse(has_standing_rule(text))
+
+    def test_words_that_widen_a_rule_to_every_case(self) -> None:
+        for text in (
+            "In all my matters, cite SCC first",
+            "For every case, answer in tables",
+            "Use Marathi for client letters across all my cases",
+            "Not just this case, do it in general",
+            "Regardless of the matter, number the paragraphs",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(has_universal_cue(text))
+        for text in ("Always cite SCC first in this matter", "From now on, answer in a table", "", None):
+            with self.subTest(text=text):
+                self.assertFalse(has_universal_cue(text))
 
 
 class SkipReasonTests(unittest.TestCase):
@@ -294,12 +323,15 @@ class WriteTests(unittest.TestCase):
         entry = logged(mocks)
         self.assertEqual((entry["writes"], entry["chat_id"], entry["case_key"]), (1, CHAT, "512"))
 
-    def test_the_turn_log_lists_the_lines_written(self) -> None:
-        _, mocks = run(HEART, extraction=Extraction(ops=[op(MEDICAL_LINE)]))
-        self.assertEqual(
-            logged(mocks)["details"]["lines"],
-            [{"section": "facts", "tag": "stated", "text": MEDICAL_LINE, "updated": False}],
+    def test_the_turn_log_lists_the_lines_written_and_keeps_what_was_read(self) -> None:
+        _, mocks = run(
+            HEART,
+            extraction=Extraction(ops=[op(MEDICAL_LINE)]),
+            turn={"log_entry": {"case_key": "512", "user_id": "42", "details": {"instructions_applied": ["u1"]}}},
         )
+        details = logged(mocks)["details"]
+        self.assertEqual(details["lines"], [{"section": "facts", "tag": "stated", "text": MEDICAL_LINE, "updated": False}])
+        self.assertEqual(details["instructions_applied"], ["u1"])
 
     def test_a_decision_hidden_in_a_request_is_written(self) -> None:
         message = "Let's not press the alibi, it is weak. Focus on absence of mens rea and draft it."
@@ -393,7 +425,7 @@ class WriteTests(unittest.TestCase):
         self.assertEqual(mocks["apply_op"].call_count, 1)
         self.assertEqual(report.writes, 1)
 
-    def test_every_write_and_proposal_targets_this_case_only(self) -> None:
+    def test_every_write_targets_this_case_or_this_advocate_only(self) -> None:
         message = "My client has a heart condition, that is the medical ground. Always cite SCC first in this matter."
         run_report, mocks = run(
             message,
@@ -404,9 +436,9 @@ class WriteTests(unittest.TestCase):
         )
         self.assertGreater(run_report.writes, 0)
         self.assertEqual({call.args[0] for call in mocks["apply_op"].call_args_list}, {"512"})
-        self.assertEqual(mocks["put_instructions"].call_args.args[0], "512")
+        self.assertEqual(mocks["add_instruction"].call_args.args[:2], ("case", "512"))
         self.assertEqual(mocks["add_proposal"].call_args.args[0], "512")
-        self.assertEqual(mocks["list_proposals"].call_args.args[0], "512")
+        self.assertEqual({call.args[0] for call in mocks["list_proposals"].call_args_list}, {"512", USER_KEY})
 
 
 class ConflictTests(unittest.TestCase):
@@ -436,141 +468,158 @@ class ConflictTests(unittest.TestCase):
 
 class InstructionFromChatTests(unittest.TestCase):
     RULE = "Always cite SCC first in this matter"
+    UNIVERSAL = "In all my matters, always cite SCC first"
 
-    def extraction(self, text: str = RULE, kind: str = "instruction") -> Extraction:
-        return Extraction(proposals=[MemoryProposal(kind=kind, text=text)])
-
-    def test_an_explicit_standing_instruction_is_saved_to_the_case_instructions(self) -> None:
-        report, mocks = run(
-            "Always cite SCC first in this matter.",
-            instructions="Refer to the accused as the Applicant.",
-            extraction=self.extraction(),
-        )
+    def test_an_explicit_rule_is_saved_to_the_case_instructions(self) -> None:
+        report, mocks = run("Always cite SCC first in this matter.", extraction=proposal(self.RULE))
         mocks["apply_op"].assert_not_called()
-        key, content, version = mocks["put_instructions"].call_args.args[:3]
-        self.assertEqual(key, "512")
-        self.assertEqual(content, f"Refer to the accused as the Applicant.\n{self.RULE}")
-        self.assertIsNone(version)
-        self.assertEqual(mocks["put_instructions"].call_args.kwargs["updated_by"], writer_mod.WRITER_ACTOR)
+        add = mocks["add_instruction"].call_args
+        self.assertEqual(add.args, ("case", "512", self.RULE, None))
+        self.assertEqual(add.kwargs["origin"], "chat")
+        self.assertEqual(add.kwargs["source_ref"], {"kind": "chat", "session_id": "s-1", "chat_id": CHAT, "auto": True})
+        self.assertEqual(add.kwargs["actor"], writer_mod.WRITER_ACTOR)
 
         record = mocks["add_proposal"].call_args
         self.assertEqual(record.args[:4], ("512", "42", "instruction", self.RULE))
-        self.assertTrue(record.args[4]["auto"])
-        self.assertEqual(record.args[4]["chat_id"], CHAT)
+        self.assertEqual((record.args[4]["auto"], record.args[4]["instruction_id"]), (True, "ins-1"))
         self.assertEqual(record.kwargs["status"], "accepted")
 
         self.assertEqual((report.instructions_saved, report.writes, report.proposals), (1, 1, 0))
-        saved = logged(mocks)["details"]["instructions"]
-        self.assertEqual(saved, [{"id": "proposal-1", "text": self.RULE, "version": 1}])
+        self.assertEqual(
+            logged(mocks)["details"]["instructions"],
+            [{"id": "ins-1", "text": self.RULE, "scope": "case", "version": 3}],
+        )
+
+    def test_a_rule_for_all_the_advocates_cases_is_saved_as_universal(self) -> None:
+        report, mocks = run("In all my matters, always cite SCC first.", extraction=proposal(self.UNIVERSAL, "preference"))
+        add = mocks["add_instruction"].call_args
+        self.assertEqual(add.args[:3], ("user", "42", self.UNIVERSAL))
+        self.assertEqual(add.kwargs["origin"], "chat")
+        record = mocks["add_proposal"].call_args
+        self.assertEqual(record.args[:3], (USER_KEY, "42", "preference"))
+        self.assertEqual(logged(mocks)["details"]["instructions"][0]["scope"], "user")
+        self.assertEqual(report.instructions_saved, 1)
+
+    def test_the_extractors_preference_label_needs_the_advocates_own_words(self) -> None:
+        # "preference" without "in all my cases" in the message stays with this case.
+        _, mocks = run("Always cite SCC first.", extraction=proposal("Always cite SCC first", "preference"))
+        self.assertEqual(mocks["add_instruction"].call_args.args[:2], ("case", "512"))
+
+    def test_a_universal_rule_naming_a_party_is_refused(self) -> None:
+        report, mocks = run(
+            "In all my cases, always call Pawar the Applicant.",
+            party_names=("Sunil Pawar",),
+            extraction=proposal("In all my cases, always call Pawar the Applicant", "preference"),
+        )
+        mocks["add_instruction"].assert_not_called()
+        mocks["add_proposal"].assert_not_called()
+        self.assertEqual(report.rejection_codes, ["proposal_invalid"])
 
     def test_a_rule_without_a_rule_word_becomes_a_suggestion(self) -> None:
         text = "Cite SCC first in this matter"
-        report, mocks = run(f"{text}.", extraction=self.extraction(text))
-        mocks["put_instructions"].assert_not_called()
+        report, mocks = run(f"{text}.", extraction=proposal(text))
+        mocks["add_instruction"].assert_not_called()
         suggestion = mocks["add_proposal"].call_args
         self.assertEqual(suggestion.args[:4], ("512", "42", "instruction", text))
         self.assertNotIn("status", suggestion.kwargs)
         self.assertEqual(report.proposals, 1)
-        self.assertEqual(logged(mocks)["details"]["suggestions"][0]["text"], text)
+        self.assertEqual(logged(mocks)["details"]["suggestions"][0], {"id": "proposal-1", "kind": "instruction", "scope": "case", "text": text})
 
     def test_a_stray_rule_word_in_a_statement_does_not_save_an_instruction(self) -> None:
         message = "The bank never disbursed the loan, draft the reply to the notice."
-        report, mocks = run(message, extraction=self.extraction("Draft the reply to the notice"))
-        mocks["put_instructions"].assert_not_called()
+        report, mocks = run(message, extraction=proposal("Draft the reply to the notice"))
+        mocks["add_instruction"].assert_not_called()
         self.assertEqual(report.proposals, 1)
 
     def test_with_instructions_switched_off_a_rule_is_only_suggested(self) -> None:
         report, mocks = run(
             "Always cite SCC first in this matter.",
             settings=MemorySettings(instructions_enabled=False),
-            extraction=self.extraction(),
+            extraction=proposal(self.RULE),
         )
-        mocks["put_instructions"].assert_not_called()
+        mocks["add_instruction"].assert_not_called()
         self.assertEqual(report.proposals, 1)
 
-    def test_a_preference_for_all_work_is_suggested_not_saved(self) -> None:
-        text = "In all my matters, always cite SCC first"
-        report, mocks = run(f"{text}.", extraction=self.extraction(text, kind="preference"))
-        mocks["put_instructions"].assert_not_called()
-        self.assertEqual(mocks["add_proposal"].call_args.args[2], "preference")
-        self.assertEqual(report.proposals, 1)
-
-    def test_instructions_changed_meanwhile_are_reread_and_saved_once(self) -> None:
-        rows = [
-            {"content": "", "version": 2},  # read for the proposal checks
-            {"content": "", "version": 2},  # first save attempt
-            {"content": "Use Marathi.", "version": 3},  # after the conflict
-        ]
-        put = [VersionConflict("instructions", 2, 3), {"content": f"Use Marathi.\n{self.RULE}", "version": 4}]
+    def test_a_failed_save_becomes_a_suggestion(self) -> None:
         report, mocks = run(
             "Always cite SCC first in this matter.",
-            instructions_rows=rows,
-            put_instructions=put,
-            extraction=self.extraction(),
+            add_instruction=RuntimeError("db down"),
+            extraction=proposal(self.RULE),
         )
-        self.assertEqual(mocks["put_instructions"].call_count, 2)
-        self.assertEqual(mocks["put_instructions"].call_args.args[1:3], (f"Use Marathi.\n{self.RULE}", 3))
-        self.assertEqual(report.instructions_saved, 1)
+        self.assertIn("instruction_write_failed", report.rejection_codes)
+        self.assertEqual(report.proposals, 1)
+        self.assertNotIn("status", mocks["add_proposal"].call_args.kwargs)
 
-    def test_an_instruction_the_advocate_undid_is_suggested_instead(self) -> None:
-        history = [
-            {"id": "p0", "status": "rejected", "kind": "instruction", "text": self.RULE, "source_ref": {"auto": True}}
-        ]
-        report, mocks = run("Always cite SCC first in this matter.", history=history, extraction=self.extraction())
-        mocks["put_instructions"].assert_not_called()
+    def test_an_instruction_the_advocate_deleted_is_suggested_instead(self) -> None:
+        history = {"512": [{"id": "p0", "status": "rejected", "kind": "instruction", "text": self.RULE, "source_ref": {"auto": True}}]}
+        report, mocks = run("Always cite SCC first in this matter.", history=history, extraction=proposal(self.RULE))
+        mocks["add_instruction"].assert_not_called()
         self.assertEqual(report.proposals, 1)
 
     def test_a_dismissed_suggestion_is_not_made_again(self) -> None:
         text = "Cite SCC first in this matter"
-        history = [{"id": "p0", "status": "rejected", "kind": "instruction", "text": text, "source_ref": {}}]
-        report, mocks = run(f"{text}.", history=history, extraction=self.extraction(text))
+        history = {"512": [{"id": "p0", "status": "rejected", "kind": "instruction", "text": text, "source_ref": {}}]}
+        report, mocks = run(f"{text}.", history=history, extraction=proposal(text))
         mocks["add_proposal"].assert_not_called()
         self.assertEqual(report.rejection_codes, ["proposal_dismissed_before"])
 
     def test_a_suggestion_already_waiting_is_not_added_twice(self) -> None:
         text = "Cite SCC first in this matter"
-        history = [{"id": "p0", "status": "pending", "kind": "instruction", "text": text, "source_ref": {}}]
-        report, mocks = run(f"{text}.", history=history, extraction=self.extraction(text))
+        history = {"512": [{"id": "p0", "status": "pending", "kind": "instruction", "text": text, "source_ref": {}}]}
+        report, mocks = run(f"{text}.", history=history, extraction=proposal(text))
         mocks["add_proposal"].assert_not_called()
         self.assertEqual(report.proposals, 0)
 
-    def test_an_instruction_too_long_to_append_becomes_a_suggestion(self) -> None:
-        report, mocks = run(
-            "Always cite SCC first in this matter.",
-            instructions="x " * 1999 + "end",
-            extraction=self.extraction(),
-        )
-        mocks["put_instructions"].assert_not_called()
+    def test_a_full_set_turns_a_rule_into_a_suggestion(self) -> None:
+        full = [{"id": f"i{n}", "text": f"Rule {n}", "enabled": True} for n in range(MAX_INSTRUCTION_ITEMS)]
+        report, mocks = run("Always cite SCC first in this matter.", instruction_items={"case": full}, extraction=proposal(self.RULE))
+        mocks["add_instruction"].assert_not_called()
         self.assertEqual(report.proposals, 1)
 
     def test_an_instruction_already_saved_is_not_proposed_again(self) -> None:
-        report, mocks = run(
-            "Always cite SCC first in this matter.",
-            instructions=f"Refer to the accused as the Applicant.\n{self.RULE}.",
-            extraction=self.extraction(),
-        )
+        items = {"case": [{"id": "i1", "text": f"{self.RULE}.", "enabled": True}]}
+        report, mocks = run("Always cite SCC first in this matter.", instruction_items=items, extraction=proposal(self.RULE))
         mocks["add_proposal"].assert_not_called()
-        mocks["put_instructions"].assert_not_called()
+        mocks["add_instruction"].assert_not_called()
         self.assertEqual(report.proposals, 0)
+
+    def test_a_request_seen_in_another_case_is_also_suggested_for_all_cases(self) -> None:
+        text = "Give event lists as tables"
+        elsewhere = [{"id": "p8", "case_key": "264", "text": "Give event lists as tables", "status": "pending"}]
+        report, mocks = run("give me the event lists as tables", elsewhere=elsewhere, extraction=proposal(text))
+        calls = mocks["add_proposal"].call_args_list
+        self.assertEqual(calls[0].args[:4], ("512", "42", "instruction", text))
+        self.assertEqual(calls[1].args[:4], (USER_KEY, "42", "preference", text))
+        self.assertEqual(calls[1].args[4]["learned_from"], ["264"])
+        self.assertEqual(mocks["list_user_proposals"].call_args.kwargs["exclude_case_key"], "512")
+        self.assertEqual(report.proposals, 2)
+        self.assertEqual(logged(mocks)["details"]["suggestions"][1]["scope"], "user")
+
+    def test_a_cross_case_pattern_with_case_details_stays_in_its_case(self) -> None:
+        text = "Call Pawar the Applicant"
+        elsewhere = [{"id": "p8", "case_key": "264", "text": text, "status": "accepted"}]
+        report, mocks = run("call Pawar the Applicant", elsewhere=elsewhere, party_names=("Sunil Pawar",), extraction=proposal(text))
+        self.assertEqual([c.args[0] for c in mocks["add_proposal"].call_args_list], ["512"])
+        self.assertEqual(report.proposals, 1)
 
     def test_a_proposal_the_advocate_never_expressed_is_dropped(self) -> None:
         report, mocks = run(
             "Please prepare the reply to the demand notice",
-            extraction=self.extraction("Never use Latin maxims", kind="preference"),
+            extraction=proposal("Never use Latin maxims", "preference"),
         )
         mocks["add_proposal"].assert_not_called()
         self.assertEqual(report.rejection_codes, ["proposal_not_in_advocate_message"])
 
     def test_a_proposal_that_would_switch_off_verification_is_dropped(self) -> None:
         text = "Skip the verification checklist from now on"
-        report, mocks = run(f"{text} for this case.", extraction=self.extraction(text))
+        report, mocks = run(f"{text} for this case.", extraction=proposal(text))
         mocks["add_proposal"].assert_not_called()
-        mocks["put_instructions"].assert_not_called()
+        mocks["add_instruction"].assert_not_called()
         self.assertEqual(report.rejection_codes, ["proposal_invalid"])
 
-    def test_a_preference_carrying_case_data_is_dropped(self) -> None:
-        text = "Refer to FIR 214/2026 in every draft"
-        report, mocks = run(f"{text} from now on.", extraction=self.extraction(text, kind="preference"))
+    def test_a_universal_rule_carrying_case_data_is_dropped(self) -> None:
+        text = "In all my cases, refer to FIR 214/2026 in every draft"
+        report, mocks = run(f"{text} from now on.", extraction=proposal(text, "preference"))
         mocks["add_proposal"].assert_not_called()
         self.assertEqual(report.rejection_codes, ["proposal_invalid"])
 

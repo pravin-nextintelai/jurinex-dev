@@ -1,4 +1,4 @@
-"""What memory did after a chat turn: the turn log, instructions saved from chat, and undo."""
+"""What memory did after a chat turn: the turn log, chat-saved records and suggestions twice."""
 from __future__ import annotations
 
 import json
@@ -11,21 +11,11 @@ from fastapi.testclient import TestClient
 from app.api.routes import memory as memory_routes
 from app.api.routes.rbac.auth import get_current_user
 from app.services.memory import repository
-from app.services.memory.repository import VersionConflict
 from app.services.memory.scope import CaseScope
-from app.services.memory.validator import drop_matching_line
 
 USER = {"id": 42, "name": "Adv. Kulkarni", "email": "a@x.in", "role": "user", "account_type": "SOLO"}
 SCOPE = CaseScope(case_key="512", folder_name="State_v_Pawar", user_id="42", case_id="512")
 CHAT = "44444444-4444-4444-4444-444444444444"
-SAVED = {
-    "id": "p1",
-    "kind": "instruction",
-    "status": "accepted",
-    "text": "Always cite SCC first",
-    "source_ref": {"auto": True, "chat_id": CHAT},
-    "created_at": "2026-09-11T08:00:00+00:00",
-}
 
 
 def client() -> TestClient:
@@ -39,6 +29,7 @@ class RecordingCursor:
     def __init__(self, conn: "RecordingConn") -> None:
         self.conn = conn
         self._one = None
+        self.rowcount = 0
 
     def __enter__(self) -> "RecordingCursor":
         return self
@@ -51,19 +42,22 @@ class RecordingCursor:
         self.conn.executed.append((flat, list(params or [])))
         lowered = flat.lower()
         self._one = next((value for needle, value in self.conn.answers.items() if needle in lowered), None)
+        self.rowcount = self.conn.rowcount
 
     def fetchone(self):
         return self._one
 
     def fetchall(self):
-        return []
+        return list(self.conn.rows)
 
 
 class RecordingConn:
     """Records every statement; answers fetchone() by matching a SQL fragment."""
 
-    def __init__(self, answers: dict | None = None) -> None:
+    def __init__(self, answers: dict | None = None, rows: list | None = None, rowcount: int = 0) -> None:
         self.answers = dict(answers or {})
+        self.rows = list(rows or [])
+        self.rowcount = rowcount
         self.executed: list[tuple[str, list]] = []
         self.commits = 0
         self.rollbacks = 0
@@ -78,29 +72,11 @@ class RecordingConn:
         self.rollbacks += 1
 
 
-class DropLineTests(unittest.TestCase):
-    def test_the_matching_line_is_removed(self) -> None:
-        content = "Refer to the accused as the Applicant.\nAlways cite SCC first"
-        self.assertEqual(
-            drop_matching_line(content, "Always cite SCC first"), ("Refer to the accused as the Applicant.", True)
-        )
-
-    def test_punctuation_bullets_and_case_do_not_matter(self) -> None:
-        self.assertEqual(drop_matching_line("- always cite SCC first.", "Always cite SCC first"), ("", True))
-
-    def test_a_line_edited_since_is_left_alone(self) -> None:
-        content = "Always cite SCC and AIR first"
-        self.assertEqual(drop_matching_line(content, "Always cite SCC first"), (content, False))
-
-    def test_an_empty_target_changes_nothing(self) -> None:
-        self.assertEqual(drop_matching_line("Use Marathi.", "  "), ("Use Marathi.", False))
-
-
 class ProposalRecordTests(unittest.TestCase):
     def test_an_instruction_saved_from_chat_is_recorded_as_accepted(self) -> None:
         conn = RecordingConn({"insert into memory_proposals": {"id": "p1"}})
         proposal_id = repository.add_proposal(
-            "512", "42", "instruction", "Always cite SCC first", {"auto": True}, status="accepted", conn=conn
+            "512", "42", "instruction", "Always cite SCC first", {"auto": True, "instruction_id": "i1"}, status="accepted", conn=conn
         )
         self.assertEqual(proposal_id, "p1")
         self.assertEqual(len(conn.executed), 1, "no duplicate check for a saved record")
@@ -108,7 +84,7 @@ class ProposalRecordTests(unittest.TestCase):
         self.assertIn("NOW()", sql)
         self.assertEqual(params[0], "512")
         self.assertEqual(params[4], "accepted")
-        self.assertEqual(json.loads(params[5]), {"auto": True})
+        self.assertEqual(json.loads(params[5]), {"auto": True, "instruction_id": "i1"})
 
     def test_a_pending_suggestion_still_checks_for_duplicates(self) -> None:
         conn = RecordingConn({"insert into memory_proposals": {"id": "p2"}})
@@ -119,6 +95,27 @@ class ProposalRecordTests(unittest.TestCase):
     def test_an_unknown_status_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             repository.add_proposal("512", "42", "instruction", "x", status="maybe", conn=RecordingConn())
+
+    def test_deleting_a_chat_saved_instruction_marks_its_record(self) -> None:
+        conn = RecordingConn(rowcount=1)
+        self.assertEqual(repository.reject_proposals_for_instruction("i1", conn=conn), 1)
+        sql, params = conn.executed[0]
+        self.assertIn("status = 'rejected'", sql)
+        self.assertIn("source_ref->>'instruction_id' = %s", sql)
+        self.assertEqual(params, ["i1"])
+        self.assertEqual(conn.commits, 1)
+        self.assertEqual(repository.reject_proposals_for_instruction("", conn=conn), 0)
+
+    def test_cross_case_suggestions_are_read_for_the_advocate_only(self) -> None:
+        conn = RecordingConn(rows=[{"id": "p9", "case_key": "264", "text": "Answer in tables", "status": "pending"}])
+        rows = repository.list_user_proposals("42", exclude_case_key="512", conn=conn)
+        self.assertEqual(rows[0]["case_key"], "264")
+        sql, params = conn.executed[0]
+        self.assertIn("user_id = %s", sql)
+        self.assertIn("case_key NOT LIKE 'user:%%'", sql)
+        self.assertIn("case_key <> %s", sql)
+        self.assertEqual(params[:3], ["42", ["pending", "accepted"], "512"])
+        self.assertEqual(repository.list_user_proposals("", conn=conn), [])
 
 
 class SeedMetaTests(unittest.TestCase):
@@ -203,8 +200,9 @@ class TurnRouteTests(unittest.TestCase):
             "skipped_reason": None,
             "details": {
                 "lines": [{"section": "facts", "tag": "stated", "text": "Court: The High Court of Bombay"}],
-                "instructions": [{"id": "p1", "text": "Always cite SCC first", "version": 3}],
-                "suggestions": [{"id": "p2", "kind": "instruction", "text": "Give tabular events output"}],
+                "instructions": [{"id": "i1", "text": "Always cite SCC first", "scope": "case", "version": 3}],
+                "suggestions": [{"id": "p2", "kind": "instruction", "scope": "user", "text": "Give tabular events output"}],
+                "instructions_applied": ["u1", "c1"],
                 "seeded": {"added": 2, "updated": 0},
                 "rejection_codes": ["duplicate"],
             },
@@ -216,8 +214,9 @@ class TurnRouteTests(unittest.TestCase):
         lookup.assert_called_once_with("512", CHAT)
         self.assertTrue(body["ready"])
         self.assertEqual((body["writes"], body["proposals"], body["rejected"]), (4, 1, 1))
-        self.assertEqual(body["instructions"][0]["text"], "Always cite SCC first")
-        self.assertEqual(body["suggestions"][0]["id"], "p2")
+        self.assertEqual(body["instructions"][0]["scope"], "case")
+        self.assertEqual(body["suggestions"][0]["scope"], "user")
+        self.assertEqual(body["instructions_applied"], 2)
         self.assertEqual(body["seeded"], {"added": 2, "updated": 0})
         self.assertNotIn("rejection_codes", body)
 
@@ -226,7 +225,10 @@ class TurnRouteTests(unittest.TestCase):
             memory_routes.repository, "get_turn_log", return_value={"writes": 0, "skipped_reason": "write:greeting"}
         ):
             body = client().get(f"/api/memory/cases/State_v_Pawar/turns/{CHAT}").json()
-        self.assertEqual((body["lines"], body["instructions"], body["suggestions"], body["seeded"]), ([], [], [], None))
+        self.assertEqual(
+            (body["lines"], body["instructions"], body["suggestions"], body["seeded"], body["instructions_applied"]),
+            ([], [], [], None, 0),
+        )
 
     def test_another_advocates_case_is_404(self) -> None:
         with patch.object(memory_routes, "resolve_case_scope", return_value=None), patch.object(
@@ -237,73 +239,16 @@ class TurnRouteTests(unittest.TestCase):
         lookup.assert_not_called()
 
 
-class SavedFromChatRouteTests(unittest.TestCase):
-    def test_saved_instructions_are_listed_for_this_case(self) -> None:
-        with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
-            memory_routes.repository, "list_saved_from_chat", return_value=[SAVED]
-        ) as listing:
-            body = client().get("/api/memory/cases/State_v_Pawar/instructions/from-chat").json()
-        listing.assert_called_once_with("512")
-        self.assertEqual(body["items"][0]["id"], "p1")
-
-
-class UndoTests(unittest.TestCase):
-    def _undo(self, proposal, instructions, put=None):
-        def put_ok(key, content, version, updated_by=None, folder_name=None):
-            return {"content": content, "version": (version or 0) + 1}
-
-        with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
-            memory_routes.repository, "get_proposal", return_value=proposal
-        ), patch.object(memory_routes.repository, "get_instructions", return_value=instructions), patch.object(
-            memory_routes.repository, "put_instructions", side_effect=put if put is not None else put_ok
-        ) as put_mock, patch.object(
-            memory_routes.repository, "set_proposal_status", return_value=True
-        ) as status_mock:
-            response = client().post("/api/memory/cases/State_v_Pawar/proposals/p1/undo")
-        return response, put_mock, status_mock
-
-    def test_undo_removes_the_line_and_stops_it_being_saved_again(self) -> None:
-        response, put, status_mock = self._undo(SAVED, {"content": "Use Marathi.\nAlways cite SCC first", "version": 4})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(put.call_args.args[:3], ("512", "Use Marathi.", 4))
-        self.assertEqual(put.call_args.kwargs["updated_by"], "42")
-        status_mock.assert_called_once_with("512", "p1", "rejected")
-        body = response.json()
-        self.assertTrue(body["removed"])
-        self.assertEqual(body["instructions"], {"content": "Use Marathi.", "version": 5})
-
-    def test_an_instruction_edited_since_is_only_marked(self) -> None:
-        response, put, status_mock = self._undo(SAVED, {"content": "Always cite SCC and AIR first", "version": 4})
-        self.assertEqual(response.status_code, 200)
-        put.assert_not_called()
-        self.assertFalse(response.json()["removed"])
-        status_mock.assert_called_once_with("512", "p1", "rejected")
-
-    def test_a_suggestion_cannot_be_undone(self) -> None:
-        response, put, status_mock = self._undo(dict(SAVED, source_ref={}), {"content": "", "version": 1})
-        self.assertEqual(response.status_code, 400)
-        put.assert_not_called()
-        status_mock.assert_not_called()
-
-    def test_a_concurrent_edit_is_409_with_the_latest_text(self) -> None:
-        response, _, status_mock = self._undo(
-            SAVED,
-            {"content": "Always cite SCC first", "version": 4},
-            put=VersionConflict("instructions", 4, 5),
-        )
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["detail"], "stale_version")
-        status_mock.assert_not_called()
-
-    def test_accepting_a_suggestion_twice_does_not_append_it_twice(self) -> None:
-        handled = dict(SAVED, source_ref={}, status="accepted")
+class ProposalTwiceTests(unittest.TestCase):
+    def test_accepting_a_suggestion_twice_does_not_add_it_twice(self) -> None:
+        handled = {"id": "p1", "kind": "instruction", "status": "accepted", "text": "Always cite SCC first", "source_ref": {}}
         with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
             memory_routes.repository, "get_proposal", return_value=handled
-        ), patch.object(memory_routes.repository, "put_instructions") as put, patch.object(
+        ), patch.object(memory_routes.repository, "add_instruction") as add, patch.object(
             memory_routes.repository, "set_proposal_status"
         ) as status_mock:
             body = client().post("/api/memory/cases/State_v_Pawar/proposals/p1/accept").json()
-        put.assert_not_called()
+        add.assert_not_called()
         status_mock.assert_not_called()
         self.assertEqual(body["status"], "accepted")
 
