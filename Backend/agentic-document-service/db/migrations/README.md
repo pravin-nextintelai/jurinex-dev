@@ -22,10 +22,13 @@ These migrations align the new Python `agentic-document-service` with the shared
 5. adds the controlled memory system (migration `170`): standing preferences,
    case instructions, case memory sections/lines, memory settings, the assembly
    log and proposals. See `app/services/memory/` for the code that owns them.
+6. indexes `folder_chats` for past-session recall (migration `171`): a full-text
+   index over each turn's question and answer, and a folder/user/recency index.
 
 ## Suggested Run Order
 
-Apply the files in filename order.
+Apply the files in filename order. `node db/migrate.js` (from the service root)
+does this and records applied files in `schema_migrations`.
 
 Example:
 
@@ -42,6 +45,8 @@ psql -d your_database -f 080_patch_prompt_extractions_fix_template_fk.sql
 psql -d your_database -f 090_create_preset_prompts_table.sql
 psql -d your_database -f 100_backfill_folder_chats_and_file_chats_uuid_arrays.sql
 psql -d your_database -f 163_create_case_chronology_table.sql
+psql -d your_database -f 170_create_memory_tables.sql
+psql -d your_database -f 171_folder_chats_fts.sql
 ```
 
 ## Notes
@@ -49,3 +54,6 @@ psql -d your_database -f 163_create_case_chronology_table.sql
 - These migrations are idempotent where practical.
 - They assume the shared `users` table already exists.
 - `chunk_vectors.embedding` and `chunk_embedding_cache.embedding` use `vector(768)` to match the current pgvector-oriented document service pattern.
+- `171` builds its indexes inside the runner's transaction, which blocks writes to
+  `folder_chats` until they finish. On a large table, build them `CONCURRENTLY` by
+  hand first; the file's header has the exact statements.

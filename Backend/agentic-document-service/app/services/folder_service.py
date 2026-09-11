@@ -2095,6 +2095,11 @@ class FolderWorkflowService:
             query_text=query_text,
             max_history=int(llm_config.get("max_conversation_history") or 0),
         )
+        # Past-session recall goes ahead of the history, as on the streaming route.
+        if memory_bundle is not None and memory_bundle.recall_block:
+            from app.services.memory.recall import merge_recall_into_query
+
+            effective_query_text = merge_recall_into_query(effective_query_text, memory_bundle.recall_block)
         self._record_prompt(
             case_id=case_id,
             user_id=user_id,

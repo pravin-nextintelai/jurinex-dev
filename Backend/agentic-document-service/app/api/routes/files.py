@@ -3896,6 +3896,15 @@ async def intelligent_chat_stream(
         except Exception:
             effective_query_text = query_text
 
+        # Past-session recall: when the advocate referred back to an earlier
+        # discussion, the matching turns from other sessions of this case go ahead
+        # of the conversation history. The current session therefore outranks
+        # them, and the Gemma clamp below trims recall before any history.
+        if memory_bundle.recall_block:
+            from app.services.memory.recall import merge_recall_into_query
+
+            effective_query_text = merge_recall_into_query(effective_query_text, memory_bundle.recall_block)
+
         # Free-tier Gemma: cap the system prompt + conversation history + question at
         # gemma_history_system_max_chars (~5K tokens) so document chunks always get their full ~9K
         # budget and total input stays ~14K. If the history block is too long, drop the OLDEST

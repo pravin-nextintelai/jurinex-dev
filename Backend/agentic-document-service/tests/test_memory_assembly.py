@@ -277,5 +277,89 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(meta["skipped_reason"], "no_scope")
 
 
+# ── Past-session recall (phase 4) ────────────────────────────────────────────
+
+from dataclasses import replace  # noqa: E402
+
+from app.services.memory import recall as recall_mod  # noqa: E402
+from app.services.memory.recall import RecallHit  # noqa: E402
+
+
+class RecallAssemblyTests(unittest.TestCase):
+    HIT = RecallHit(
+        chat_id="22222222-2222-2222-2222-222222222222",
+        session_id="old-session",
+        created_at="2026-09-08T10:00:00",
+        question="The medical ground is his cardiac condition",
+        answer="Noted: the cardiac condition will be pleaded as the medical ground.",
+        prompt_label=None,
+        used_saved_prompt=False,
+        rank=0.9,
+    )
+
+    def test_a_backward_reference_brings_in_earlier_sessions(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions", return_value=[self.HIT]) as search:
+            bundle = build("Add the medical ground we discussed", session_id="s-now")
+        self.assertIn("EARLIER SESSIONS IN THIS CASE", bundle.recall_block)
+        self.assertEqual(bundle.recall_chat_ids, [self.HIT.chat_id])
+        self.assertEqual(bundle.log_entry["past_chat_ids"], [self.HIT.chat_id])
+        self.assertEqual(bundle.metadata()["recall_chat_ids"], [self.HIT.chat_id])
+        self.assertEqual(search.call_args.args[0], SCOPE)
+        self.assertEqual(search.call_args.kwargs["current_session_id"], "s-now")
+
+    def test_recall_never_enters_the_system_instruction(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions", return_value=[self.HIT]):
+            bundle = build("Add the medical ground we discussed")
+        self.assertNotIn("EARLIER SESSIONS", bundle.system_suffix)
+        self.assertIn("CASE MEMORY", bundle.system_suffix)
+
+    def test_no_backward_reference_means_no_search(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions") as search:
+            bundle = build("What are the facts?")
+        search.assert_not_called()
+        self.assertEqual(bundle.recall_block, "")
+        self.assertEqual(bundle.recall_chat_ids, [])
+
+    def test_the_recall_toggle_turns_it_off_without_touching_memory(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions") as search:
+            bundle = build("Add the ground we discussed", settings=MemorySettings(recall_enabled=False))
+        search.assert_not_called()
+        self.assertEqual(bundle.recall_block, "")
+        self.assertIn("CASE MEMORY", bundle.system_suffix)
+
+    def test_callers_can_opt_out(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions") as search:
+            build("Add the ground we discussed", load_recall=False)
+        search.assert_not_called()
+
+    def test_a_failed_search_keeps_every_other_layer(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions", side_effect=RuntimeError("statement timeout")):
+            bundle = build("Add the ground we discussed")
+        self.assertEqual(bundle.recall_block, "")
+        self.assertIn("ADVOCATE STANDING PREFERENCES", bundle.system_suffix)
+        self.assertIn("CASE INSTRUCTIONS", bundle.system_suffix)
+
+    def test_recall_alone_counts_as_content(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions", return_value=[self.HIT]):
+            bundle = build("Add the ground we discussed", prefs=None, instructions=None, sections={})
+        self.assertEqual(bundle.system_suffix, "")
+        self.assertTrue(bundle.recall_block)
+        self.assertIsNone(bundle.skipped_reason)
+
+    def test_learning_mode_never_searches(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions") as search:
+            bundle = build("Add the ground we discussed", mode="learning")
+        search.assert_not_called()
+        self.assertEqual(bundle.recall_block, "")
+
+    def test_the_gemma_budget_caps_the_recall_block(self) -> None:
+        long_hit = replace(self.HIT, answer="word " * 2_000)
+        budget = MemoryBudget.gemma()
+        with patch.object(recall_mod, "search_past_sessions", return_value=[long_hit, long_hit, long_hit]):
+            bundle = build("Add the ground we discussed", budget=budget)
+        self.assertTrue(bundle.recall_block)
+        self.assertLessEqual(len(bundle.recall_block), budget.recall)
+
+
 if __name__ == "__main__":
     unittest.main()

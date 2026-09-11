@@ -361,16 +361,20 @@ def build_context_layers(
     if suffix:
         suffix = "\n\n" + suffix
 
+    recall_block, recall_chat_ids = "", []
+    if load_recall and effective.recall_enabled:
+        recall_block, recall_chat_ids = _recall(scope, question_raw, session_id, budget)
+
     bundle = ContextBundle(
         system_suffix=suffix,
-        recall_block="",  # phase 4
+        recall_block=recall_block,
         sections_loaded=sections_loaded,
-        recall_chat_ids=[],
+        recall_chat_ids=list(recall_chat_ids),
         prefs_version=prefs_version,
         instructions_version=instructions_version,
         case_key=scope.case_key,
         enabled=True,
-        skipped_reason=None if suffix else "nothing_stored",
+        skipped_reason=None if (suffix or recall_block) else "nothing_stored",
         settings=effective,
     )
     bundle.log_entry = {
@@ -382,21 +386,47 @@ def build_context_layers(
         "instructions_version": instructions_version,
         "sections_loaded": sections_loaded,
         "preset_ref": preset_ref or {},
-        "past_chat_ids": [],
+        "past_chat_ids": list(recall_chat_ids),
         "model": model_name,
         "budget": budget.as_dict(),
         "skipped_reason": bundle.skipped_reason,
     }
     logger.info(
-        "[Memory] assembled case_key=%s mode=%s prefs=v%s instructions=v%s sections=%s suffix_chars=%s",
+        "[Memory] assembled case_key=%s mode=%s prefs=v%s instructions=v%s sections=%s "
+        "suffix_chars=%s recall_hits=%s recall_chars=%s",
         scope.case_key,
         normalized_mode,
         prefs_version,
         instructions_version,
         [s.get("section") for s in sections_loaded],
         len(suffix),
+        len(recall_chat_ids),
+        len(recall_block),
     )
     return bundle
+
+
+def _recall(
+    scope: CaseScope,
+    question_raw: str,
+    session_id: str | None,
+    budget: MemoryBudget,
+) -> tuple[str, list[str]]:
+    """Past-session recall, only when the advocate's words point back. Never raises."""
+    from app.services.memory import recall
+
+    if not recall.has_recall_cue(question_raw):
+        return "", []
+    try:
+        hits = recall.search_past_sessions(
+            scope,
+            question_raw=question_raw,
+            current_session_id=session_id,
+        )
+        return recall.format_recall_block(hits, budget.recall)
+    except Exception as exc:  # noqa: BLE001 — recall must never cost the other layers
+        logger.warning("[Memory] recall skipped for case_key=%s: %s", scope.case_key, exc)
+        return "", []
 
 
 def _collect(
