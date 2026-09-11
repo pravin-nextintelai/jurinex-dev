@@ -1351,6 +1351,18 @@ const SettingsPage = () => {
  </SettingSection>
  </div>
 
+ <div className={paneClass('memory')}>
+ <SettingSection icon={Brain} title="Memory">
+ <MemorySettingsPane
+ accountType={authUser?.account_type}
+ onOpenProfile={() => {
+ setActiveSection('account');
+ setShowProfileSetup(true);
+ }}
+ />
+ </SettingSection>
+ </div>
+
  <div className={paneClass('data')}>
  <SettingSection icon={Download} title="Data & Storage">
  <div className="space-y-3">
