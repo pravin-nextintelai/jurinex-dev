@@ -28,9 +28,18 @@ STORED = {
 }
 
 
+INSTRUCTIONS = {
+    "version": 3,
+    "items": [
+        {"id": "c1", "text": "Refer to the accused as the Applicant.", "enabled": True, "origin": "user"},
+        {"id": "c2", "text": "Answer in tables", "enabled": False, "origin": "chat"},
+    ],
+}
+
+
 def exported() -> dict:
     with patch.object(export_mod.repository, "get_sections", return_value=STORED), patch.object(
-        export_mod.repository, "get_instructions", return_value={"content": "Refer to the accused as the Applicant.", "version": 3}
+        export_mod.repository, "get_instruction_set", return_value=INSTRUCTIONS
     ), patch.object(
         export_mod.repository,
         "get_settings",
@@ -55,6 +64,15 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(doc["schema"], EXPORT_SCHEMA)
         self.assertEqual(doc["schema_version"], 1)
         self.assertEqual(doc["case"], {"folder_name": "State_v_Pawar", "case_id": "512"})
+        # Every item travels; `content` lists only the ones switched on, for older readers.
+        self.assertEqual(doc["instructions"]["version"], 3)
+        self.assertEqual(
+            doc["instructions"]["items"],
+            [
+                {"text": "Refer to the accused as the Applicant.", "enabled": True, "origin": "user"},
+                {"text": "Answer in tables", "enabled": False, "origin": "chat"},
+            ],
+        )
         self.assertEqual(doc["instructions"]["content"], "Refer to the accused as the Applicant.")
         self.assertFalse(doc["settings"]["write_enabled"])
 
@@ -93,7 +111,20 @@ class ParseImportTests(unittest.TestCase):
                 for name, data in STORED.items()
             },
         )
-        self.assertEqual(parsed.instructions, "Refer to the accused as the Applicant.")
+        self.assertEqual(
+            parsed.instructions,
+            [
+                {"text": "Refer to the accused as the Applicant.", "enabled": True, "origin": "import", "source_ref": {"kind": "import"}},
+                {"text": "Answer in tables", "enabled": False, "origin": "import", "source_ref": {"kind": "import", "imported_origin": "chat"}},
+            ],
+        )
+
+    def test_an_older_one_box_export_still_imports_its_instructions(self) -> None:
+        parsed = parse_import(payload(instructions={"content": "Use Marathi.\nCite SCC first.\n"}))
+        self.assertEqual([i["text"] for i in parsed.instructions], ["Use Marathi.", "Cite SCC first."])
+
+    def test_a_file_without_instructions_leaves_them_alone(self) -> None:
+        self.assertIsNone(parse_import(payload()).instructions)
 
     def test_imported_lines_are_marked_as_imported(self) -> None:
         parsed = parse_import(exported(), doc_names=["remand-order.pdf"])

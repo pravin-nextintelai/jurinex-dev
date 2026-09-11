@@ -16,7 +16,6 @@ from app.api.routes.rbac.auth import get_current_user
 from app.services.memory.repository import VersionConflict
 from app.services.memory.schemas import MemorySettings
 from app.services.memory.scope import CaseScope
-from app.services.memory.validator import Rejection
 
 SOLO_USER = {"id": 42, "name": "Adv. Kulkarni", "email": "a@x.in", "role": "user", "account_type": "SOLO"}
 FIRM_ADMIN = {**SOLO_USER, "account_type": "FIRM_ADMIN"}
@@ -174,27 +173,27 @@ class StructuredErrorTests(unittest.TestCase):
         self.assertEqual(body["current_version"], 5)
         self.assertEqual(body["lines"], current)
 
-    def test_stale_preferences_return_409_with_the_current_text(self) -> None:
-        with patch.object(memory_routes, "validate_preferences", return_value=[]), patch.object(
-            memory_routes.repository, "put_preferences", side_effect=VersionConflict("preferences", 1, 4)
-        ), patch.object(
-            memory_routes.repository, "get_preferences", return_value={"content": "Marathi summaries", "version": 4}
+    def test_stale_preferences_return_409_with_the_current_items(self) -> None:
+        current = [{"id": "u1", "text": "Marathi summaries", "enabled": True}]
+        with patch.object(memory_routes, "_party_names", return_value=()), patch.object(
+            memory_routes.repository,
+            "replace_instruction_set",
+            side_effect=VersionConflict("instructions:user", 1, 4, current),
         ):
             response = make_client().put("/api/memory/preferences", json={"content": "English", "version": 1})
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["content"], "Marathi summaries")
+        self.assertEqual(response.json()["items"][0]["text"], "Marathi summaries")
 
     def test_rejected_preferences_return_422(self) -> None:
-        with patch.object(
-            memory_routes,
-            "validate_preferences",
-            return_value=[Rejection("case_data", "Preferences cannot contain an FIR number.")],
-        ):
+        with patch.object(memory_routes, "_party_names", return_value=()), patch.object(
+            memory_routes.repository, "replace_instruction_set"
+        ) as put:
             response = make_client().put(
-                "/api/memory/preferences", json={"content": "FIR 214/2026", "version": None}
+                "/api/memory/preferences", json={"content": "Refer to FIR 214/2026 in every draft", "version": None}
             )
         self.assertEqual(response.status_code, 422)
-        self.assertEqual(response.json()["problems"][0]["code"], "case_data")
+        self.assertEqual(response.json()["problems"][0]["code"], "case_data_fir")
+        put.assert_not_called()
 
 
 class LineWriteTests(unittest.TestCase):
