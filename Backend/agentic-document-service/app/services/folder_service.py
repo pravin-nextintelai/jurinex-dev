@@ -1991,11 +1991,41 @@ class FolderWorkflowService:
         selected_model = resolve_secret_prompt_llm_name(secret_id) or requested_model or None
         user_profile = fetch_full_profile(user_id, authorization)
         system_instruction = build_document_qa_system_prompt(user_profile)
+
+        # Controlled memory (JRNX-ENG-2026-008): the same layers the streaming
+        # route assembles, so both chat surfaces answer with identical context.
+        # Best-effort throughout — an unavailable memory store must not stop an
+        # answer.
+        memory_bundle = None
+        try:
+            from app.services.memory.assembly import build_context_layers
+            from app.services.memory.scope import resolve_case_scope
+
+            memory_scope = resolve_case_scope(folder_name, user_id, authorization=authorization)
+            if memory_scope is not None:
+                memory_bundle = build_context_layers(
+                    memory_scope,
+                    question_raw=request.question or "",
+                    session_id=request.session_id,
+                    mode="preset" if secret_id else "chat",
+                    model_name=selected_model,
+                    preset_ref={"secret_id": secret_id, "prompt_label": request.prompt_label},
+                )
+                if memory_bundle.system_suffix:
+                    system_instruction = f"{system_instruction}{memory_bundle.system_suffix}"
+        except Exception as memory_exc:  # noqa: BLE001
+            logger.warning(
+                "[FolderService] task=answer_folder_chat memory skipped folder=%s error=%s",
+                folder_name,
+                memory_exc,
+            )
+
         logger.info(
-            "[FolderService] task=answer_folder_chat system_prompt_chars=%s user_id=%s folder=%s",
+            "[FolderService] task=answer_folder_chat system_prompt_chars=%s user_id=%s folder=%s memory=%s",
             len(system_instruction),
             user_id,
             folder_name,
+            (memory_bundle.metadata() if memory_bundle else None),
         )
         effective_query_text = self._build_query_with_recent_history(
             user_id=user_id,
@@ -2060,6 +2090,17 @@ class FolderWorkflowService:
             prompt_label=display_question if secret_id else None,
             secret_id=secret_id,
         )
+        if memory_bundle is not None and memory_bundle.log_entry:
+            try:
+                from app.services.memory import repository as memory_repository
+
+                entry = dict(memory_bundle.log_entry)
+                entry.update({"session_id": session.id, "model": selected_model})
+                memory_repository.write_assembly_log(entry)
+            except Exception as memory_log_exc:  # noqa: BLE001
+                logger.debug(
+                    "[FolderService] task=answer_folder_chat assembly log skipped: %s", memory_log_exc
+                )
         return FolderChatResponse(
             success=True,
             folderName=folder_name,

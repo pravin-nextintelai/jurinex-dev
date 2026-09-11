@@ -166,6 +166,15 @@ def clear_access_cache() -> None:
         _access_cache.clear()
 
 
+def firm_context_for(user_id: str) -> tuple[str | None, bool]:
+    """(firm id, is firm admin) for settings routes that carry no folder."""
+    if not is_real_user(user_id):
+        return None, False
+    _, firm = _access_context(str(user_id))
+    firm_id = _text_or_none(firm.get("firmId") or firm.get("firm_id"))
+    return firm_id, bool(firm.get("isFirmAdmin"))
+
+
 def resolve_case_scope(
     folder_name: str | None,
     user_id: str | None,

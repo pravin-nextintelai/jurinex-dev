@@ -57,6 +57,9 @@ from app.services.learning_folder_document_context import build_learning_folder_
 from app.services.learning_question_validator import sanitize_public_popup
 from app.services.learning_response_parser import parse_learning_model_output
 from app.services.llm_policy_service import assert_upload_allowed, assert_storage_allowed
+from app.services.memory import repository as memory_repository
+from app.services.memory.assembly import ContextBundle, MemoryBudget, build_context_layers
+from app.services.memory.scope import resolve_case_scope, verified_user_id
 from app.services.secret_manager_api import get_secret_prompt_detail, list_secret_prompts
 from app.services.secret_prompt_display import (
     post_process_secret_prompt_response,
@@ -3680,6 +3683,88 @@ async def intelligent_chat_stream(
             research_mode = False
             learning_mode = False
         learning_agent_name = "learning_mode_agent" if learning_mode else None
+
+        # ── Controlled memory: layers 1-3 (JRNX-ENG-2026-008) ────────────────────────
+        # The advocate's standing preferences, this case's standing instructions and
+        # its stored facts are appended to the system instruction in that order, so a
+        # more specific layer can narrow a more general one while the preset, the
+        # documents and the user's question still outrank all of them.
+        #
+        # Two deliberate choices here:
+        #  * `question_raw` is the advocate's own words, never `query_text` — on a
+        #    preset turn that variable holds the preset body, and routing memory on
+        #    it would load sections chosen by the preset's wording.
+        #  * the whole resolution runs in one executor hop under a hard timeout, and
+        #    every failure path leaves an empty bundle. A chat must never fail, or
+        #    stall, because memory was unavailable.
+        memory_bundle = ContextBundle()
+        memory_scope = None
+        _memory_mode = (
+            "learning" if learning_mode
+            else "deep_research" if deep_research
+            else "research" if research_mode
+            else "draft" if bool(getattr(chat_request, "draft_mode", False))
+            else "preset" if (chat_request.secret_id or "").strip()
+            else "chat"
+        )
+        # Prefer the signature-verified token id: the chat routes accept an
+        # unverified X-User-Id header, which must not be able to open another
+        # advocate's case memory.
+        _memory_user_id = verified_user_id(x_user_id, authorization) or user_id
+
+        def _resolve_memory():
+            # Budget follows the model that will actually answer, resolved the same
+            # way the Gemma history clamp below resolves it.
+            model_for_budget = selected_model_name
+            if not model_for_budget:
+                try:
+                    from app.services.agent_config_service import get_agent_config as _gac_mem
+
+                    model_for_budget = (_gac_mem("grounded_retrieval_agent").model_name or "").strip()
+                except Exception:  # noqa: BLE001
+                    model_for_budget = ""
+            scope = resolve_case_scope(folder_name, _memory_user_id)
+            bundle = build_context_layers(
+                scope,
+                question_raw=chat_request.question or "",
+                session_id=chat_request.session_id,
+                mode=_memory_mode,
+                budget=MemoryBudget.for_model(model_for_budget),
+                model_name=model_for_budget or selected_model_name,
+                preset_ref={
+                    "secret_id": (chat_request.secret_id or "").strip() or None,
+                    "prompt_label": (chat_request.prompt_label or "").strip() or None,
+                    "mode": _memory_mode,
+                },
+            )
+            return scope, bundle
+
+        try:
+            memory_scope, memory_bundle = await _run_blocking(
+                _resolve_memory,
+                timeout_s=float(getattr(get_settings(), "memory_context_timeout_s", 2.5)),
+                timeout_message="memory_context",
+            )
+        except Exception as _mem_exc:  # noqa: BLE001
+            logger.warning(
+                "[Route:intelligent_chat_stream] memory context skipped folder=%s: %s",
+                folder_name,
+                _mem_exc,
+            )
+            memory_bundle = ContextBundle(skipped_reason="timeout")
+
+        if memory_bundle.system_suffix:
+            system_instruction = f"{system_instruction}{memory_bundle.system_suffix}"
+            logger.info(
+                "[Route:intelligent_chat_stream] memory applied folder=%s case_key=%s sections=%s "
+                "suffix_chars=%s system_prompt_chars=%s",
+                folder_name,
+                memory_bundle.case_key,
+                [s.get("section") for s in memory_bundle.sections_loaded],
+                len(memory_bundle.system_suffix),
+                len(system_instruction),
+            )
+
         learning_state = None
         if learning_mode:
             session_id_for_learning = str(chat_request.session_id or uuid.uuid4())
@@ -3829,8 +3914,11 @@ async def intelligent_chat_stream(
                     _hist_model = ""
             if (not learning_mode) and _is_gemma_hist(_hist_model) and effective_query_text:
                 _hist_cap = int(getattr(_eff_settings, "gemma_history_system_max_chars", 20000) or 20000)
-                # system prompt is built below (build_document_qa_system_prompt ~3.2K chars); reserve for it
-                _room = max(2000, _hist_cap - 3200)
+                # Reserve the system prompt's REAL length. This used to assume a fixed
+                # ~3.2K chars, which stopped being true once the memory layers were
+                # appended to it — under-reserving would push total input past the
+                # free-tier per-minute budget and 429 the request.
+                _room = max(2000, _hist_cap - len(system_instruction or "") - 200)
                 if len(effective_query_text) > _room:
                     _marker = "Current question:\n"
                     _mi = effective_query_text.rfind(_marker)
@@ -4334,6 +4422,29 @@ async def intelligent_chat_stream(
                                     )
                                 except Exception as _dr_usage_exc:
                                     logger.warning("Deep Research usage log failed: %s", _dr_usage_exc)
+                            # Deep Research returns before the shared accounting block, so
+                            # it records its own assembly-log row. Memory is not assembled
+                            # for this mode (the bundle is empty), but the run still belongs
+                            # in the case's audit trail.
+                            if memory_scope is not None:
+                                _dr_mem_entry = dict(memory_bundle.log_entry) or {
+                                    "case_key": memory_scope.case_key,
+                                    "user_id": memory_scope.user_id,
+                                }
+                                _dr_mem_entry.update(
+                                    {
+                                        "session_id": _dr_session_id,
+                                        "mode": "deep_research",
+                                        "model": _dr_model,
+                                    }
+                                )
+                                try:
+                                    await loop.run_in_executor(
+                                        None,
+                                        lambda: memory_repository.write_assembly_log(_dr_mem_entry),
+                                    )
+                                except Exception as _dr_mem_exc:  # noqa: BLE001
+                                    logger.debug("Deep Research assembly log skipped: %s", _dr_mem_exc)
                         return
 
                     # ── Draft-from-template setup ────────────────────────────────────────────────
@@ -5925,6 +6036,7 @@ async def intelligent_chat_stream(
                 "used_secret_prompt": bool((chat_request.secret_id or "").strip()),
                 "turn_count": learning_state.turn_count if learning_state else None,
                 "turn_threshold": LearningAgentController.TURN_THRESHOLD if learning_mode else None,
+                "memory": memory_bundle.metadata(),
             })
             request_id = uuid.uuid4().hex[:12]
             input_tokens = (
@@ -6095,6 +6207,19 @@ async def intelligent_chat_stream(
                 "draft_tiptap_sections": locals().get("_draft_tiptap_sections"),
                 "draft_legal_section_doc": locals().get("_draft_legal_section_doc"),
             })
+
+            # Assembly log: record which layer versions and sections produced this
+            # answer. Without it, "why did the output change?" is unanswerable.
+            # Phase 5 extends this call site with the post-turn memory writer.
+            if memory_bundle.log_entry:
+                _mem_log_entry = dict(memory_bundle.log_entry)
+                _mem_log_entry.update({"session_id": session_id, "model": actual_model_name})
+                try:
+                    await loop.run_in_executor(
+                        None, lambda: memory_repository.write_assembly_log(_mem_log_entry)
+                    )
+                except Exception as _mem_log_exc:  # noqa: BLE001
+                    logger.debug("[Route:intelligent_chat_stream] assembly log skipped: %s", _mem_log_exc)
 
         except Exception as exc:
             logger.exception("[Route:intelligent_chat_stream] folder=%s DB-Gemini fallback failed: %s", folder_name, exc)
