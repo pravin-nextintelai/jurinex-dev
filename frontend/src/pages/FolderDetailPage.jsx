@@ -12,6 +12,8 @@ import FolderContent from "../components/FolderContent/FolderContent";
 import DocumentPreviewModal from "../components/DocumentPreviewModal";
 import ChatInterface from "../components/ChatInterface/ChatInterface";
 import { ChronologyButton, ChronologyModal } from "../components/Chronology";
+import { CaseMemoryModal, MemoryButton } from "../components/CaseMemory";
+import useMemorySettings from "../hooks/useMemorySettings";
 
 const FolderDetailPage = () => {
   const { folderName } = useParams();
@@ -23,9 +25,16 @@ const FolderDetailPage = () => {
   } = useContext(FileManagerContext);
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [isChronologyOpen, setIsChronologyOpen] = useState(false);
+  const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [isStarred, setIsStarred] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // The Memory button follows the account-level switch, so it disappears as soon as
+  // memory is turned off in Settings. A case that has memory switched off on its own
+  // still shows the button, which is how the advocate switches it back on.
+  const { effective: memoryEffective, loading: memorySettingsLoading } = useMemorySettings();
+  const showMemoryButton = !memorySettingsLoading && memoryEffective.enabled;
 
   useEffect(() => {
     if (folderName) {
@@ -55,6 +64,14 @@ const FolderDetailPage = () => {
 
   const handleCloseChronology = () => {
     setIsChronologyOpen(false);
+  };
+
+  const handleOpenMemory = () => {
+    setIsMemoryOpen(true);
+  };
+
+  const handleCloseMemory = () => {
+    setIsMemoryOpen(false);
   };
 
   const handleToggleStar = () => {
@@ -151,7 +168,8 @@ const FolderDetailPage = () => {
                   </span>
                 </div>
                 <h3 className="text-xs font-semibold text-gray-600">Files</h3>
-                <div className="ml-auto">
+                <div className="ml-auto flex items-center gap-0.5">
+                  {showMemoryButton && <MemoryButton onClick={handleOpenMemory} />}
                   <ChronologyButton onClick={handleOpenChronology} />
                 </div>
               </div>
@@ -171,6 +189,13 @@ const FolderDetailPage = () => {
           folderName={folderName || selectedFolder}
           caseTitle={selectedFolder || folderName}
           onClose={handleCloseChronology}
+        />
+      )}
+      {isMemoryOpen && (
+        <CaseMemoryModal
+          folderName={folderName || selectedFolder}
+          caseTitle={selectedFolder || folderName}
+          onClose={handleCloseMemory}
         />
       )}
     </div>

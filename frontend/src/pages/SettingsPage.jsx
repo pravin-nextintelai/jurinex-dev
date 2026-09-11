@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { User, Mail, Phone, MapPin, Calendar, Shield, Bell, Palette, Globe, Download, Trash2, LogOut, ChevronRight, Check, Lock, Eye, EyeOff, CreditCard, Monitor, Smartphone, Tablet, RefreshCw, MoreVertical, Type } from 'lucide-react';
+import { User, Mail, Phone, MapPin, Calendar, Shield, Bell, Palette, Globe, Download, Trash2, LogOut, ChevronRight, Check, Lock, Eye, EyeOff, CreditCard, Monitor, Smartphone, Tablet, RefreshCw, MoreVertical, Type, Brain } from 'lucide-react';
 import { useAuth } from '../context';
 import { useTheme, THEME_OPTIONS } from '../context/ThemeContext.jsx';
 import api from '../services/api';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import ProfileSetupForm from '../components/ProfileSetupForm';
+import { MemorySettingsPane } from '../components/CaseMemory';
 import { canUsePermission, PERMISSION_KEYS, shouldEnforceRbac } from '../utils/permissions';
 import { getNotificationPrefs, setNotificationPref } from '../utils/notificationPrefs';
 import { FONT_OPTIONS, getFontPref, applyFontPref, ensureFontFaceLoaded, FONT_SIZE_OPTIONS, getFontSizePref, applyFontSizePref } from '../utils/fontPrefs';
@@ -588,6 +589,7 @@ const SETTINGS_NAV = [
  { id: 'appearance', label: 'Appearance', icon: Type },
  { id: 'notifications', label: 'Notifications', icon: Bell },
  { id: 'privacy', label: 'Privacy & Security', icon: Shield },
+ { id: 'memory', label: 'Memory', icon: Brain },
  { id: 'data', label: 'Data & Storage', icon: Download },
  { id: 'actions', label: 'Account Actions', icon: LogOut },
 ];

@@ -217,6 +217,8 @@ export const AGENTIC_DOCUMENT_SERVICE_URL = DOCUMENT_SERVICE_DIRECT;
 /** Google Cloud STT for mic input (not LLM). POST multipart audio to transcribe. */
 export const SPEECH_TRANSCRIBE_URL = `${DOCUMENT_SERVICE_DIRECT}/api/v1/speech/transcribe`;
 export const CONTENT_SERVICE_DIRECT = `${DOCUMENT_SERVICE_DIRECT}/api/content`;
+/** Controlled memory API: preferences, case instructions, case memory and memory settings. */
+export const MEMORY_API_BASE = `${DOCUMENT_SERVICE_DIRECT}/api/memory`;
 
 // Export default object for convenience
 const apiConfig = {
@@ -251,6 +253,7 @@ const apiConfig = {
   DOCUMENT_SERVICE_DIRECT,
   AGENTIC_DOCUMENT_SERVICE_URL,
   CONTENT_SERVICE_DIRECT,
+  MEMORY_API_BASE,
 };
 
 export default apiConfig;
