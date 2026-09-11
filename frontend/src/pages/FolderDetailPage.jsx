@@ -25,6 +25,7 @@ const FolderDetailPage = () => {
     setSelectedFolder,
     selectedFolder,
     loadFoldersAndFiles,
+    selectedChatSessionId,
   } = useContext(FileManagerContext);
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [isChronologyOpen, setIsChronologyOpen] = useState(false);
@@ -237,6 +238,7 @@ const FolderDetailPage = () => {
           onClose={handleCloseMemory}
           initialTab={memoryTab}
           refreshToken={memoryRefresh}
+          sessionId={selectedChatSessionId || null}
         />
       )}
     </div>
