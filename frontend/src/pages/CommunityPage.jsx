@@ -27,6 +27,13 @@ const CommunityPage = () => (
             Join on WhatsApp
           </PrimaryButton>
           <SecondaryButton
+            onClick={() => window.open(COMMUNITY_LINKS.whatsappChannel, "_blank", "noopener,noreferrer")}
+            ariaLabel="Follow the Jurinex WhatsApp channel"
+          >
+            <Icon name="Megaphone" className="h-4 w-4" />
+            Follow the Channel
+          </SecondaryButton>
+          <SecondaryButton
             onClick={() => window.open(COMMUNITY_LINKS.linkedin, "_blank", "noopener,noreferrer")}
             ariaLabel="Follow Jurinex on LinkedIn"
           >

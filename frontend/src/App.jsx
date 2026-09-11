@@ -449,8 +449,8 @@
 
 
 
-import React, { Suspense } from 'react';
-import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
+import React, { Suspense, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import StorageFullModal from './components/StorageFullModal';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -490,7 +490,6 @@ import LawFirmRegistrationPage from './pages/auth/LawFirmRegistrationPage';
 import LoginPage from './pages/auth/LoginPage';
 import SetPasswordPage from './pages/auth/SetPasswordPage';
 import PublicLayout from './layouts/PublicLayout';
-import ServicesPage from './pages/ServicesPage';
 import AboutUsPage from './pages/AboutUsPage';
 import PricingPage from './pages/PricingPage';
 import AboutNexintelPage from './pages/AboutNexintelPage';
@@ -515,12 +514,28 @@ import { TokenQuotaProvider } from './context/TokenQuotaContext';
 import AuthChecker from './components/AuthChecker';
 import { TemplateListingPage, TemplatePreviewPage, DraftEditorPage as TemplateDraftEditorPage, SectionDraftingPage, AssembledPreviewPage } from './template_drafting_component';
 
+/**
+ * Scrolls the window to the top whenever the route path changes, so a page
+ * opened from a footer link starts at its heading rather than wherever the
+ * previous page was scrolled. Skips navigations that carry a target section
+ * (state.scrollTo) or a hash: those pages scroll themselves.
+ */
+function ScrollToTop() {
+  const { pathname, state, hash } = useLocation();
+
+  useEffect(() => {
+    if (state?.scrollTo || hash) return;
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return null;
+}
+
 function ContactPageRoute() {
   const navigate = useNavigate();
 
   return (
     <ContactPage
-      onBackToHome={() => navigate('/')}
       onNavigateLogin={() => navigate('/login')}
       onSectionNav={(sectionId) =>
         navigate('/', { state: { scrollTo: sectionId } })
@@ -532,6 +547,7 @@ function ContactPageRoute() {
 function App() {
   return (
     <Router>
+      <ScrollToTop />
       <TokenQuotaProvider>
       <ToastContainer />
       <StorageFullModal />
@@ -559,7 +575,6 @@ function App() {
             <Route path="/set-password" element={<SetPasswordPage />} />
             <Route path="/auth/google/drive/callback" element={<GoogleDriveCallback />} />
 
-            <Route path="/services" element={<PublicLayout hideContactBar={true} hideFooter={true}><ServicesPage /></PublicLayout>} />
             <Route path="/aboutus" element={<PublicLayout hideContactBar={true} hideFooter={true}><AboutUsPage /></PublicLayout>} />
             <Route path="/pricing" element={<PublicLayout hideContactBar={true} hideFooter={true}><PricingPage /></PublicLayout>} />
             <Route path="/about-nexintel" element={<PublicLayout><AboutNexintelPage /></PublicLayout>} />

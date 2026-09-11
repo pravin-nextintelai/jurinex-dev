@@ -137,7 +137,7 @@ ProductSwitcher.propTypes = { onGo: PropTypes.func.isRequired }
 /* ------------------------------------------------------------------ */
 
 const JumpBar = ({ activeId, onGo }) => (
-  <div className="sticky top-16 z-30 border-b border-nx-line bg-white/85 backdrop-blur">
+  <div className="sticky top-20 z-30 border-b border-nx-line bg-white/85 backdrop-blur">
     <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto px-5 py-2 sm:px-8 [scrollbar-width:none]">
       <span className="mr-3 hidden text-[11px] font-semibold uppercase tracking-[0.16em] text-nx-faint sm:block">
         Products
@@ -150,7 +150,7 @@ const JumpBar = ({ activeId, onGo }) => (
             type="button"
             onClick={() => onGo(p.id)}
             aria-current={active ? "true" : undefined}
-            className={`inline-flex flex-none items-center gap-2 whitespace-nowrap rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
+            className={`inline-flex flex-none items-center gap-2 whitespace-nowrap rounded-lg px-3.5 py-1.5 text-sm font-medium transition-colors ${
               active ? "bg-nx-teal text-white" : "text-nx-muted hover:bg-nx-pale hover:text-nx-ink"
             }`}
           >
@@ -252,7 +252,7 @@ const ProductSection = ({ product, index }) => {
             <button
               type="button"
               onClick={() => navigate(`/products/${product.id}`)}
-              className="mt-8 inline-flex items-center gap-2 rounded-full border border-nx-teal px-5 py-2.5 text-sm font-semibold text-nx-teal-deep transition-colors hover:bg-nx-teal hover:text-white"
+              className="mt-8 inline-flex items-center gap-2 rounded-lg border border-nx-teal px-5 py-2.5 text-sm font-semibold text-nx-teal-deep transition-colors hover:bg-nx-teal hover:text-white"
             >
               Read the full {product.name} guide
               <Icon name="ArrowRight" className="h-4 w-4" />
@@ -474,7 +474,7 @@ const ProductsPage = () => {
                 <button
                   type="button"
                   onClick={() => navigate("/register")}
-                  className="inline-flex items-center justify-center gap-2 rounded-full bg-nx-teal px-7 py-3 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all hover:bg-nx-teal-deep active:scale-[0.98]"
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-nx-teal px-7 py-3 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all hover:bg-nx-teal-deep active:scale-[0.98]"
                 >
                   Start Free Trial
                   <Icon name="ArrowRight" className="h-4 w-4" />
@@ -482,7 +482,7 @@ const ProductsPage = () => {
                 <button
                   type="button"
                   onClick={() => setDemoOpen(true)}
-                  className="inline-flex items-center justify-center gap-2 rounded-full border border-nx-ink/30 bg-white px-7 py-3 text-sm font-semibold text-nx-ink transition-all hover:border-nx-teal hover:text-nx-teal-deep active:scale-[0.98]"
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-nx-ink/30 bg-white px-7 py-3 text-sm font-semibold text-nx-ink transition-all hover:border-nx-teal hover:text-nx-teal-deep active:scale-[0.98]"
                 >
                   Book a demo
                 </button>

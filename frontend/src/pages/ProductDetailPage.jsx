@@ -21,11 +21,11 @@ const Wrap = ({ children, className = "" }) => (
 
 Wrap.propTypes = { children: PropTypes.node, className: PropTypes.string }
 
-/** "§ 01 · HOW IT WORKS" style label with a hairline under it. */
+/** "01 · HOW IT WORKS" style label with a hairline under it. */
 const SectionLabel = ({ index, children }) => (
   <div className={`border-b ${RULE} pb-4`}>
     <p className="font-mono text-[11px] uppercase tracking-[0.28em] text-nx-faint">
-      <span className="text-nx-teal">§ {index}</span> · {children}
+      <span className="text-nx-teal">{index}</span> · {children}
     </p>
   </div>
 )
@@ -53,7 +53,7 @@ const BlackButton = ({ children, onClick }) => (
   <button
     type="button"
     onClick={onClick}
-    className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full bg-nx-teal px-7 py-3.5 text-[15px] font-semibold text-white shadow-md shadow-teal-500/25 transition-colors hover:bg-nx-teal-deep"
+    className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-nx-teal px-7 py-3.5 text-[15px] font-semibold text-white shadow-md shadow-teal-500/25 transition-colors hover:bg-nx-teal-deep"
   >
     {children}
   </button>
@@ -91,7 +91,7 @@ const Hero = ({ product, detail }) => {
     <section className={`${PAPER} overflow-hidden border-b ${RULE}`} aria-labelledby="product-heading">
       <Wrap className="py-16 sm:py-20">
         <div className="flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[11px] uppercase tracking-[0.28em] text-nx-faint">
-          <span className="font-semibold text-nx-ink">§ {product.name}</span>
+          <span className="font-semibold text-nx-ink">{product.name}</span>
           <span>
             Product {product.num} of {String(PRODUCTS.length).padStart(2, "0")}
           </span>
@@ -441,7 +441,7 @@ const Closing = ({ product, onDemo }) => {
             All products
           </button>
           <button type="button" onClick={() => navigate(`/products/${next.id}`)} className="inline-flex items-center gap-2 transition-colors hover:text-nx-teal-deep">
-            § Next · {next.num} {next.name}
+            Next · {next.num} {next.name}
             <Icon name="ArrowRight" className="h-3.5 w-3.5" />
           </button>
         </div>

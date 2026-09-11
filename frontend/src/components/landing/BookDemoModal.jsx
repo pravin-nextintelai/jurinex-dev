@@ -94,7 +94,7 @@ const BookDemoModal = ({ isOpen, onClose }) => {
                 <button
                   type="button"
                   onClick={onClose}
-                  className="absolute top-4 right-4 rounded-full p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                  className="absolute top-4 right-4 rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
                   aria-label="Close popup"
                 >
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -246,7 +246,7 @@ const BookDemoModal = ({ isOpen, onClose }) => {
                   {/* Submit */}
                   <Motion.button
                     type="submit"
-                    className="w-full rounded-xl bg-teal-600 py-3 text-sm font-bold text-white shadow-md font-dmSans"
+                    className="w-full rounded-lg bg-teal-600 py-3 text-sm font-bold text-white shadow-md font-dmSans"
                     whileHover={{ scale: 1.02, boxShadow: "0 8px 24px rgba(13,148,136,0.35)" }}
                     whileTap={{ scale: 0.97 }}
                     transition={{ type: "spring", stiffness: 400, damping: 20 }}

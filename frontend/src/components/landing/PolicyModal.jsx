@@ -1,6 +1,8 @@
+import { useCallback, useEffect, useRef, useState } from "react"
 import { motion as Motion } from "framer-motion"
+import { CONTACT_INFO } from "../../utils/landingConstants"
 
-export const POLICIES = {
+const POLICIES = {
   terms: {
     title: "Terms & Conditions",
     companyName: "JuriNex",
@@ -64,6 +66,59 @@ export const POLICIES = {
         paragraphs: [
           `These Terms shall be governed by and construed in accordance with the laws of India. Any disputes shall be subject to the exclusive jurisdiction of the courts of Chhatrapati Sambhaji Nagar (Aurangabad), Maharashtra.`,
         ],
+      },
+    ],
+  },
+  consent: {
+    title: "Consent & Communication",
+    companyName: "NexIntel AI Pvt. Ltd.",
+    subtitle: "How we use the details you send us",
+    docTitle: "CONSENT & COMMUNICATION POLICY",
+    lastUpdated: "September 10, 2026",
+    sections: [
+      {
+        heading: "1. RESPONDING TO YOUR ENQUIRY",
+        paragraphs: [
+          `By submitting this form, you agree that NexIntel AI Pvt. Ltd. may use the information you provide to respond to your enquiry and contact you regarding your request.`,
+        ],
+      },
+      {
+        heading: "2. MARKETING COMMUNICATIONS",
+        paragraphs: [
+          `If you separately opt in to marketing communications, you agree to receive updates, offers, product information and promotional messages from NexIntel AI Pvt. Ltd. through phone calls, SMS, WhatsApp and/or email, based on the options you select.`,
+          `Marketing consent is optional and is not required to submit an enquiry.`,
+        ],
+      },
+      {
+        heading: "3. WITHDRAWING CONSENT",
+        paragraphs: [`You may withdraw your marketing consent at any time by:`],
+        bullets: [
+          `Replying STOP to applicable SMS or WhatsApp messages.`,
+          `Using the Unsubscribe link in marketing emails.`,
+          `Informing our representative during a call.`,
+          `Contacting us directly using the details below.`,
+        ],
+      },
+      {
+        heading: "4. SHARING OF INFORMATION",
+        paragraphs: [
+          `We may share your information only with authorised service providers such as CRM, email, SMS, telecom and WhatsApp service providers where necessary to provide these communications. We do not sell your personal data to third parties.`,
+          `Your information will be handled in accordance with applicable Indian data protection and telecom communication requirements.`,
+        ],
+      },
+      {
+        heading: "5. CONTACT",
+        subSections: [
+          {
+            infoLines: [
+              { label: "Company", value: "NexIntel AI Pvt. Ltd." },
+              { label: "Address", value: "B-11, Near Railway Station Road, MIDC, Chhatrapati Sambhajinagar, Maharashtra – 431010, India" },
+              { label: "Email", value: CONTACT_INFO.email },
+              { label: "Phone", value: CONTACT_INFO.phone },
+            ],
+          },
+        ],
+        important: `By submitting this form, you acknowledge that you have read our Privacy Policy and this Consent & Communication Policy.`,
       },
     ],
   },
@@ -161,7 +216,7 @@ const PolicyBody = ({ policy }) => (
               <p key={i} className="font-dmSans text-sm leading-relaxed text-juri-muted">{p}</p>
             ))}
             {sub.important && (
-              <p className="font-dmSans text-sm font-semibold leading-relaxed" style={{ color: "#E0334A" }}>
+              <p className="font-dmSans text-sm font-semibold leading-relaxed text-nx-teal-deep">
                 {sub.important}
               </p>
             )}
@@ -181,7 +236,7 @@ const PolicyBody = ({ policy }) => (
         ))}
 
         {sec.important && (
-          <p className="font-dmSans text-sm font-semibold leading-relaxed" style={{ color: "#E0334A" }}>
+          <p className="font-dmSans text-sm font-semibold leading-relaxed text-nx-teal-deep">
             {sec.important}
           </p>
         )}
@@ -199,13 +254,31 @@ const PolicyBody = ({ policy }) => (
 
 /**
  * Props:
- *   policyKey  — "terms" | "dpdpa"
+ *   policyKey  — "terms" | "dpdpa" | "consent"
  *   onClose    — called on X or backdrop click
  *   onAccept   — called on "Accept & Close" (optional — omit for view-only mode)
  */
 const PolicyModal = ({ policyKey, onClose, onAccept }) => {
   const policy = POLICIES[policyKey]
+  const bodyRef = useRef(null)
+  // Accept unlocks once the reader has scrolled to the end. Bodies that
+  // fit without scrolling unlock straight away.
+  const [readToEnd, setReadToEnd] = useState(false)
+
+  const checkScroll = useCallback(() => {
+    const el = bodyRef.current
+    if (!el) return
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= 24) setReadToEnd(true)
+  }, [])
+
+  useEffect(() => {
+    setReadToEnd(false)
+    const id = requestAnimationFrame(checkScroll)
+    return () => cancelAnimationFrame(id)
+  }, [policyKey, checkScroll])
+
   if (!policy) return null
+  const gated = Boolean(onAccept) && !readToEnd
 
   return (
     <>
@@ -216,7 +289,7 @@ const PolicyModal = ({ policyKey, onClose, onAccept }) => {
       />
       <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-8 pointer-events-none">
         <Motion.div
-          className="pointer-events-auto relative flex w-full max-w-xl flex-col rounded-2xl bg-white shadow-2xl overflow-hidden"
+          className="pointer-events-auto relative flex w-full max-w-3xl flex-col rounded-2xl bg-white shadow-2xl overflow-hidden"
           style={{ maxHeight: "85vh" }}
           initial={{ opacity: 0, y: 40, scale: 0.95 }}
           animate={{ opacity: 1, y: 0, scale: 1, transition: { type: "spring", stiffness: 340, damping: 28 } }}
@@ -228,7 +301,7 @@ const PolicyModal = ({ policyKey, onClose, onAccept }) => {
             <button
               type="button"
               onClick={onClose}
-              className="rounded-full p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+              className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
             >
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -237,19 +310,23 @@ const PolicyModal = ({ policyKey, onClose, onAccept }) => {
           </div>
 
           {/* Scrollable body */}
-          <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div ref={bodyRef} onScroll={checkScroll} className="flex-1 overflow-y-auto px-6 py-5 sm:px-8">
             <PolicyBody policy={policy} />
           </div>
 
           {/* Footer */}
-          <div className="shrink-0 border-t border-teal-300/60 px-6 py-4 flex justify-end">
+          <div className="flex shrink-0 flex-col gap-3 border-t border-teal-300/60 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="font-dmSans text-xs text-nx-muted" aria-live="polite">
+              {gated ? "Scroll to the end of the document to enable Accept." : onAccept ? "You have read the full document." : ""}
+            </p>
             <Motion.button
               type="button"
               onClick={onAccept ?? onClose}
-              className="rounded-xl px-8 py-2.5 font-dmSans text-sm font-bold text-white shadow-md"
-              style={{ backgroundColor: "#E0334A" }}
-              whileHover={{ scale: 1.02, boxShadow: "0 6px 20px rgba(13,148,136,0.4)" }}
-              whileTap={{ scale: 0.97 }}
+              disabled={gated}
+              aria-disabled={gated}
+              className="rounded-lg bg-nx-teal px-8 py-2.5 font-dmSans text-sm font-bold text-white shadow-md shadow-teal-500/25 transition-opacity disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+              whileHover={gated ? undefined : { scale: 1.02, boxShadow: "0 6px 20px rgba(8,163,147,0.4)" }}
+              whileTap={gated ? undefined : { scale: 0.97 }}
             >
               {onAccept ? "Accept & Close" : "Close"}
             </Motion.button>

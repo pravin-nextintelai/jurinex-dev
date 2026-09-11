@@ -37,7 +37,7 @@ const ThreeStepsSection = () => {
           <button
             type="button"
             onClick={() => navigate("/register")}
-            className="inline-flex items-center gap-2 rounded-full bg-nx-teal px-7 py-3 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all duration-200 hover:bg-nx-teal-deep active:scale-[0.98]"
+            className="inline-flex items-center gap-2 rounded-lg bg-nx-teal px-7 py-3 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all duration-200 hover:bg-nx-teal-deep active:scale-[0.98]"
           >
             Start Free Trial
             <Icon name="ArrowRight" className="h-4 w-4" />

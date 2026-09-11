@@ -1,30 +1,13 @@
+import { useRef, useState } from "react"
 import PropTypes from "prop-types"
 import { useNavigate } from "react-router-dom"
-import { CONTACT_INFO, FOOTER_COLUMNS, SOCIAL_LINKS } from "../../utils/landingConstants"
+import { CONTACT_INFO, FOOTER_COLUMNS, NEWSLETTER_COPY, SOCIAL_LINKS } from "../../utils/landingConstants"
 import { Icon } from "./primitives"
 import BrandLogo from "./BrandLogo"
+import SocialIcon from "./SocialIcon"
 import wordmark from "../../assets/jurinex-wordmark.png"
+import { AUTH_SERVICE_URL } from "../../config/apiConfig"
 
-/** Brand icons lucide doesn't ship (Pinterest, X). */
-const PinterestIcon = () => (
-  <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4" aria-hidden="true">
-    <path d="M12 2C6.48 2 2 6.48 2 12c0 4.24 2.64 7.86 6.36 9.31-.09-.79-.17-2 .04-2.87.18-.78 1.18-4.98 1.18-4.98s-.3-.6-.3-1.49c0-1.4.81-2.44 1.82-2.44.86 0 1.27.64 1.27 1.42 0 .86-.55 2.15-.83 3.35-.24 1 .5 1.81 1.49 1.81 1.78 0 3.15-1.88 3.15-4.59 0-2.4-1.72-4.08-4.19-4.08-2.85 0-4.53 2.14-4.53 4.35 0 .86.33 1.79.75 2.29.08.1.09.19.07.29-.08.31-.25 1-.28 1.14-.04.19-.15.23-.34.14-1.25-.58-2.03-2.4-2.03-3.87 0-3.15 2.29-6.04 6.6-6.04 3.46 0 6.16 2.47 6.16 5.77 0 3.44-2.17 6.21-5.18 6.21-1.01 0-1.96-.53-2.29-1.15l-.62 2.37c-.22.87-.83 1.96-1.24 2.62.93.29 1.92.45 2.94.45 5.52 0 10-4.48 10-10S17.52 2 12 2z" />
-  </svg>
-)
-
-const XIcon = () => (
-  <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4" aria-hidden="true">
-    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-  </svg>
-)
-
-const SocialIcon = ({ icon }) => {
-  if (icon === "pinterest") return <PinterestIcon />
-  if (icon === "x") return <XIcon />
-  return <Icon name={icon} className="h-4 w-4" />
-}
-
-SocialIcon.propTypes = { icon: PropTypes.string.isRequired }
 
 /**
  * Editorial enterprise footer — monospace eyebrow labels, serif display
@@ -34,9 +17,60 @@ SocialIcon.propTypes = { icon: PropTypes.string.isRequired }
  * scroll in place on the landing page and route home (with a scroll
  * target) from other pages; policy links open PolicyModal.
  */
-const Footer = ({ onOpenPolicy, onGetInTouch }) => {
+const Footer = ({ onOpenPolicy, onGetInTouch, onRequestDemo }) => {
   const navigate = useNavigate()
   const year = new Date().getFullYear()
+  const [email, setEmail] = useState("")
+  const [subscribed, setSubscribed] = useState(false)
+  const [successMessage, setSuccessMessage] = useState("")
+  const [subscribeError, setSubscribeError] = useState("")
+  const [emailError, setEmailError] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const submittingRef = useRef(false)
+
+  const subscribe = async (e) => {
+    e.preventDefault()
+    if (submittingRef.current) return
+    setSubscribeError("")
+    setEmailError(false)
+    const trimmedEmail = email.trim()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedEmail)) {
+      setEmailError(true)
+      setSubscribeError("Enter a valid email address")
+      return
+    }
+    submittingRef.current = true
+    setSubmitting(true)
+    try {
+      const response = await fetch(`${AUTH_SERVICE_URL.replace(/\/$/, "")}/api/auth/newsletter-subscribers`, {
+        method: "POST",
+        credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: trimmedEmail,
+          source: "website_footer",
+          page_url: window.location.href,
+          website: "",
+        }),
+      })
+      const result = await response.json().catch(() => null)
+      if (!response.ok || result?.success !== true) {
+        setEmailError(Boolean(result?.errors?.email))
+        throw new Error(result?.errors?.email || result?.message || "We could not save your subscription. Please try again.")
+      }
+      setSuccessMessage(result.message || (result.already_subscribed
+        ? "This email is already on the newsletter list."
+        : NEWSLETTER_COPY.thanks))
+      setSubscribed(true)
+    } catch (error) {
+      setSubscribeError(error instanceof TypeError
+        ? "Unable to connect. Please check your connection and try again."
+        : error.message || "We could not save your subscription. Please try again.")
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
+  }
 
   const followLink = (link) => {
     if (link.type === "policy") {
@@ -45,6 +79,11 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
     }
     if (link.type === "route") {
       navigate(link.href)
+      return
+    }
+    if (link.type === "demo") {
+      if (onRequestDemo) onRequestDemo()
+      else navigate("/contact")
       return
     }
     if (link.type === "external") {
@@ -67,28 +106,100 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
         Footer
       </h2>
 
-      {/* Get in touch — editorial split row on the solid brand teal */}
+      {/* Get in touch + newsletter, one teal band */}
       <div className="bg-nx-forest">
-        <div className="mx-auto flex max-w-7xl flex-col justify-between gap-8 px-5 py-16 sm:px-8 md:flex-row md:items-center">
-          <div className="max-w-md">
-            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-white/80">
+        <div className="mx-auto max-w-7xl px-5 pb-12 pt-16 sm:px-8">
+          <div className="flex flex-col justify-between gap-8 md:flex-row md:items-center">
+            <div className="max-w-md">
+              <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-white/80">
+                Get in touch
+              </p>
+              <p className="mt-4 font-display text-3xl text-white">
+                Have a question or a <em className="text-nx-mint">use case</em> in mind?
+              </p>
+              <p className="mt-3 text-sm leading-relaxed text-white/85">
+                Tell us how your practice works — we'll show you where Jurinex fits.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => (onGetInTouch ? onGetInTouch() : navigate("/contact"))}
+              className="inline-flex flex-none items-center gap-3 rounded-lg bg-white px-8 py-4 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-nx-teal-deep transition-colors hover:bg-teal-50"
+            >
               Get in touch
-            </p>
-            <p className="mt-4 font-display text-3xl text-white">
-              Have a question or a <em className="text-nx-mint">use case</em> in mind?
-            </p>
-            <p className="mt-3 text-sm leading-relaxed text-white/85">
-              Tell us how your practice works — we'll show you where Jurinex fits.
-            </p>
+              <Icon name="ArrowRight" className="h-3.5 w-3.5" />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => (onGetInTouch ? onGetInTouch() : navigate("/contact"))}
-            className="inline-flex flex-none items-center gap-3 bg-white px-8 py-4 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-nx-teal-deep transition-colors hover:bg-teal-50"
-          >
-            Get in touch
-            <Icon name="ArrowRight" className="h-3.5 w-3.5" />
-          </button>
+
+          {/* Newsletter, inset within the same band */}
+          <div className="mt-12 flex flex-col gap-5 rounded-2xl border border-white/15 bg-nx-teal-ink/70 px-6 py-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] md:flex-row md:items-center md:justify-between">
+            <div className="max-w-md">
+              <p className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Icon name="Mail" className="h-4 w-4 text-nx-mint" />
+                {NEWSLETTER_COPY.title}
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-white/80">{NEWSLETTER_COPY.text}</p>
+            </div>
+            {subscribed ? (
+              <div className="flex w-full max-w-md flex-col items-start gap-3">
+              <p className="inline-flex items-center gap-2 text-sm font-semibold text-white" role="status">
+                <Icon name="CircleCheck" className="h-5 w-5 text-nx-mint" />
+                {successMessage}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setEmail("")
+                  setSuccessMessage("")
+                  setSubscribeError("")
+                  setEmailError(false)
+                  setSubscribed(false)
+                  requestAnimationFrame(() => document.getElementById("footer-newsletter-email")?.focus())
+                }}
+                className="rounded-sm text-sm font-semibold text-white underline underline-offset-4 hover:text-nx-mint focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
+              >
+                Subscribe another email
+              </button>
+              </div>
+            ) : (
+              <form onSubmit={subscribe} noValidate aria-busy={submitting} className="flex w-full max-w-md flex-col gap-2 sm:flex-row sm:flex-wrap">
+                <label htmlFor="footer-newsletter-email" className="sr-only">
+                  Email address
+                </label>
+                <input
+                  id="footer-newsletter-email"
+                  type="email"
+                  required
+                  maxLength={255}
+                  autoComplete="email"
+                  disabled={submitting}
+                  aria-invalid={emailError}
+                  aria-describedby={subscribeError ? "footer-newsletter-error" : undefined}
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value)
+                    setEmailError(false)
+                    setSubscribeError("")
+                  }}
+                  placeholder={NEWSLETTER_COPY.placeholder}
+                  className="min-w-0 flex-1 rounded-lg border border-white/30 bg-white/10 px-4 py-3 text-sm text-white placeholder:text-white/60 focus:border-white focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex flex-none items-center justify-center gap-2 rounded-lg bg-white px-5 py-3 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-nx-teal-deep transition-colors hover:bg-teal-50"
+                >
+                  {submitting ? "Subscribing…" : NEWSLETTER_COPY.button}
+                  <Icon name="ArrowRight" className="h-3.5 w-3.5" />
+                </button>
+                {subscribeError && (
+                  <p id="footer-newsletter-error" role="alert" className="w-full text-sm text-white">
+                    {subscribeError}
+                  </p>
+                )}
+              </form>
+            )}
+          </div>
         </div>
       </div>
 
@@ -136,7 +247,7 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
                     target="_blank"
                     rel="noopener noreferrer"
                     aria-label={`Jurinex on ${social.label}`}
-                    className="grid h-9 w-9 place-items-center border border-nx-line text-nx-muted transition-colors hover:border-nx-teal-deep hover:text-nx-teal-deep"
+                    className="grid h-9 w-9 place-items-center rounded-lg border border-nx-line text-nx-muted transition-colors hover:border-nx-teal-deep hover:text-nx-teal-deep"
                   >
                     <SocialIcon icon={social.icon} />
                   </a>
@@ -179,9 +290,6 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
                         className="text-left text-sm text-nx-muted transition-colors hover:text-nx-ink"
                       >
                         {link.title}
-                        {link.type === "external" && link.href.startsWith("https") && (
-                          <Icon name="ArrowUpRight" className="mb-1 ml-0.5 inline h-3 w-3" />
-                        )}
                       </button>
                     </li>
                   ))}
@@ -226,6 +334,7 @@ const Footer = ({ onOpenPolicy, onGetInTouch }) => {
 Footer.propTypes = {
   onOpenPolicy: PropTypes.func,
   onGetInTouch: PropTypes.func,
+  onRequestDemo: PropTypes.func,
 }
 
 export default Footer

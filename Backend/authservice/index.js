@@ -64,6 +64,7 @@ const { initializeNewsletterSubscriberSchema } = require("./src/utils/newsletter
 
 app.use("/api/auth/contact-enquiries", contactEnquiryRoutes); // Public: landing page "Contact us" form
 app.use("/api/auth/newsletter-subscribers", newsletterRoutes); // Public: landing page newsletter form
+app.use("/api/auth/marketing-promos", require("./src/routes/marketingPromoRoutes"));
 app.use("/api/auth", authRoutes);
 app.use("/api/auth/internal", internalRoutes); // Internal service-to-service routes
 app.use("/api/rbac", rbacRoutes);

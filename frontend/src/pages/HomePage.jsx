@@ -32,6 +32,7 @@ import ChatbotWidget from "../components/landing/ChatbotWidget"
  * Team, Community, FAQs, Blogs and Help live on their own /pages.
  */
 const HomePage = ({ onNavigateLogin, onNavigateContact, pendingSection, onPendingSectionConsumed }) => {
+  const [promoVisible, setPromoVisible] = useState(false)
   const [demoOpen, setDemoOpen] = useState(false)
   const [policyKey, setPolicyKey] = useState(null) // "terms" | "dpdpa" | null
   useDemoPrompt(setDemoOpen)
@@ -56,8 +57,8 @@ const HomePage = ({ onNavigateLogin, onNavigateContact, pendingSection, onPendin
 
   return (
     <div className="min-h-screen bg-white font-body text-nx-ink antialiased">
-      <Navbar onRequestDemo={openDemo} onLogin={handleLogin} />
-      <main>
+      <Navbar onRequestDemo={openDemo} onLogin={handleLogin} onPromoVisibilityChange={setPromoVisible} />
+      <main className={promoVisible ? "pt-[72px] sm:pt-10" : ""}>
         <HeroSection onLogin={handleLogin} />
         <StatsSection />
         <TrustSection />
@@ -78,7 +79,7 @@ const HomePage = ({ onNavigateLogin, onNavigateContact, pendingSection, onPendin
         />
         <CTASection onBookDemo={openDemo} />
       </main>
-      <Footer onOpenPolicy={setPolicyKey} onGetInTouch={onNavigateContact} />
+      <Footer onOpenPolicy={setPolicyKey} onGetInTouch={onNavigateContact} onRequestDemo={openDemo} />
 
       <BookDemoModal isOpen={demoOpen} onClose={handleClose} />
 

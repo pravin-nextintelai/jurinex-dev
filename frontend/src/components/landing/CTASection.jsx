@@ -44,7 +44,7 @@ const CTASection = ({ onBookDemo } = {}) => {
                 type="button"
                 onClick={() => navigate("/register")}
                 aria-label="Create a free Jurinex account"
-                className="inline-flex items-center gap-2 rounded-full bg-white px-8 py-3.5 text-sm font-semibold text-nx-ink shadow-lg transition-all duration-200 hover:bg-teal-50 active:scale-[0.98]"
+                className="inline-flex items-center gap-2 rounded-lg bg-white px-8 py-3.5 text-sm font-semibold text-nx-ink shadow-lg transition-all duration-200 hover:bg-teal-50 active:scale-[0.98]"
               >
                 {CTA_COPY.primary}
                 <Icon name="ArrowRight" className="h-4 w-4" />
@@ -53,7 +53,7 @@ const CTASection = ({ onBookDemo } = {}) => {
                 type="button"
                 onClick={onBookDemo}
                 aria-label="Book a demo with the Jurinex team"
-                className="inline-flex items-center gap-2 rounded-full border border-white/40 bg-transparent px-8 py-3.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-white/10 active:scale-[0.98]"
+                className="inline-flex items-center gap-2 rounded-lg border border-white/40 bg-transparent px-8 py-3.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-white/10 active:scale-[0.98]"
               >
                 {CTA_COPY.secondary}
               </button>

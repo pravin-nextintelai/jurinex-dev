@@ -146,14 +146,14 @@ const TeamSection = () => {
             align="left"
           />
           <Reveal delay={0.05} className="flex flex-none">
-            <span className="flex gap-1 rounded-full border border-nx-line bg-nx-pale p-1">
+            <span className="flex gap-1 rounded-xl border border-nx-line bg-nx-pale p-1">
             {TABS.map((t) => (
               <button
                 key={t.key}
                 type="button"
                 onClick={() => setTab(t.key)}
                 aria-pressed={tab === t.key}
-                className={`rounded-full px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all duration-200 ${
+                className={`rounded-lg px-5 py-2 text-xs font-bold uppercase tracking-wider transition-all duration-200 ${
                   tab === t.key
                     ? "bg-nx-teal text-white shadow"
                     : "text-nx-muted hover:text-nx-ink"

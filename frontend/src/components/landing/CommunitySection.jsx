@@ -440,7 +440,7 @@ const CommunitySection = () => {
                   log("Now", "Member invited an advocate")
                   say("Invite link copied")
                 }}
-                className="mt-1 w-full rounded-xl py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                className="mt-1 w-full rounded-lg py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90"
                 style={{ background: WA.green }}
               >
                 + Invite an advocate
@@ -565,7 +565,7 @@ const CommunitySection = () => {
                 type="button"
                 aria-pressed={joined}
                 onClick={toggleJoin}
-                className="mb-2 w-full rounded-xl border-2 py-3 text-[13.5px] font-semibold transition-colors"
+                className="mb-2 w-full rounded-lg border-2 py-3 text-[13.5px] font-semibold transition-colors"
                 style={
                   joined
                     ? { background: "#e8f5f2", color: WA.dark, borderColor: "#bfe0d9" }
@@ -578,7 +578,7 @@ const CommunitySection = () => {
                 type="button"
                 aria-pressed={followed}
                 onClick={toggleFollow}
-                className="w-full rounded-xl border-2 py-3 text-[13.5px] font-semibold transition-colors"
+                className="w-full rounded-lg border-2 py-3 text-[13.5px] font-semibold transition-colors"
                 style={
                   followed
                     ? { background: "#e8f5f2", color: WA.dark, borderColor: "#bfe0d9" }
