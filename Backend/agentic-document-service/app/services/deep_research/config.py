@@ -27,8 +27,9 @@ class DeepResearchConfig:
     source_timeout_s: float = 8.0    # per-source network deadline
     source_max_bytes: int = 750_000  # maximum response bytes sampled for validation/quotes
     source_max_redirects: int = 4    # every redirect hop is revalidated
-    stage_timeout_s: float = 120.0   # maximum time for one provider stage
-    run_timeout_s: float = 420.0     # maximum wall-clock time for the full Deep run
+    stage_timeout_s: float = 240.0   # maximum time for one provider stage
+    run_timeout_s: float = 720.0     # maximum wall-clock time for the full Deep run
+    synthesis_timeout_retries: int = 1  # full-quality retries before any answer chunk
     queue_timeout_s: float = 5.0     # maximum wait for an in-process Deep run slot
     max_concurrent_runs: int = 2     # per-process Deep run capacity
     temperature: float = 0.2    # plan/search temperature (low = focused)
@@ -95,9 +96,11 @@ class DeepResearchConfig:
             source_max_redirects=min(5, max(0, int(
                 getattr(settings, "deep_research_source_max_redirects", 4) or 4))),
             stage_timeout_s=min(240.0, max(15.0, float(
-                getattr(settings, "deep_research_stage_timeout_s", 120.0) or 120.0))),
+                getattr(settings, "deep_research_stage_timeout_s", 240.0) or 240.0))),
             run_timeout_s=min(900.0, max(60.0, float(
-                getattr(settings, "deep_research_run_timeout_s", 420.0) or 420.0))),
+                getattr(settings, "deep_research_run_timeout_s", 720.0) or 720.0))),
+            synthesis_timeout_retries=min(2, max(0, int(
+                getattr(settings, "deep_research_synthesis_timeout_retries", 1)))),
             queue_timeout_s=min(30.0, max(0.1, float(
                 getattr(settings, "deep_research_queue_timeout_s", 5.0) or 5.0))),
             max_concurrent_runs=min(8, max(1, int(

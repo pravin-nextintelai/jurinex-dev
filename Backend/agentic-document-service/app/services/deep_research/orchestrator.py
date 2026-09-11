@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Callable
 from urllib.parse import urlsplit
 
+import httpx
+
 from app.core.config import get_settings
 from app.services import citation_verification
 
@@ -300,6 +302,22 @@ def _new_budget(cfg: DeepResearchConfig) -> BudgetTracker:
     return BudgetTracker(limit_inr=cfg.budget_inr, pricing=pricing)
 
 
+def _retrieve_provider_future_exception(future: asyncio.Future[Any]) -> None:
+    """Consume a detached worker failure after an orchestration timeout/cancellation."""
+
+    if future.cancelled():
+        return
+    try:
+        exc = future.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        logger.debug(
+            "[DeepResearch] provider worker completed with %s",
+            type(exc).__name__,
+        )
+
+
 async def _provider_call(
     deadline: DeepResearchDeadline,
     call: Callable[[], Any],
@@ -335,6 +353,10 @@ async def _provider_call(
                 _PROVIDER_CALL_SLOTS.release()
 
         future = loop.run_in_executor(None, _invoke_and_release)
+        # asyncio.shield intentionally lets the blocking SDK call finish after the
+        # caller's deadline. Always consume its eventual result so a late transport
+        # failure cannot produce "Future exception was never retrieved".
+        future.add_done_callback(_retrieve_provider_future_exception)
         slot_owned_here = False  # the worker now releases it, even after caller timeout
         remaining = min(
             stage_limit - (loop.time() - started_at),
@@ -976,88 +998,123 @@ async def _synthesize(
         minimum_output_tokens=_MIN_SYNTHESIS_OUTPUT_TOKENS,
         label="Synthesis",
     )
-    stream = gemini.synthesis_stream(
-        cfg.synthesis_model,
-        prompt,
-        temperature=cfg.synthesis_temperature,
-        max_output_tokens=cap,
-        thinking_level=cfg.synthesis_thinking_level,
-        use_google_search=False,
-    )
     parts: list[str] = []
     input_tokens = output_tokens = 0
     partial = False
     finish_reason = ""
-    provider_started = False
     reservation_settled = False
     cost = 0.0
     next_preview_chars = 160
     last_preview_at = asyncio.get_running_loop().time()
+    attempt = 0
+    max_attempts = 1 + max(0, int(cfg.synthesis_timeout_retries))
 
-    def _mark_started() -> None:
-        nonlocal provider_started
-        provider_started = True
+    while attempt < max_attempts:
+        attempt += 1
+        stream = gemini.synthesis_stream(
+            cfg.synthesis_model,
+            prompt,
+            temperature=cfg.synthesis_temperature,
+            max_output_tokens=cap,
+            thinking_level=cfg.synthesis_thinking_level,
+            use_google_search=False,
+        )
+        provider_started = False
+        retry_timeout = False
 
-    try:
-        while True:
-            chunk = await _provider_call(
-                deadline,
-                lambda: next(stream, None),
-                stage="synthesis",
-                timeout_s=cfg.stage_timeout_s,
-                on_started=_mark_started,
-            )
-            if chunk is None:
-                break
-            delta, chunk_input, chunk_output = gemini.chunk_text_and_usage(chunk)
-            reason = gemini.chunk_finish_reason(chunk)
-            if reason:
-                finish_reason = reason
-            if chunk_input:
-                input_tokens = chunk_input
-            if chunk_output:
-                output_tokens = chunk_output
-            if delta:
-                parts.append(delta)
-                snapshot = "".join(parts)
-                loop_now = asyncio.get_running_loop().time()
-                if len(snapshot) >= next_preview_chars or loop_now - last_preview_at >= 0.2:
-                    yield "preview", snapshot
-                    next_preview_chars = len(snapshot) + max(160, len(snapshot) // 32)
-                    last_preview_at = loop_now
-    except (asyncio.CancelledError, GeneratorExit, DeepResearchTimeout, TimeoutError) as exc:
-        if provider_started:
-            _settle_reservation_maximum(
-                budget,
-                reservation,
-                label="Synthesis",
-                reason=type(exc).__name__,
-            )
-        else:
-            _cancel_reservation_safely(budget, reservation)
-        raise
-    except Exception as exc:
-        logger.warning("[DeepResearch] synthesis stream failed: %s", type(exc).__name__)
-        partial = bool(parts)
-        if provider_started:
-            cost = _settle_reservation_maximum(
-                budget,
-                reservation,
-                label="Synthesis",
-                reason=type(exc).__name__,
-            )
-            reservation_settled = True
-        else:
-            _cancel_reservation_safely(budget, reservation)
-        if not partial:
+        def _mark_started() -> None:
+            nonlocal provider_started
+            provider_started = True
+
+        try:
+            while True:
+                chunk = await _provider_call(
+                    deadline,
+                    lambda: next(stream, None),
+                    stage="synthesis",
+                    timeout_s=cfg.stage_timeout_s,
+                    on_started=_mark_started,
+                )
+                if chunk is None:
+                    break
+                delta, chunk_input, chunk_output = gemini.chunk_text_and_usage(chunk)
+                reason = gemini.chunk_finish_reason(chunk)
+                if reason:
+                    finish_reason = reason
+                if chunk_input:
+                    input_tokens = chunk_input
+                if chunk_output:
+                    output_tokens = chunk_output
+                if delta:
+                    parts.append(delta)
+                    snapshot = "".join(parts)
+                    loop_now = asyncio.get_running_loop().time()
+                    if len(snapshot) >= next_preview_chars or loop_now - last_preview_at >= 0.2:
+                        yield "preview", snapshot
+                        next_preview_chars = len(snapshot) + max(160, len(snapshot) // 32)
+                        last_preview_at = loop_now
+        except (asyncio.CancelledError, GeneratorExit, DeepResearchTimeout, TimeoutError) as exc:
+            if provider_started:
+                _settle_reservation_maximum(
+                    budget,
+                    reservation,
+                    label=f"Synthesis attempt {attempt}",
+                    reason=type(exc).__name__,
+                )
+            else:
+                _cancel_reservation_safely(budget, reservation)
             raise
-    finally:
-        close = getattr(stream, "close", None)
-        if callable(close):
-            try:
-                close()
-            except (RuntimeError, ValueError):
-                pass
+        except Exception as exc:
+            partial = bool(parts)
+            retry_timeout = (
+                isinstance(exc, httpx.ReadTimeout)
+                and not partial
+                and attempt < max_attempts
+            )
+            logger.warning(
+                "[DeepResearch] synthesis stream failed attempt=%d/%d error=%s retry=%s",
+                attempt,
+                max_attempts,
+                type(exc).__name__,
+                retry_timeout,
+            )
+            if provider_started:
+                cost = _settle_reservation_maximum(
+                    budget,
+                    reservation,
+                    label=f"Synthesis attempt {attempt}",
+                    reason=type(exc).__name__,
+                )
+                reservation_settled = True
+            else:
+                _cancel_reservation_safely(budget, reservation)
+            if not partial and not retry_timeout:
+                raise
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except (RuntimeError, ValueError):
+                    pass
+
+        if not retry_timeout:
+            break
+
+        deadline.check(stage="synthesis_retry")
+        # Preserve report quality on retries: use the identical prompt, model,
+        # thinking level, and output cap. Conservatively settle the timed-out call,
+        # then require enough budget for another full-cap attempt.
+        cap, reservation = _reserve_call(
+            budget,
+            model=cfg.synthesis_model,
+            prompt=prompt,
+            configured_output_tokens=cap,
+            minimum_output_tokens=cap,
+            label=f"Synthesis retry {attempt}",
+        )
+        reservation_settled = False
+        await asyncio.sleep(min(1.0, deadline.remaining_s))
 
     if not reservation_settled:
         if _usage_exceeds_reservation(reservation, input_tokens, output_tokens):

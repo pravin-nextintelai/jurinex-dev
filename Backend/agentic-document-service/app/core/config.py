@@ -227,12 +227,25 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DEEP_RESEARCH_SOURCE_MAX_REDIRECTS"),
     )
     deep_research_stage_timeout_s: float = Field(
-        default=120.0,
+        default=240.0,
         validation_alias=AliasChoices("DEEP_RESEARCH_STAGE_TIMEOUT_S"),
     )
+    # Keep the provider's socket/read deadline below the orchestration deadline. This
+    # lets httpx surface a retryable timeout while the Deep run still has time to
+    # account for the failed call and start a replacement stream.
+    deep_research_transport_timeout_s: float = Field(
+        default=210.0,
+        validation_alias=AliasChoices("DEEP_RESEARCH_TRANSPORT_TIMEOUT_S"),
+    )
     deep_research_run_timeout_s: float = Field(
-        default=420.0,
+        default=720.0,
         validation_alias=AliasChoices("DEEP_RESEARCH_RUN_TIMEOUT_S"),
+    )
+    deep_research_synthesis_timeout_retries: int = Field(
+        default=1,
+        ge=0,
+        le=2,
+        validation_alias=AliasChoices("DEEP_RESEARCH_SYNTHESIS_TIMEOUT_RETRIES"),
     )
     deep_research_queue_timeout_s: float = Field(
         default=5.0,

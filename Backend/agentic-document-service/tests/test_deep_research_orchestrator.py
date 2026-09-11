@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 from app.services.deep_research import events
 from app.services.deep_research.budget import (
@@ -16,6 +19,7 @@ from app.services.deep_research.budget import (
 from app.services.deep_research.config import DeepResearchConfig
 from app.services.deep_research.orchestrator import (
     _redact_grounded_text,
+    _provider_call,
     _reason_call,
     _run_impl,
     _safe_answer_with_sources,
@@ -215,6 +219,95 @@ class DeepProviderAccountingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budget.calls, 1)
         self.assertEqual(budget.steps[-1]["usage_estimate"], "reservation_maximum")
         await asyncio.sleep(0.1)
+
+    async def test_late_worker_timeout_is_retrieved_after_stage_deadline(self):
+        loop = asyncio.get_running_loop()
+        contexts: list[dict] = []
+        previous_handler = loop.get_exception_handler()
+
+        def late_timeout():
+            time.sleep(0.05)
+            raise httpx.ReadTimeout("late provider timeout")
+
+        loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+        try:
+            with self.assertRaises(DeepResearchTimeout):
+                await _provider_call(
+                    DeepResearchDeadline(1.0),
+                    late_timeout,
+                    stage="late_worker",
+                    timeout_s=0.01,
+                )
+            await asyncio.sleep(0.1)
+            gc.collect()
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+        self.assertFalse(
+            any("never retrieved" in str(item.get("message", "")) for item in contexts),
+            contexts,
+        )
+
+    async def test_read_timeout_retries_once_without_reducing_quality_settings(self):
+        failed_stream = iter([httpx.ReadTimeout("provider read timed out")])
+
+        class RaisingIterator:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                error = next(failed_stream)
+                raise error
+
+            def close(self):
+                return None
+
+        chunk = SimpleNamespace(
+            text="R" * 200,
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=10,
+                candidates_token_count=20,
+                total_token_count=30,
+            ),
+            candidates=[SimpleNamespace(finish_reason=SimpleNamespace(name="STOP"))],
+        )
+        budget = _budget()
+        cfg = _config(synthesis_timeout_retries=1)
+        with (
+            patch(
+                "app.services.deep_research.orchestrator.gemini.synthesis_stream",
+                side_effect=[RaisingIterator(), iter([chunk])],
+            ) as synthesis_stream,
+            patch(
+                "app.services.deep_research.orchestrator.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            items = [
+                item
+                async for item in _synthesize(
+                    DeepResearchDeadline(2.0),
+                    budget,
+                    cfg,
+                    prompt="retry full-quality synthesis",
+                )
+            ]
+
+        self.assertEqual([kind for kind, _ in items], ["preview", "result"])
+        self.assertEqual(items[-1][1], ("R" * 200, False))
+        self.assertEqual(synthesis_stream.call_count, 2)
+        first = synthesis_stream.call_args_list[0]
+        second = synthesis_stream.call_args_list[1]
+        self.assertEqual(first.kwargs, second.kwargs)
+        self.assertEqual(first.kwargs["thinking_level"], cfg.synthesis_thinking_level)
+        self.assertEqual(first.kwargs["max_output_tokens"], cfg.max_output_tokens)
+        self.assertEqual(budget.calls, 2)
+        self.assertEqual(budget.steps[0]["usage_estimate"], "reservation_maximum")
+        self.assertEqual(
+            [step["label"] for step in budget.steps],
+            ["Synthesis attempt 1 (conservative settlement)", "Synthesis"],
+        )
 
     async def test_started_provider_error_is_conservatively_settled(self):
         budget = _budget()

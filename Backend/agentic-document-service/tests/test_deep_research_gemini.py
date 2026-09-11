@@ -143,6 +143,32 @@ class GroundingAndUsageTests(unittest.TestCase):
         self.assertEqual(gemini._usage(response), (100, 25))
 
 
+class TransportTimeoutTests(unittest.TestCase):
+    def test_default_transport_timeout_leaves_stage_deadline_headroom(self) -> None:
+        settings = SimpleNamespace(
+            deep_research_stage_timeout_s=240.0,
+            deep_research_transport_timeout_s=210.0,
+        )
+
+        self.assertEqual(gemini._transport_timeout_ms(settings), 210_000)
+
+    def test_transport_timeout_is_clamped_below_shorter_stage_deadline(self) -> None:
+        settings = SimpleNamespace(
+            deep_research_stage_timeout_s=120.0,
+            deep_research_transport_timeout_s=210.0,
+        )
+
+        self.assertEqual(gemini._transport_timeout_ms(settings), 115_000)
+
+    def test_invalid_timeout_values_use_safe_separate_defaults(self) -> None:
+        settings = SimpleNamespace(
+            deep_research_stage_timeout_s="invalid",
+            deep_research_transport_timeout_s=float("nan"),
+        )
+
+        self.assertEqual(gemini._transport_timeout_ms(settings), 210_000)
+
+
 class _ApiError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)

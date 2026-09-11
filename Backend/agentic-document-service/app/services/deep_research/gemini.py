@@ -12,24 +12,59 @@ import math
 from typing import Any, Iterator
 
 
-_DEFAULT_STAGE_TIMEOUT_S = 120.0
+_DEFAULT_STAGE_TIMEOUT_S = 240.0
+_DEFAULT_TRANSPORT_TIMEOUT_S = 210.0
 _MIN_STAGE_TIMEOUT_S = 15.0
 _MAX_STAGE_TIMEOUT_S = 240.0
+_MIN_TRANSPORT_TIMEOUT_S = 5.0
+_MAX_TRANSPORT_TIMEOUT_S = 235.0
+_TRANSPORT_DEADLINE_MARGIN_S = 5.0
 
 
-def _stage_timeout_ms(settings: Any) -> int:
-    """Return the Deep provider transport timeout, clamped to runtime bounds."""
+def _transport_timeout_ms(settings: Any) -> int:
+    """Return a transport timeout that expires before the orchestration deadline."""
 
     try:
-        timeout_s = float(
+        stage_timeout_s = float(
             getattr(settings, "deep_research_stage_timeout_s", _DEFAULT_STAGE_TIMEOUT_S)
         )
     except (TypeError, ValueError, OverflowError):
-        timeout_s = _DEFAULT_STAGE_TIMEOUT_S
-    if not math.isfinite(timeout_s):
-        timeout_s = _DEFAULT_STAGE_TIMEOUT_S
-    timeout_s = min(_MAX_STAGE_TIMEOUT_S, max(_MIN_STAGE_TIMEOUT_S, timeout_s))
-    return int(timeout_s * 1000)
+        stage_timeout_s = _DEFAULT_STAGE_TIMEOUT_S
+    if not math.isfinite(stage_timeout_s):
+        stage_timeout_s = _DEFAULT_STAGE_TIMEOUT_S
+    stage_timeout_s = min(
+        _MAX_STAGE_TIMEOUT_S,
+        max(_MIN_STAGE_TIMEOUT_S, stage_timeout_s),
+    )
+
+    try:
+        transport_timeout_s = float(
+            getattr(
+                settings,
+                "deep_research_transport_timeout_s",
+                _DEFAULT_TRANSPORT_TIMEOUT_S,
+            )
+        )
+    except (TypeError, ValueError, OverflowError):
+        transport_timeout_s = _DEFAULT_TRANSPORT_TIMEOUT_S
+    if not math.isfinite(transport_timeout_s):
+        transport_timeout_s = _DEFAULT_TRANSPORT_TIMEOUT_S
+
+    # Settings validates the stage at >=15s, but retain a defensive lower bound for
+    # direct/unit-test callers. The gap prevents the transport and asyncio deadlines
+    # from racing and leaving a detached worker exception behind.
+    transport_ceiling = max(
+        _MIN_TRANSPORT_TIMEOUT_S,
+        min(
+            _MAX_TRANSPORT_TIMEOUT_S,
+            stage_timeout_s - _TRANSPORT_DEADLINE_MARGIN_S,
+        ),
+    )
+    transport_timeout_s = min(
+        transport_ceiling,
+        max(_MIN_TRANSPORT_TIMEOUT_S, transport_timeout_s),
+    )
+    return int(transport_timeout_s * 1000)
 
 
 def _client(model: str):
@@ -49,7 +84,7 @@ def _client(model: str):
     settings = get_settings()
     return genai.Client(
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_stage_timeout_ms(settings)),
+        http_options=types.HttpOptions(timeout=_transport_timeout_ms(settings)),
     )
 
 
