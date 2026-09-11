@@ -67,6 +67,10 @@ class AccessTests(unittest.TestCase):
             memory_routes.repository, "effective_settings", return_value=MemorySettings()
         ), patch.object(
             memory_routes.repository, "list_proposals", return_value=[{"id": "p1"}]
+        ), patch.object(
+            memory_routes.repository,
+            "get_seed_meta",
+            return_value={"seeded_at": "2026-09-11T08:00:00+00:00", "sources": ["cases_row:case_title"]},
         ):
             body = make_client().get("/api/memory/cases/State_v_Pawar").json()
         self.assertEqual(body["case_key"], "512")
@@ -75,6 +79,22 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(body["proposals_pending"], 1)
         self.assertTrue(body["settings"]["effective"]["enabled"])
         self.assertIsNone(body["settings"]["case"])
+        self.assertEqual(body["seed"], {"seeded_at": "2026-09-11T08:00:00+00:00", "auto_seed": True})
+
+    def test_the_overview_says_when_automatic_filling_is_paused(self) -> None:
+        with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
+            memory_routes.repository, "get_section_index", return_value=[]
+        ), patch.object(memory_routes.repository, "get_section", return_value=None), patch.object(
+            memory_routes.repository, "get_instructions", return_value=None
+        ), patch.object(memory_routes.repository, "get_settings", return_value=None), patch.object(
+            memory_routes.repository, "effective_settings", return_value=MemorySettings()
+        ), patch.object(memory_routes.repository, "list_proposals", return_value=[]), patch.object(
+            memory_routes.repository, "get_seed_meta", side_effect=[{"auto_seed": False}, RuntimeError("db")]
+        ):
+            paused = make_client().get("/api/memory/cases/State_v_Pawar").json()
+            unreadable = make_client().get("/api/memory/cases/State_v_Pawar").json()
+        self.assertEqual(paused["seed"], {"seeded_at": None, "auto_seed": False})
+        self.assertEqual(unreadable["seed"], {"seeded_at": None, "auto_seed": True})
 
 
 class StructuredErrorTests(unittest.TestCase):

@@ -201,6 +201,23 @@ def strip_tag_prefix(text: str) -> str:
     return _TAG_PREFIX_RE.sub("", str(text or "")).strip()
 
 
+def drop_matching_line(content: str, text: str) -> tuple[str, bool]:
+    """Remove the last line of `content` that says the same thing as `text`.
+
+    Used to undo an instruction saved from chat. The advocate may have edited
+    the instructions since, so only a line that still matches is removed.
+    """
+    body = str(content or "")
+    target = normalize_for_compare(text)
+    if not target:
+        return body, False
+    rows = body.split("\n")
+    for index in range(len(rows) - 1, -1, -1):
+        if normalize_for_compare(rows[index]) == target:
+            return "\n".join(rows[:index] + rows[index + 1 :]).strip("\n"), True
+    return body, False
+
+
 def redact_or_reject_pii(text: str) -> Rejection | None:
     """Personal identifiers are never stored, in any layer."""
     return _first_match(str(text or ""), PII_RULES)

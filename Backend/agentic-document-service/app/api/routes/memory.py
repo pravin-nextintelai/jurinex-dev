@@ -40,6 +40,7 @@ from app.services.memory.schemas import (
 from app.services.memory.scope import CaseScope, firm_context_for, resolve_case_scope
 from app.services.memory.validator import (
     Rejection,
+    drop_matching_line,
     strip_tag_prefix,
     validate_instructions,
     validate_line,
@@ -223,6 +224,14 @@ def _user_source_ref(document: str | None) -> dict[str, Any]:
     return ref
 
 
+def _seed_meta(case_key: str) -> dict[str, Any]:
+    try:
+        return repository.get_seed_meta(case_key)
+    except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the panel
+        logger.debug("[Memory] seed bookkeeping unavailable for %s: %s", case_key, exc)
+        return {}
+
+
 # ── Layer 1: standing preferences ────────────────────────────────────────────
 
 @router.get("/preferences")
@@ -279,6 +288,7 @@ def get_case_memory(
         user_id=scope.user_id, case_key=scope.case_key, firm_id=scope.firm_id
     )
     pending = repository.list_proposals(scope.case_key, "pending")
+    seed_meta = _seed_meta(scope.case_key)
 
     return {
         "case_key": scope.case_key,
@@ -299,6 +309,12 @@ def get_case_memory(
         },
         "proposals_pending": len(pending),
         "line_count": sum(int(row.get("line_count") or 0) for row in index),
+        # When the case was last filled from its details, and whether that may
+        # happen on its own (it may not after "forget everything").
+        "seed": {
+            "seeded_at": seed_meta.get("seeded_at"),
+            "auto_seed": seed_meta.get("auto_seed") is not False,
+        },
     }
 
 
@@ -580,6 +596,47 @@ def get_assembly_log(
     return {"case_key": scope.case_key, "entries": repository.list_assembly_log(scope.case_key, limit)}
 
 
+@router.get("/cases/{folder_name}/turns/{chat_id}")
+def get_turn(
+    folder_name: str,
+    chat_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """What memory did after one chat turn.
+
+    The writer runs after the answer is delivered, so the chat polls this until
+    `ready` is true and then tells the advocate what changed.
+    """
+    scope = _scope_or_404(folder_name, user)
+    row = repository.get_turn_log(scope.case_key, chat_id)
+    if row is None:
+        return {"chat_id": chat_id, "ready": False}
+    details = row.get("details") if isinstance(row.get("details"), dict) else {}
+    seeded = details.get("seeded")
+    return {
+        "chat_id": chat_id,
+        "ready": True,
+        "writes": int(row.get("writes") or 0),
+        "proposals": int(row.get("proposals") or 0),
+        "rejected": int(row.get("rejected") or 0),
+        "skipped_reason": row.get("skipped_reason"),
+        "lines": list(details.get("lines") or []),
+        "instructions": list(details.get("instructions") or []),
+        "suggestions": list(details.get("suggestions") or []),
+        "seeded": seeded if isinstance(seeded, dict) else None,
+    }
+
+
+@router.get("/cases/{folder_name}/instructions/from-chat")
+def list_instructions_from_chat(
+    folder_name: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Instructions JuriNex saved from chat on its own, newest first, so each can be undone."""
+    scope = _scope_or_404(folder_name, user)
+    return {"case_key": scope.case_key, "items": repository.list_saved_from_chat(scope.case_key)}
+
+
 # ── Proposals (the model may suggest; only the advocate saves) ────────────────
 
 @router.get("/cases/{folder_name}/proposals")
@@ -599,14 +656,26 @@ def list_proposals(
 def resolve_proposal(
     folder_name: str,
     proposal_id: str,
-    decision: Literal["accept", "reject"],
+    decision: Literal["accept", "reject", "undo"],
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Accepting appends the suggestion to the layer it belongs to, validated."""
+    """Accepting appends the suggestion to the layer it belongs to, validated.
+
+    `undo` takes back an instruction JuriNex saved from chat on its own: the line
+    is removed from the case's instructions if it is still there, and the record
+    is marked rejected so the writer does not save it by itself again.
+    """
     scope = _scope_or_404(folder_name, user)
     proposal = repository.get_proposal(scope.case_key, proposal_id)
     if proposal is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proposal not found.")
+
+    if decision == "undo":
+        return _undo_saved_instruction(scope, proposal_id, proposal, user)
+
+    if str(proposal.get("status") or "pending") != "pending":
+        # Already handled, perhaps in another window: never append it twice.
+        return {"id": proposal_id, "status": proposal.get("status"), "kind": proposal.get("kind")}
 
     if decision == "reject":
         repository.set_proposal_status(scope.case_key, proposal_id, "rejected")
@@ -635,6 +704,59 @@ def resolve_proposal(
 
     repository.set_proposal_status(scope.case_key, proposal_id, "accepted")
     return {"id": proposal_id, "status": "accepted", "kind": kind}
+
+
+def _undo_saved_instruction(
+    scope: CaseScope,
+    proposal_id: str,
+    proposal: dict[str, Any],
+    user: dict[str, Any],
+) -> dict[str, Any]:
+    source = proposal.get("source_ref") if isinstance(proposal.get("source_ref"), dict) else {}
+    if proposal.get("kind") != "instruction" or not source.get("auto"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only an instruction JuriNex saved from chat can be undone.",
+        )
+    if proposal.get("status") != "accepted":
+        return {"id": proposal_id, "status": proposal.get("status"), "removed": False}
+
+    stored = repository.get_instructions(scope.case_key) or {}
+    content = str(stored.get("content") or "")
+    version = stored.get("version")
+    remaining, removed = drop_matching_line(content, str(proposal.get("text") or ""))
+    if removed:
+        try:
+            saved = repository.put_instructions(
+                scope.case_key,
+                remaining,
+                version,
+                updated_by=_actor(user),
+                folder_name=scope.folder_name,
+            )
+        except VersionConflict as exc:
+            current = repository.get_instructions(scope.case_key) or {}
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "detail": "stale_version",
+                    "current_version": exc.current_version,
+                    "content": current.get("content") or "",
+                },
+            ) from exc
+        content, version = str(saved.get("content") or ""), saved.get("version")
+
+    repository.set_proposal_status(scope.case_key, proposal_id, "rejected")
+    logger.info(
+        "[Memory] user_id=%s undid instruction from chat case_key=%s proposal=%s removed=%s",
+        _actor(user), scope.case_key, proposal_id, removed,
+    )
+    return {
+        "id": proposal_id,
+        "status": "rejected",
+        "removed": removed,
+        "instructions": {"content": content, "version": version},
+    }
 
 
 # ── Case lifecycle: export, import, seed ─────────────────────────────────────
@@ -684,35 +806,10 @@ def import_case_memory(
 
 
 def _seed_inputs(scope: CaseScope) -> tuple[dict[str, Any] | None, Any, list[dict[str, Any]]]:
-    """The confirmed case row, the chronology and the documents for one case.
+    """The confirmed case row, the chronology and the documents for one case."""
+    from app.services.memory.seed import load_seed_inputs
 
-    Each is loaded independently and best-effort: seeding from whatever is
-    available beats refusing to seed because one source failed.
-    """
-    from app.services.container import get_folder_service
-
-    service = get_folder_service()
-    case_row: dict[str, Any] | None = None
-    if scope.case_id:
-        try:
-            case_row = service._get_case_from_db(scope.case_id, scope.user_id)  # noqa: SLF001
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Memory] seed could not load case_id=%s: %s", scope.case_id, exc)
-
-    tree: Any = None
-    try:
-        tree = service.get_chronology(scope.case_id or scope.case_key, folder_name=scope.folder_name)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Memory] seed could not load the chronology for %s: %s", scope.case_key, exc)
-
-    files: list[dict[str, Any]] = []
-    try:
-        listing = service.get_documents_in_folder(scope.folder_name, scope.user_id) or {}
-        files = list(listing.get("documents") or listing.get("files") or [])
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Memory] seed could not list documents for %s: %s", scope.folder_name, exc)
-
-    return case_row, tree, files
+    return load_seed_inputs(scope)
 
 
 @router.post("/cases/{folder_name}/seed")
@@ -720,7 +817,12 @@ def seed_case(
     folder_name: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Re-run seeding: add what is new since creation, update changed seeded facts."""
+    """Fill memory from the case details on request.
+
+    Adds what is new, updates changed seeded facts, and restores seeded lines
+    the advocate deleted earlier: pressing the button is asking for all of it.
+    It also switches automatic seeding back on after "forget everything".
+    """
     from app.services.memory.seed import seed_case_memory
 
     scope = _scope_or_404(folder_name, user)
@@ -734,6 +836,7 @@ def seed_case(
         tree=tree,
         files=files,
         actor=_actor(user),
+        respect_deletions=False,
     )
 
 

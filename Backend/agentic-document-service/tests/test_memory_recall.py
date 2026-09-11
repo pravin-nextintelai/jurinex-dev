@@ -16,6 +16,7 @@ from app.services.memory.recall import (
     has_recall_cue,
     merge_recall_into_query,
     query_terms,
+    recent_turns,
     search_past_sessions,
 )
 from app.services.memory.scope import CaseScope
@@ -345,6 +346,32 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(search_past_sessions(nameless, question_raw="we discussed"), [])
         with patch.object(recall_mod, "is_db_available", return_value=False):
             self.assertEqual(search_past_sessions(SCOPE, question_raw="we discussed"), [])
+
+
+class RecentTurnsTests(unittest.TestCase):
+    def test_this_advocates_latest_turns_in_this_folder_without_the_current_one(self) -> None:
+        cursor = FakeCursor(rows=[ROW])
+        conn = FakeConn(cursor)
+        turns = recent_turns(SCOPE, exclude_chat_id=CHAT_B, limit=5, conn=conn)
+        self.assertEqual([t.chat_id for t in turns], [CHAT_A])
+        sql, params = cursor.executed[2]
+        self.assertIn("folder_name = %s", sql)
+        self.assertIn("user_id::text = %s", sql)
+        self.assertIn("id::text <> %s", sql)
+        self.assertIn("ORDER BY created_at DESC", sql)
+        self.assertEqual(params, ["State_v_Pawar", "42", CHAT_B, 5])
+        self.assertEqual(conn.rollbacks, 1)
+
+    def test_an_ambiguous_folder_name_reads_no_history(self) -> None:
+        cursor = FakeCursor(folders=2, rows=[ROW])
+        self.assertEqual(recent_turns(SCOPE, conn=FakeConn(cursor)), [])
+        self.assertFalse(any("from folder_chats" in sql.lower() for sql, _ in cursor.executed))
+
+    def test_the_limit_is_bounded_and_a_missing_scope_is_empty(self) -> None:
+        cursor = FakeCursor(rows=[])
+        recent_turns(SCOPE, limit=500, conn=FakeConn(cursor))
+        self.assertEqual(cursor.executed[2][1][-1], 25)
+        self.assertEqual(recent_turns(None), [])
 
 
 if __name__ == "__main__":

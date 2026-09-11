@@ -6198,6 +6198,9 @@ async def intelligent_chat_stream(
             yield _sse({
                 "type": "done",
                 "session_id": session_id,
+                # The saved chat row. The case page polls /api/memory/cases/{folder}/turns/{chat_id}
+                # with it to show what memory did after this answer.
+                "chat_id": locals().get("memory_chat_id"),
                 "method": ("template_draft" if is_draft else "gemini_direct"),
                 "routing_decision": "db_text_fallback",
                 "answer": answer,

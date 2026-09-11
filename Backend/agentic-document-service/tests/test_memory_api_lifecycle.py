@@ -123,6 +123,8 @@ class SeedRouteTests(unittest.TestCase):
         self.assertEqual(kwargs["files"], files)
         self.assertEqual(kwargs["firm_id"], "firm-9")
         self.assertEqual(kwargs["actor"], "42")
+        # Pressing the button asks for everything, including lines deleted earlier.
+        self.assertFalse(kwargs["respect_deletions"])
 
     def test_an_inaccessible_case_is_never_seeded(self) -> None:
         with patch.object(memory_routes, "resolve_case_scope", return_value=None), patch.object(

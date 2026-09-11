@@ -24,6 +24,8 @@ These migrations align the new Python `agentic-document-service` with the shared
    log and proposals. See `app/services/memory/` for the code that owns them.
 6. indexes `folder_chats` for past-session recall (migration `171`): a full-text
    index over each turn's question and answer, and a folder/user/recency index.
+7. records what each chat turn did to memory (migration `172`): a `details`
+   column on `memory_assembly_log` and a case/chat index for looking a turn up.
 
 ## Suggested Run Order
 
@@ -33,8 +35,9 @@ package, which this service does not install. Run `npm install --no-save pg` in
 the service root first, or apply the files with `psql` as below.
 
 The memory tables in `170` are also created on first use by
-`app/services/memory/repository.py`. The recall indexes in `171` never are, so
-apply `171` explicitly.
+`app/services/memory/repository.py`, and so is the `details` column from `172`.
+The recall indexes in `171` and the turn index in `172` never are, so apply those
+files explicitly.
 
 Example:
 
@@ -53,6 +56,7 @@ psql -d your_database -f 100_backfill_folder_chats_and_file_chats_uuid_arrays.sq
 psql -d your_database -f 163_create_case_chronology_table.sql
 psql -d your_database -f 170_create_memory_tables.sql
 psql -d your_database -f 171_folder_chats_fts.sql
+psql -d your_database -f 172_memory_turn_details.sql
 ```
 
 ## Notes

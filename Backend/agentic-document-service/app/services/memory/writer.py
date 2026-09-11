@@ -8,11 +8,15 @@ What it may write
     [stated]  a durable fact or decision the advocate stated in their message
     [status]  a change in the state of the work: a draft generated, accepted or
               sent back for revision
+    a case instruction
+              a standing rule the advocate gave in so many words ("from now on,
+              answer in a table"). It is appended to the case's instructions,
+              recorded so it can be undone, and reported back to the chat.
 
 What it never writes
     [extracted]  a chat answer is AI output, not the document itself. Document
                  facts come from seeding, which reads the grounded chronology and
-                 the documents.
+                 the documents, and which this writer keeps current.
     [inferred]   never, anywhere.
 
 Guards, in order
@@ -30,8 +34,13 @@ Guards, in order
 5. Version tokens on every write. On a conflict the section is reloaded,
    re-checked and retried once, then dropped.
 
-A standing instruction or preference the advocate expresses is never written as
-memory; it becomes a proposal the advocate can accept or reject.
+Standing rules
+    An instruction is saved by itself only when the advocate's message states it
+    as a rule ("always", "never", "from now on" …) and the extractor's wording of
+    the rule keeps that word, the case-instructions switch is on, and the
+    advocate has not already undone the same instruction. Anything else that
+    reads as a rule — a preference for all their work, a request they keep
+    repeating — becomes a suggestion for the advocate to accept or dismiss.
 
 Everything here runs on the writer's own threads after the answer is out, and
 nothing raises into the chat.
@@ -41,6 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
@@ -50,6 +60,7 @@ from pydantic import ValidationError
 
 from app.core.config import get_settings
 from app.services.memory import repository
+from app.services.memory.recall import RecallHit, recent_turns
 from app.services.memory.repository import VersionConflict
 from app.services.memory.schemas import (
     MAX_LINE_CHARS,
@@ -61,6 +72,7 @@ from app.services.memory.schemas import (
     MemorySettings,
 )
 from app.services.memory.scope import CaseScope, is_real_user
+from app.services.memory.seed import refresh_seed
 from app.services.memory.validator import (
     ResolvedOp,
     case_over_cap,
@@ -79,6 +91,10 @@ EXTRACTION_AGENT = "memory_extraction_agent"
 WRITER_ACTOR = "memory-writer"
 MIN_MESSAGE_CHARS = 12
 ANSWER_CONTEXT_CHARS = 2_500
+PREVIOUS_ANSWER_CHARS = 1_200
+EARLIER_REQUEST_CHARS = 200
+MAX_EARLIER_REQUESTS = 8
+RECENT_TURNS = 12
 SNAPSHOT_CHARS = 6_000
 MAX_PROPOSALS_PER_TURN = 3
 EXTRACTOR_TIMEOUT_MS = 20_000
@@ -97,13 +113,32 @@ GREETING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Words that make a request a standing rule rather than a one-off. A rule is
+# saved by itself only when the advocate's message AND the extractor's wording
+# of the rule both carry one, so a stray "never" in a statement of fact cannot
+# turn an ordinary request into a standing order.
+STANDING_RULE_RE = re.compile(
+    r"\b(?:always|never|from\s+now\s+on|going\s+forward|hence\s*forth|hereafter|"
+    r"in\s+(?:the\s+)?future|every\s+time|each\s+time|whenever|by\s+default|as\s+a\s+rule|"
+    r"remember\s+to|(?:don'?t|do\s+not)\s+ever|"
+    r"throughout\s+(?:this|the)\s+(?:case|matter)|for\s+the\s+rest\s+of\s+(?:this|the)\s+(?:case|matter)|"
+    r"(?:in|for)\s+(?:all|every)\s+(?:future\s+|my\s+|your\s+)?"
+    r"(?:answers?|repl(?:y|ies)|responses?|drafts?|summar(?:y|ies)|outputs?|chats?|documents?))\b",
+    re.IGNORECASE,
+)
+
+
+def has_standing_rule(text: str | None) -> bool:
+    """True when the text states a rule for how to work from here on."""
+    return bool(STANDING_RULE_RE.search(str(text or "")))
+
 
 # ── The extractor's instructions ─────────────────────────────────────────────
 
 EXTRACTOR_PROMPT = """\
 You maintain the memory file for ONE legal case. After each exchange you decide
 whether the advocate's latest message contains anything durable that belongs in
-that file. You return JSON only.
+that file, or a standing rule for how to work on the case. You return JSON only.
 
 WHAT YOU MAY RECORD
 - tag "stated": a durable fact or decision the advocate states or confirms in
@@ -114,6 +149,12 @@ Record nothing from the assistant's answer. It is shown only so you can tell wha
 the advocate is replying to. A fact that appears only in the answer is not the
 advocate's statement, even if it is correct.
 Never use the tag "extracted". Never record anything as inferred.
+
+SHORT REPLIES
+When the advocate's message answers a question in the PREVIOUS ASSISTANT MESSAGE
+("Which court will this be filed in?" -> "The High Court of Bombay"), use that
+question to understand the reply, and record the fact in the advocate's words,
+for example "Court: The High Court of Bombay".
 
 SECTIONS
 summary (parties, stage, last action, open items), facts, parties, documents,
@@ -138,12 +179,28 @@ RULES
    draft text; greetings; questions; Aadhaar, PAN, bank or card numbers; anyone
    who is not part of this case.
 7. Set "sensitive": true for health, financial, family or criminal-record details.
-8. A standing instruction or preference, such as "always cite SCC first" or
-   "Marathi drafts for this client", is NOT a memory line. Put it in "proposals"
-   with kind "instruction" (this case only) or "preference" (all the advocate's
-   work).
-9. At most 8 ops. If nothing qualifies, return
-   {"ops": [], "proposals": [], "nothing_durable": true}.
+8. A request for an answer ("give me a detailed summary", "list the dates") is
+   not a fact. Record nothing for it unless the message also states a fact or a
+   decision.
+
+STANDING RULES
+A rule for how to work, rather than a fact about the case, is never a memory
+line. Put it in "proposals", written as a short instruction in the advocate's
+own words:
+- kind "instruction" for this case, such as "Refer to my client as the
+  Applicant" or "From now on, answer in a table";
+- kind "preference" for all of the advocate's work, such as "In all my matters,
+  cite SCC first".
+Propose a rule when the advocate states one ("always", "never", "from now on",
+"going forward", "every time", "remember to"), and keep that word in the
+proposal. Also propose one when the latest message repeats a formatting or style
+request that appears in EARLIER REQUESTS, such as asking for a table again; word
+it the way the advocate asked, without adding "always". A one-off request about
+this answer alone is not a rule.
+
+LIMITS
+At most 8 ops and 3 proposals. If nothing qualifies, return
+{"ops": [], "proposals": [], "nothing_durable": true}.
 
 Each op looks like:
 {"op": "append_line", "section": "facts", "line_id": null, "match_text": null,
@@ -174,19 +231,37 @@ class TurnInput:
 
 
 @dataclass
+class TurnContext:
+    """What the extractor may look at besides the advocate's latest message."""
+
+    # The assistant's message just before this one in the same conversation, so
+    # a short reply ("The High Court of Bombay") can be understood.
+    previous_answer: str = ""
+    # The advocate's own earlier messages in this case, newest first, so a
+    # request they keep making can be suggested as a standing instruction.
+    earlier_requests: list[str] = field(default_factory=list)
+
+
+@dataclass
 class WriteReport:
     writes: int = 0
     proposals: int = 0
     rejected: int = 0
+    instructions_saved: int = 0
     skipped_reason: str | None = None
     rejection_codes: list[str] = field(default_factory=list)
     assembly_log_id: str | None = None
+    # What was written, for the turn's log row and the notice in the chat.
+    details: dict[str, Any] = field(default_factory=dict)
 
     def reject(self, code: str, count: int = 1) -> None:
         if count <= 0:
             return
         self.rejected += count
         self.rejection_codes.extend([code] * count)
+
+    def note(self, kind: str, item: dict[str, Any]) -> None:
+        self.details.setdefault(kind, []).append(item)
 
 
 @dataclass
@@ -282,6 +357,37 @@ def _clip(text: str, limit: int) -> str:
     return body[: max(1, limit - 1)].rstrip() + "…"
 
 
+def _session_key(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(uuid.UUID(raw))
+    except (ValueError, AttributeError, TypeError):
+        return raw
+
+
+def turn_context(turn: TurnInput, turns: Sequence[RecallHit]) -> TurnContext:
+    """The context the extractor gets from the advocate's recent turns in this case.
+
+    `turns` are newest first and never include the current turn. The previous
+    assistant message comes only from the same conversation. Earlier requests
+    come from any session, leaving out saved prompts (not the advocate's own
+    words) and greetings.
+    """
+    context = TurnContext()
+    session = _session_key(turn.session_id)
+    for hit in turns:
+        if session and not context.previous_answer and _session_key(hit.session_id) == session:
+            context.previous_answer = _clip(hit.answer, PREVIOUS_ANSWER_CHARS)
+        if hit.used_saved_prompt or len(context.earlier_requests) >= MAX_EARLIER_REQUESTS:
+            continue
+        request = _clip(hit.question, EARLIER_REQUEST_CHARS)
+        if request and not GREETING_RE.match(request):
+            context.earlier_requests.append(request)
+    return context
+
+
 def render_snapshot(existing: dict[str, list[dict[str, Any]]], max_chars: int = SNAPSHOT_CHARS) -> str:
     """The case's current memory, each line with its id, trimmed oldest-first."""
     rows: dict[str, list[str]] = {}
@@ -311,21 +417,34 @@ def build_extractor_input(
     existing: dict[str, list[dict[str, Any]]],
     *,
     today: date | None = None,
+    context: TurnContext | None = None,
 ) -> str:
     stamp = (today or date.today()).isoformat()
     if str(turn.mode or "").strip().lower() == "draft":
         answer = "(not shown: this turn produced a draft document)"
     else:
         answer = _clip(turn.answer, ANSWER_CONTEXT_CHARS) or "(no answer)"
-    return (
-        f"TODAY: {stamp}\n\n"
-        "CURRENT CASE MEMORY (already recorded; use a line's id to update it):\n"
-        f"{render_snapshot(existing)}\n\n"
-        "ADVOCATE MESSAGE (the only source of facts):\n<<<\n"
-        f"{str(turn.question_raw or '').strip()}\n>>>\n\n"
-        "ASSISTANT ANSWER (context only, never a source of facts):\n<<<\n"
-        f"{answer}\n>>>"
+
+    parts = [
+        f"TODAY: {stamp}",
+        "CURRENT CASE MEMORY (already recorded; use a line's id to update it):\n" + render_snapshot(existing),
+    ]
+    if context is not None and context.earlier_requests:
+        parts.append(
+            "EARLIER REQUESTS FROM THE ADVOCATE IN THIS CASE (newest first; only for noticing a request "
+            "they keep repeating, never a source of facts):\n"
+            + "\n".join(f"- {request}" for request in context.earlier_requests)
+        )
+    if context is not None and context.previous_answer:
+        parts.append(
+            "PREVIOUS ASSISTANT MESSAGE (what the advocate may be replying to; context only, never a "
+            "source of facts):\n<<<\n" + context.previous_answer + "\n>>>"
+        )
+    parts.append(
+        "ADVOCATE MESSAGE (the only source of facts):\n<<<\n" + str(turn.question_raw or "").strip() + "\n>>>"
     )
+    parts.append("ASSISTANT ANSWER (context only, never a source of facts):\n<<<\n" + answer + "\n>>>")
+    return "\n\n".join(parts)
 
 
 # ── Extractor output ─────────────────────────────────────────────────────────
@@ -459,6 +578,7 @@ def extract_ops(
     existing: dict[str, list[dict[str, Any]]],
     *,
     today: date | None = None,
+    context: TurnContext | None = None,
 ) -> Extraction:
     """Ask the extractor model what this turn established.
 
@@ -470,7 +590,7 @@ def extract_ops(
     if client is None:
         raise RuntimeError("No Gemini client is configured for memory extraction.")
 
-    contents = build_extractor_input(turn, existing, today=today)
+    contents = build_extractor_input(turn, existing, today=today, context=context)
     last_error: Exception | None = None
     for with_schema in (True, False):
         try:
@@ -608,6 +728,10 @@ def _apply_ops(
                 retry=True, today=today,
             ):
                 report.writes += 1
+                report.note(
+                    "lines",
+                    {"section": op.section, "tag": op.tag, "text": op.text, "updated": op.op == "replace_line"},
+                )
 
 
 def _already_saved(text: str, saved: str) -> bool:
@@ -619,21 +743,99 @@ def _already_saved(text: str, saved: str) -> bool:
     return find_duplicate(text, rows) is not None
 
 
+def _is_auto(row: dict[str, Any]) -> bool:
+    ref = row.get("source_ref")
+    return isinstance(ref, dict) and bool(ref.get("auto"))
+
+
+def _save_instruction(
+    scope: CaseScope,
+    text: str,
+    source_extra: dict[str, Any],
+    report: WriteReport,
+) -> str:
+    """Append an explicit standing instruction to this case's instructions.
+
+    Returns "saved", "already_saved", "invalid" (the instructions would go over
+    their cap), "conflict" (changed twice underneath us) or "failed".
+    """
+    for _attempt in range(2):
+        try:
+            stored = repository.get_instructions(scope.case_key) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] instructions unreadable case_key=%s: %s", scope.case_key, exc)
+            return "failed"
+        content = str(stored.get("content") or "")
+        if _already_saved(text, content):
+            return "already_saved"
+        merged = "\n".join(part for part in (content.rstrip(), text) if part)
+        if validate_instructions(merged):
+            return "invalid"
+        try:
+            saved = repository.put_instructions(
+                scope.case_key,
+                merged,
+                stored.get("version"),
+                updated_by=WRITER_ACTOR,
+                folder_name=scope.folder_name,
+            )
+        except VersionConflict:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] instruction save failed case_key=%s: %s", scope.case_key, exc)
+            report.reject("instruction_write_failed")
+            return "failed"
+
+        record_id: str | None = None
+        try:
+            # Recorded as an accepted proposal, so the advocate can see where it
+            # came from and undo it.
+            record_id = repository.add_proposal(
+                scope.case_key,
+                scope.user_id,
+                "instruction",
+                text,
+                {**source_extra, "auto": True, "instructions_version": saved.get("version")},
+                status="accepted",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] saved instruction not recorded case_key=%s: %s", scope.case_key, exc)
+        report.writes += 1
+        report.instructions_saved += 1
+        report.note("instructions", {"id": record_id, "text": text, "version": saved.get("version")})
+        return "saved"
+
+    report.reject("instruction_conflict")
+    return "conflict"
+
+
 def _handle_proposals(
     scope: CaseScope,
     turn: TurnInput,
     proposals: Sequence[MemoryProposal],
     source_extra: dict[str, Any],
     report: WriteReport,
+    *,
+    settings: MemorySettings | None = None,
 ) -> None:
     if not proposals:
         return
+    settings = settings or MemorySettings()
     try:
         instructions = str((repository.get_instructions(scope.case_key) or {}).get("content") or "")
         preferences = str((repository.get_preferences(scope.user_id) or {}).get("content") or "")
     except Exception as exc:  # noqa: BLE001
         logger.debug("[Memory] could not read saved instructions for proposals: %s", exc)
         instructions = preferences = ""
+    try:
+        history = list(repository.list_proposals(scope.case_key, None) or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] could not read earlier proposals: %s", exc)
+        history = []
+    pending = [row for row in history if row.get("status") == "pending"]
+    dismissed = [row for row in history if row.get("status") == "rejected" and not _is_auto(row)]
+    undone = [row for row in history if row.get("status") == "rejected" and _is_auto(row)]
+    message_states_rule = has_standing_rule(turn.question_raw)
 
     for proposal in proposals:
         text = " ".join(str(proposal.text or "").split())
@@ -654,12 +856,39 @@ def _handle_proposals(
             continue
         if _already_saved(text, saved):
             continue
+
+        explicit = message_states_rule and has_standing_rule(text)
+        if (
+            explicit
+            and proposal.kind == "instruction"
+            and settings.instructions_enabled
+            and find_duplicate(text, undone) is None
+        ):
+            outcome = _save_instruction(scope, text, source_extra, report)
+            if outcome == "saved":
+                instructions = "\n".join(part for part in (instructions.rstrip(), text) if part)
+                continue
+            if outcome == "already_saved":
+                continue
+            # Too long to append, or it kept changing underneath: ask instead.
+        elif not explicit and find_duplicate(text, dismissed) is not None:
+            report.reject("proposal_dismissed_before")
+            continue
+
+        if find_duplicate(text, pending) is not None:
+            continue
         try:
-            if repository.add_proposal(scope.case_key, scope.user_id, proposal.kind, text, dict(source_extra)):
-                report.proposals += 1
+            proposal_id = repository.add_proposal(
+                scope.case_key, scope.user_id, proposal.kind, text, dict(source_extra)
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Memory] proposal write failed case_key=%s: %s", scope.case_key, exc)
             report.reject("proposal_write_failed")
+            continue
+        if proposal_id:
+            report.proposals += 1
+            report.note("suggestions", {"id": proposal_id, "kind": proposal.kind, "text": text})
+            pending.append({"text": text})
 
 
 # Upload paths prefix the original file name with an id ("<uuid>_Bail.pdf",
@@ -708,13 +937,40 @@ def _record_draft(
             actor=WRITER_ACTOR,
             folder_name=scope.folder_name,
         )
-        report.writes += int(result.get("added") or 0)
+        added = int(result.get("added") or 0)
+        report.writes += added
+        if added:
+            report.note("lines", {"section": "drafting_log", "tag": "status", "text": text, "updated": False})
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Memory] draft status write failed case_key=%s: %s", scope.case_key, exc)
         report.reject("write_failed")
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
+
+def _refresh_seed(scope: CaseScope, report: WriteReport) -> None:
+    """Fill the case from its details, or top it up, before reading the turn. Never raises."""
+    try:
+        result = refresh_seed(scope)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] seeding skipped case_key=%s: %s", scope.case_key, exc)
+        return
+    if not result:
+        return
+    added, updated = int(result.get("added") or 0), int(result.get("updated") or 0)
+    if added or updated:
+        report.writes += added + updated
+        report.details["seeded"] = {"added": added, "updated": updated}
+
+
+def _load_context(scope: CaseScope, turn: TurnInput) -> TurnContext:
+    try:
+        turns = recent_turns(scope, exclude_chat_id=turn.chat_id, limit=RECENT_TURNS)
+    except Exception as exc:  # noqa: BLE001 — context helps; the turn is still worth reading without it
+        logger.debug("[Memory] earlier turns unavailable case_key=%s: %s", scope.case_key, exc)
+        return TurnContext()
+    return turn_context(turn, turns)
+
 
 def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
     scope = turn.scope
@@ -740,6 +996,10 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
         report.skipped_reason = "disabled_by_user"
         return
 
+    # Every turn, greetings included: a case that predates memory fills itself
+    # from its details on its first chat, and new documents are picked up.
+    _refresh_seed(scope, report)
+
     source_extra = {
         key: value
         for key, value in {"kind": "chat", "session_id": turn.session_id, "chat_id": turn.chat_id}.items()
@@ -757,9 +1017,10 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
     stored = repository.get_sections(scope.case_key)
     existing = {name: list((data or {}).get("lines") or []) for name, data in stored.items()}
     versions: dict[str, int | None] = {name: (data or {}).get("version") for name, data in stored.items()}
+    context = _load_context(scope, turn)
 
     try:
-        extraction = extract_ops(turn, existing, today=today)
+        extraction = extract_ops(turn, existing, today=today, context=context)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Memory] extractor unavailable case_key=%s: %s", scope.case_key, exc)
         report.skipped_reason = "extractor_error"
@@ -772,7 +1033,7 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
 
     accepted = screen_ops(extraction.ops, turn.question_raw, report)
     _apply_ops(scope, accepted, existing, versions, settings, source_extra, report, today=today)
-    _handle_proposals(scope, turn, extraction.proposals, source_extra, report)
+    _handle_proposals(scope, turn, extraction.proposals, source_extra, report, settings=settings)
 
 
 def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
@@ -788,6 +1049,9 @@ def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
         f"read:{entry['skipped_reason']}" if entry.get("skipped_reason") else "",
         f"write:{report.skipped_reason}" if report.skipped_reason else "",
     ]
+    details = {key: value for key, value in report.details.items() if value}
+    if report.rejection_codes:
+        details["rejection_codes"] = sorted(set(report.rejection_codes))
     entry.update(
         {
             "session_id": turn.session_id or entry.get("session_id"),
@@ -798,6 +1062,7 @@ def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
             "rejected": report.rejected,
             "proposals": report.proposals,
             "skipped_reason": "; ".join(reason for reason in reasons if reason) or None,
+            "details": details,
         }
     )
     try:
@@ -819,9 +1084,11 @@ def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
         report.skipped_reason = report.skipped_reason or "writer_error"
     report.assembly_log_id = _write_log(turn, report)
     logger.info(
-        "[Memory] post-turn case_key=%s writes=%s proposals=%s rejected=%s skipped=%s codes=%s",
+        "[Memory] post-turn case_key=%s writes=%s instructions_saved=%s proposals=%s rejected=%s "
+        "skipped=%s codes=%s",
         getattr(turn.scope, "case_key", None),
         report.writes,
+        report.instructions_saved,
         report.proposals,
         report.rejected,
         report.skipped_reason,

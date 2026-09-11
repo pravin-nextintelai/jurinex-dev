@@ -2,20 +2,28 @@
 from __future__ import annotations
 
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 from app.schemas.chronology import ChronologyDateNode, ChronologyEvent, ChronologyTree
 from app.services.memory import seed as seed_mod
 from app.services.memory.schemas import MemorySettings
+from app.services.memory.scope import CaseScope
 from app.services.memory.seed import (
+    SEED_ACTOR,
     SEED_KIND,
+    build_candidates,
     candidates_from_case_row,
     candidates_from_chronology,
     candidates_from_files,
     plan_seed,
+    refresh_seed,
     seed_case_memory,
+    seed_fingerprint,
 )
+
+NOW = datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc)
+SCOPE = CaseScope(case_key="512", folder_name="State_v_Pawar", user_id="42", case_id="512", firm_id="firm-9")
 
 CASE_ROW = {
     "id": 512,
@@ -275,10 +283,32 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(ref["document"], "plaint.pdf")
         self.assertEqual(ref["page"], "3")
 
+    def test_a_deleted_seeded_line_is_skipped_when_asked(self) -> None:
+        candidates = candidates_from_case_row({"case_number": "CS-2026-0412"})
+        plan = plan_seed(candidates, {}, skip_sources=["cases_row:case_number"])
+        self.assertEqual(plan.additions, {})
+        self.assertEqual(plan.skipped[0]["reason"], "deleted_by_user")
+
+    def test_a_document_that_gains_a_summary_is_replaced_without_history(self) -> None:
+        candidates = candidates_from_files([{"id": "f1", "name": "Plaint.pdf", "summary": "Suit for recovery."}])
+        existing = {
+            "documents": [
+                {
+                    "id": "d1",
+                    "tag": "extracted",
+                    "text": "Plaint.pdf",
+                    "source_ref": {"kind": SEED_KIND, "source": "file:f1"},
+                }
+            ]
+        }
+        plan = plan_seed(candidates, existing, doc_names=["Plaint.pdf"])
+        self.assertEqual(plan.updates[0]["text"], "Plaint.pdf: Suit for recovery.")
+
 
 class SeedWriteTests(unittest.TestCase):
-    def _patches(self, *, stored=None, settings=None):
+    def _patches(self, *, stored=None, settings=None, meta=None):
         calls: list[tuple] = []
+        self.meta_writes: list[tuple[str, dict]] = []
 
         def append(key, section, lines, actor=None, folder_name=None):
             calls.append((key, section, list(lines)))
@@ -290,6 +320,12 @@ class SeedWriteTests(unittest.TestCase):
             patch.object(seed_mod.repository, "get_sections", return_value=stored or {}),
             patch.object(seed_mod.repository, "append_lines", side_effect=append),
             patch.object(seed_mod.repository, "apply_op"),
+            patch.object(seed_mod.repository, "get_seed_meta", return_value=dict(meta or {})),
+            patch.object(
+                seed_mod.repository,
+                "set_seed_meta",
+                side_effect=lambda key, meta, folder_name=None: self.meta_writes.append((key, meta)),
+            ),
         ]
 
     def _run(self, patches, **kwargs):
@@ -331,20 +367,137 @@ class SeedWriteTests(unittest.TestCase):
         self.assertEqual(report["skipped_reason"], "disabled_by_user")
         self.assertEqual(calls, [])
 
-    def test_a_write_failure_never_raises(self) -> None:
-        patches = [
-            patch.object(seed_mod.repository, "available", return_value=True),
-            patch.object(seed_mod.repository, "effective_settings", return_value=MemorySettings()),
-            patch.object(seed_mod.repository, "get_sections", return_value={}),
-            patch.object(seed_mod.repository, "append_lines", side_effect=RuntimeError("db down")),
-        ]
+    def test_a_write_failure_never_raises_and_leaves_no_fingerprint(self) -> None:
+        _, patches = self._patches()
+        patches[3] = patch.object(seed_mod.repository, "append_lines", side_effect=RuntimeError("db down"))
         report = self._run(patches, case_row=CASE_ROW)
         self.assertEqual(report["added"], 0)
+        self.assertNotIn("fingerprint", self.meta_writes[-1][1])
 
     def test_no_case_key_or_database_is_a_clean_skip(self) -> None:
         self.assertEqual(seed_case_memory("", case_row=CASE_ROW)["skipped_reason"], "no_case_key")
         with patch.object(seed_mod.repository, "available", return_value=False):
             self.assertEqual(seed_case_memory("512", case_row=CASE_ROW)["skipped_reason"], "db_unavailable")
+
+    def test_a_run_records_what_it_read_and_seeded(self) -> None:
+        _, patches = self._patches()
+        self._run(patches, case_row=CASE_ROW, now=NOW)
+        key, meta = self.meta_writes[-1]
+        self.assertEqual(key, "512")
+        self.assertTrue(meta["auto_seed"])
+        self.assertEqual((meta["seeded_at"], meta["checked_at"]), (NOW.isoformat(), NOW.isoformat()))
+        self.assertEqual(meta["fingerprint"], seed_fingerprint(candidates_from_case_row(CASE_ROW)))
+        self.assertIn("cases_row:case_number", meta["sources"])
+
+    def test_a_seeded_line_the_advocate_deleted_is_not_brought_back(self) -> None:
+        row = {"case_title": "State v. Pawar", "case_number": "CS-2026-0412"}
+        stored = {
+            "summary": {
+                "version": 3,
+                "lines": [
+                    {
+                        "id": "l1",
+                        "tag": "stated",
+                        "text": "Case: State v. Pawar",
+                        "source_ref": {"kind": SEED_KIND, "source": "cases_row:case_title"},
+                    }
+                ],
+            }
+        }
+        meta = {"sources": ["cases_row:case_title", "cases_row:case_number"]}
+        calls, patches = self._patches(stored=stored, meta=meta)
+        report = self._run(patches, case_row=row)
+        self.assertEqual(report["added"], 0)
+        self.assertEqual(calls, [])
+        # Still remembered as seeded, so a later automatic run keeps it deleted.
+        self.assertIn("cases_row:case_number", self.meta_writes[-1][1]["sources"])
+
+    def test_filling_from_case_details_by_hand_restores_deleted_lines(self) -> None:
+        row = {"case_title": "State v. Pawar", "case_number": "CS-2026-0412"}
+        meta = {"sources": ["cases_row:case_title", "cases_row:case_number"]}
+        calls, patches = self._patches(meta=meta)
+        report = self._run(patches, case_row=row, respect_deletions=False)
+        self.assertEqual(report["added"], 2)
+        self.assertEqual([line["text"] for _, _, lines in calls for line in lines], ["Case: State v. Pawar", "Case number: CS-2026-0412"])
+
+    def test_a_case_being_seeded_elsewhere_waits_its_turn(self) -> None:
+        _, patches = self._patches()
+        lock = seed_mod._case_lock("512")  # noqa: SLF001
+        lock.acquire()
+        try:
+            with patch.object(seed_mod, "SEED_LOCK_TIMEOUT_S", 0.01):
+                report = self._run(patches, case_row=CASE_ROW)
+        finally:
+            lock.release()
+        self.assertEqual(report["skipped_reason"], "busy")
+
+
+class RefreshSeedTests(unittest.TestCase):
+    def _refresh(self, meta, *, inputs=(CASE_ROW, None, []), locked=False, load_error=None):
+        lock = seed_mod._case_lock("512")  # noqa: SLF001
+        with patch.object(seed_mod.repository, "get_seed_meta", return_value=dict(meta)), patch.object(
+            seed_mod.repository, "set_seed_meta"
+        ) as set_meta, patch.object(
+            seed_mod, "load_seed_inputs", side_effect=load_error, return_value=inputs
+        ) as load, patch.object(
+            seed_mod, "seed_case_memory", return_value={"added": 3, "updated": 0, "skipped_reason": None}
+        ) as seed:
+            if locked:
+                lock.acquire()
+            try:
+                result = refresh_seed(SCOPE, now=NOW)
+            finally:
+                if locked:
+                    lock.release()
+        return result, set_meta, load, seed
+
+    def test_a_case_never_seeded_is_seeded(self) -> None:
+        result, _, _, seed = self._refresh({})
+        self.assertEqual(result["added"], 3)
+        self.assertEqual(seed.call_args.args[0], "512")
+        kwargs = seed.call_args.kwargs
+        self.assertEqual(kwargs["actor"], SEED_ACTOR)
+        self.assertEqual(kwargs["case_row"], CASE_ROW)
+        self.assertEqual((kwargs["folder_name"], kwargs["user_id"], kwargs["firm_id"]), ("State_v_Pawar", "42", "firm-9"))
+        self.assertNotIn("respect_deletions", kwargs)
+
+    def test_forgetting_the_case_pauses_automatic_seeding(self) -> None:
+        result, _, load, seed = self._refresh({"auto_seed": False})
+        self.assertIsNone(result)
+        load.assert_not_called()
+        seed.assert_not_called()
+
+    def test_a_recently_checked_case_is_not_read_again(self) -> None:
+        result, _, load, _ = self._refresh({"checked_at": (NOW - timedelta(minutes=3)).isoformat(), "fingerprint": "x"})
+        self.assertIsNone(result)
+        load.assert_not_called()
+
+    def test_unchanged_inputs_only_move_the_check_time(self) -> None:
+        fingerprint = seed_fingerprint(build_candidates(CASE_ROW, None, []))
+        meta = {"checked_at": (NOW - timedelta(hours=2)).isoformat(), "fingerprint": fingerprint, "sources": ["a"]}
+        result, set_meta, _, seed = self._refresh(meta)
+        self.assertIsNone(result)
+        seed.assert_not_called()
+        key, saved = set_meta.call_args.args[:2]
+        self.assertEqual(key, "512")
+        self.assertEqual(saved["checked_at"], NOW.isoformat())
+        self.assertEqual((saved["fingerprint"], saved["sources"]), (fingerprint, ["a"]))
+
+    def test_a_newly_processed_document_triggers_seeding(self) -> None:
+        fingerprint = seed_fingerprint(build_candidates(CASE_ROW, None, []))
+        meta = {"checked_at": (NOW - timedelta(hours=2)).isoformat(), "fingerprint": fingerprint}
+        _, _, _, seed = self._refresh(meta, inputs=(CASE_ROW, None, [{"id": "f9", "name": "Reply.pdf"}]))
+        seed.assert_called_once()
+
+    def test_a_case_being_seeded_elsewhere_is_skipped(self) -> None:
+        result, _, load, _ = self._refresh({}, locked=True)
+        self.assertIsNone(result)
+        load.assert_not_called()
+
+    def test_unreadable_inputs_are_a_quiet_skip(self) -> None:
+        result, _, _, seed = self._refresh({}, load_error=RuntimeError("folder service down"))
+        self.assertIsNone(result)
+        seed.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ import json
 import logging
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Iterable, Iterator, Sequence
 
 from app.services.db import get_db_connection, is_db_available
@@ -162,6 +163,7 @@ CREATE TABLE IF NOT EXISTS memory_assembly_log (
     rejected             INTEGER     NOT NULL DEFAULT 0,
     proposals            INTEGER     NOT NULL DEFAULT 0,
     skipped_reason       TEXT,
+    details              JSONB       NOT NULL DEFAULT '{}'::jsonb,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_memory_assembly_log_case_created
@@ -204,6 +206,12 @@ _REBIND_TABLES: tuple[str, ...] = (
 )
 
 _tables_ready = False
+# Whether memory_assembly_log has the `details` column (migration 172). Settled
+# the first time the tables are ensured; assumed present for a caller's own
+# connection.
+_details_column = True
+
+_PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected"})
 
 
 # ── Plumbing ─────────────────────────────────────────────────────────────────
@@ -227,7 +235,41 @@ def ensure_tables(conn: Any) -> None:
     except Exception as exc:  # noqa: BLE001 — a sibling process may be creating them
         conn.rollback()
         logger.debug("[Memory] DDL skipped: %s", exc)
+    _ensure_details_column(conn)
     _tables_ready = True
+
+
+def _ensure_details_column(conn: Any) -> None:
+    """Give a log table created before migration 172 its `details` column.
+
+    Looked up first, so the usual case takes no lock at all. When the column is
+    missing, the ALTER waits at most two seconds for its lock rather than
+    queueing chat traffic behind it; if it cannot run, turn logs are written
+    without details until the migration is applied.
+    """
+    global _details_column
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'memory_assembly_log' AND column_name = 'details' LIMIT 1"
+            )
+            if cur.fetchone() is None:
+                cur.execute("SET LOCAL lock_timeout = '2s'")
+                cur.execute(
+                    "ALTER TABLE memory_assembly_log "
+                    "ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
+        conn.commit()
+        _details_column = True
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        _details_column = False
+        logger.warning("[Memory] turn details are not logged until migration 172 is applied: %s", exc)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @contextmanager
@@ -753,10 +795,25 @@ def delete_line(case_key: str, line_id: str, actor: str | None = None, *, conn: 
 
 
 def delete_all(case_key: str, *, conn: Any = None) -> dict[str, int]:
-    """Forget everything about one case (memory + instructions + proposals)."""
+    """Forget everything about one case (memory + instructions + proposals).
+
+    Automatic seeding is switched off for the case in the same transaction, or
+    the next chat would quietly refill what the advocate just asked JuriNex to
+    forget. Filling it from the case details again is the advocate's call.
+    """
     key = _require_case_key(case_key)
     with _conn(conn) as connection, connection.cursor() as cur:
         counts = purge_case_keys(cur, [key])
+        try:
+            cur.execute("SAVEPOINT sp_memory_forget_mark")
+            cur.execute(
+                _SEED_META_UPSERT,
+                (key, None, SEED_META_SECTION, _json({"auto_seed": False, "forgotten_at": _now_iso()})),
+            )
+            cur.execute("RELEASE SAVEPOINT sp_memory_forget_mark")
+        except Exception as exc:  # noqa: BLE001 — the forget itself must still happen
+            cur.execute("ROLLBACK TO SAVEPOINT sp_memory_forget_mark")
+            logger.warning("[Memory] automatic seeding not paused after forget case_key=%s: %s", key, exc)
         connection.commit()
     return counts
 
@@ -859,6 +916,51 @@ def replace_case_memory(
             connection.rollback()
             raise
     return written
+
+
+# ── Seeding bookkeeping ──────────────────────────────────────────────────────
+# Kept in the summary section's `seed_meta`: when the case was last seeded and
+# checked, a fingerprint of what seeding read, which seeded sources it wrote, and
+# whether automatic seeding is allowed. Writing it never bumps a version.
+
+SEED_META_SECTION = "summary"
+_SEED_META_UPSERT = (
+    "INSERT INTO case_memory_sections (case_key, folder_name, section, seed_meta) "
+    "VALUES (%s, %s, %s, %s::jsonb) "
+    "ON CONFLICT (case_key, section) DO UPDATE SET seed_meta = EXCLUDED.seed_meta"
+)
+
+
+def get_seed_meta(case_key: str, *, conn: Any = None) -> dict[str, Any]:
+    """Seeding bookkeeping for one case; {} when it has never been seeded."""
+    key = _require_case_key(case_key)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "SELECT seed_meta FROM case_memory_sections WHERE case_key = %s AND section = %s",
+            (key, SEED_META_SECTION),
+        )
+        row = cur.fetchone()
+    meta = row.get("seed_meta") if isinstance(row, dict) else None
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = None
+    return dict(meta) if isinstance(meta, dict) else {}
+
+
+def set_seed_meta(
+    case_key: str,
+    meta: dict[str, Any],
+    folder_name: str | None = None,
+    *,
+    conn: Any = None,
+) -> None:
+    """Store seeding bookkeeping without touching the section's lines or version."""
+    key = _require_case_key(case_key)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(_SEED_META_UPSERT, (key, folder_name, SEED_META_SECTION, _json(meta or {})))
+        connection.commit()
 
 
 # ── Purge / rebind (case lifecycle) ──────────────────────────────────────────
@@ -1061,42 +1163,49 @@ def effective_settings(
 
 # ── Assembly log ─────────────────────────────────────────────────────────────
 
+_LOG_COLUMNS = (
+    "case_key, user_id, session_id, chat_id, mode, prefs_version, instructions_version, "
+    "sections_loaded, preset_ref, past_chat_ids, model, budget, writes, rejected, proposals, skipped_reason"
+)
+_LOG_PLACEHOLDERS = (
+    "%s, %s, %s::uuid, %s::uuid, %s, %s, %s, %s::jsonb, %s::jsonb, %s::uuid[], %s, %s::jsonb, %s, %s, %s, %s"
+)
+
+
 def write_assembly_log(entry: dict[str, Any], *, conn: Any = None) -> str | None:
-    """Record what went into one generation. Best-effort: never raises."""
+    """Record what went into one generation, and what its turn wrote. Never raises."""
     key = str(entry.get("case_key") or "").strip()
     if not key:
         return None
+    values: list[Any] = [
+        key,
+        _text_or_none(entry.get("user_id")),
+        _uuid_or_none(entry.get("session_id")),
+        _uuid_or_none(entry.get("chat_id")),
+        _text_or_none(entry.get("mode")),
+        entry.get("prefs_version"),
+        entry.get("instructions_version"),
+        _json(entry.get("sections_loaded") or []),
+        _json(entry.get("preset_ref") or {}),
+        [u for u in (_uuid_or_none(v) for v in (entry.get("past_chat_ids") or [])) if u],
+        _text_or_none(entry.get("model")),
+        _json(entry.get("budget") or {}),
+        int(entry.get("writes") or 0),
+        int(entry.get("rejected") or 0),
+        int(entry.get("proposals") or 0),
+        _text_or_none(entry.get("skipped_reason")),
+    ]
     try:
         with _conn(conn) as connection, connection.cursor() as cur:
+            # Read after _conn has ensured the tables, which settles the flag.
+            columns, placeholders = _LOG_COLUMNS, _LOG_PLACEHOLDERS
+            if _details_column:
+                columns += ", details"
+                placeholders += ", %s::jsonb"
+                values.append(_json(entry.get("details") or {}))
             cur.execute(
-                """
-                INSERT INTO memory_assembly_log
-                    (case_key, user_id, session_id, chat_id, mode, prefs_version, instructions_version,
-                     sections_loaded, preset_ref, past_chat_ids, model, budget,
-                     writes, rejected, proposals, skipped_reason)
-                VALUES (%s, %s, %s::uuid, %s::uuid, %s, %s, %s,
-                        %s::jsonb, %s::jsonb, %s::uuid[], %s, %s::jsonb,
-                        %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    key,
-                    _text_or_none(entry.get("user_id")),
-                    _uuid_or_none(entry.get("session_id")),
-                    _uuid_or_none(entry.get("chat_id")),
-                    _text_or_none(entry.get("mode")),
-                    entry.get("prefs_version"),
-                    entry.get("instructions_version"),
-                    _json(entry.get("sections_loaded") or []),
-                    _json(entry.get("preset_ref") or {}),
-                    [u for u in (_uuid_or_none(v) for v in (entry.get("past_chat_ids") or [])) if u],
-                    _text_or_none(entry.get("model")),
-                    _json(entry.get("budget") or {}),
-                    int(entry.get("writes") or 0),
-                    int(entry.get("rejected") or 0),
-                    int(entry.get("proposals") or 0),
-                    _text_or_none(entry.get("skipped_reason")),
-                ),
+                f"INSERT INTO memory_assembly_log ({columns}) VALUES ({placeholders}) RETURNING id",
+                values,
             )
             row = cur.fetchone()
             connection.commit()
@@ -1115,6 +1224,21 @@ def list_assembly_log(case_key: str, limit: int = 20, *, conn: Any = None) -> li
             (key, max(1, min(int(limit or 20), 200))),
         )
         return [_out(row) or {} for row in cur.fetchall()]
+
+
+def get_turn_log(case_key: str, chat_id: str, *, conn: Any = None) -> dict[str, Any] | None:
+    """The log row for one chat turn, which exists once the post-turn writer has finished."""
+    key = _require_case_key(case_key)
+    chat = _uuid_or_none(chat_id)
+    if not chat:
+        return None
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM memory_assembly_log WHERE case_key = %s AND chat_id = %s::uuid "
+            "ORDER BY created_at DESC LIMIT 1",
+            (key, chat),
+        )
+        return _out(cur.fetchone())
 
 
 def _text_or_none(value: Any) -> str | None:
@@ -1141,26 +1265,33 @@ def add_proposal(
     text: str,
     source_ref: dict[str, Any] | None = None,
     *,
+    status: str = "pending",
     conn: Any = None,
 ) -> str | None:
+    """Record a suggestion, or with status "accepted", an instruction the writer saved itself."""
     key = _require_case_key(case_key)
     body = str(text or "").strip()
     if not body:
         return None
+    state = str(status or "pending")
+    if state not in _PROPOSAL_STATUSES:
+        raise ValueError(f"Unknown proposal status '{status}'.")
     with _conn(conn) as connection, connection.cursor() as cur:
-        # Do not stack the same suggestion turn after turn.
+        if state == "pending":
+            # Do not stack the same suggestion turn after turn.
+            cur.execute(
+                "SELECT id FROM memory_proposals WHERE case_key = %s AND status = 'pending' "
+                "AND lower(text) = lower(%s) LIMIT 1",
+                (key, body),
+            )
+            if cur.fetchone() is not None:
+                connection.rollback()
+                return None
+        resolved_at = "NULL" if state == "pending" else "NOW()"
         cur.execute(
-            "SELECT id FROM memory_proposals WHERE case_key = %s AND status = 'pending' "
-            "AND lower(text) = lower(%s) LIMIT 1",
-            (key, body),
-        )
-        if cur.fetchone() is not None:
-            connection.rollback()
-            return None
-        cur.execute(
-            "INSERT INTO memory_proposals (case_key, user_id, kind, text, source_ref) "
-            "VALUES (%s, %s, %s, %s, %s::jsonb) RETURNING id",
-            (key, _text_or_none(user_id), str(kind), body, _json(source_ref or {})),
+            "INSERT INTO memory_proposals (case_key, user_id, kind, text, status, source_ref, resolved_at) "
+            f"VALUES (%s, %s, %s, %s, %s, %s::jsonb, {resolved_at}) RETURNING id",
+            (key, _text_or_none(user_id), str(kind), body, state, _json(source_ref or {})),
         )
         row = cur.fetchone()
         connection.commit()
@@ -1186,6 +1317,18 @@ def list_proposals(
                 "SELECT * FROM memory_proposals WHERE case_key = %s ORDER BY created_at DESC LIMIT 100",
                 (key,),
             )
+        return [_out(row) or {} for row in cur.fetchall()]
+
+
+def list_saved_from_chat(case_key: str, limit: int = 10, *, conn: Any = None) -> list[dict[str, Any]]:
+    """Instructions the writer saved on its own from an explicit request, newest first."""
+    key = _require_case_key(case_key)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM memory_proposals WHERE case_key = %s AND status = 'accepted' "
+            "AND source_ref->>'auto' = 'true' ORDER BY created_at DESC LIMIT %s",
+            (key, max(1, min(int(limit or 10), 50))),
+        )
         return [_out(row) or {} for row in cur.fetchall()]
 
 
