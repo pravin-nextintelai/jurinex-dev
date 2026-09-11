@@ -28,7 +28,13 @@ These migrations align the new Python `agentic-document-service` with the shared
 ## Suggested Run Order
 
 Apply the files in filename order. `node db/migrate.js` (from the service root)
-does this and records applied files in `schema_migrations`.
+does this and records applied files in `schema_migrations`, but it needs the `pg`
+package, which this service does not install. Run `npm install --no-save pg` in
+the service root first, or apply the files with `psql` as below.
+
+The memory tables in `170` are also created on first use by
+`app/services/memory/repository.py`. The recall indexes in `171` never are, so
+apply `171` explicitly.
 
 Example:
 
