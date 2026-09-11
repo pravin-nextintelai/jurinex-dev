@@ -8,16 +8,14 @@ Case routes resolve `folder_name` through `resolve_case_scope`, which is also
 the access check: an unresolvable folder returns 404 rather than an empty
 result, so a probe cannot distinguish "no memory" from "not your case".
 
-Concurrency: section writes carry the version the caller last read. A stale
-version returns 409 with the current content so the client can merge and retry
-instead of overwriting an edit it never saw.
+Concurrency: section and instruction writes carry the version the caller last
+read. A stale version returns 409 with the current content so the client can
+merge and retry instead of overwriting an edit it never saw.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
-
-from typing import Callable
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response
@@ -26,25 +24,30 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.rbac.auth import get_current_user
 from app.services.memory import repository
+from app.services.memory.instructions import annotate, normalize_session_id, user_proposal_key
 from app.services.memory.repository import VersionConflict
 from app.services.memory.schemas import (
+    MAX_INSTRUCTION_ITEM_CHARS,
+    MAX_INSTRUCTION_ITEMS,
     MAX_INSTRUCTIONS_CHARS,
     MAX_PREFERENCES_CHARS,
     SECTIONS,
     SETTINGS_FLAGS,
+    InstructionScope,
     MemorySettings,
     OpName,
+    OverrideType,
     SectionName,
     TagName,
 )
 from app.services.memory.scope import CaseScope, firm_context_for, resolve_case_scope
 from app.services.memory.validator import (
     Rejection,
-    drop_matching_line,
+    instruction_set_room,
+    split_instruction_text,
     strip_tag_prefix,
-    validate_instructions,
+    validate_instruction_item,
     validate_line,
-    validate_preferences,
 )
 
 logger = logging.getLogger("agentic_document_service.api.memory")
@@ -84,6 +87,8 @@ class _StructuredErrorRoute(APIRoute):
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"], route_class=_StructuredErrorRoute)
+
+_INSTRUCTION_SET_CAPS = {"case": MAX_INSTRUCTIONS_CHARS, "user": MAX_PREFERENCES_CHARS}
 
 
 # ── Request models ───────────────────────────────────────────────────────────
@@ -132,6 +137,32 @@ class SettingsUpdate(BaseModel):
         return merged
 
 
+class InstructionCreate(BaseModel):
+    text: str = Field(max_length=MAX_INSTRUCTION_ITEM_CHARS * 2)
+    version: int | None = None
+    enabled: bool = True
+    # True when the text is the Polish suggestion rather than the advocate's own words.
+    polished: bool = False
+
+
+class InstructionPatch(BaseModel):
+    text: str | None = Field(default=None, max_length=MAX_INSTRUCTION_ITEM_CHARS * 2)
+    enabled: bool | None = None
+    version: int | None = None
+
+
+class OverrideUpdate(BaseModel):
+    override: OverrideType
+    session_id: str | None = None
+    # null clears the override, so the item's own switch applies again.
+    enabled: bool | None = None
+
+
+class PolishRequest(BaseModel):
+    text: str = Field(max_length=MAX_INSTRUCTION_ITEM_CHARS * 4)
+    scope: InstructionScope = "case"
+
+
 # ── Shared helpers ───────────────────────────────────────────────────────────
 
 def _actor(user: dict[str, Any]) -> str:
@@ -169,6 +200,19 @@ def _conflict(exc: VersionConflict) -> HTTPException:
             "expected_version": exc.expected,
             "current_version": exc.current_version,
             "lines": exc.current_lines,
+        },
+    )
+
+
+def _instruction_conflict(exc: VersionConflict, scope_type: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "detail": "stale_version",
+            "scope": scope_type,
+            "expected_version": exc.expected,
+            "current_version": exc.current_version,
+            "items": exc.current_lines,
         },
     )
 
@@ -232,18 +276,263 @@ def _seed_meta(case_key: str) -> dict[str, Any]:
         return {}
 
 
-# ── Layer 1: standing preferences ────────────────────────────────────────────
+def _party_names(user: dict[str, Any]) -> tuple[str, ...]:
+    """Party names from the advocate's cases, for keeping case details out of universal rules."""
+    from app.services.memory.parties import party_names_for_user
+
+    try:
+        return party_names_for_user(_actor(user))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] party names unavailable: %s", exc)
+        return ()
+
+
+# ── Instructions (universal and per case, one switch per item) ───────────────
+
+def _instruction_target(
+    scope_type: str,
+    folder_name: str | None,
+    user: dict[str, Any],
+) -> tuple[str, CaseScope | None]:
+    """(the set's scope id, the case for context).
+
+    Universal instructions belong to the advocate; a folder name with them only
+    says which case's overrides to show. Case instructions need the folder.
+    """
+    if scope_type == "user":
+        case_scope = _scope_or_404(folder_name, user) if folder_name else None
+        return _actor(user), case_scope
+    if not folder_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="folder_name is required for case instructions.",
+        )
+    case_scope = _scope_or_404(folder_name, user)
+    return case_scope.case_key, case_scope
+
+
+def _check_instruction(text: str, scope_type: str, user: dict[str, Any]) -> str:
+    """The cleaned text, or a 422 with the rule it breaks."""
+    clean = " ".join(str(text or "").split())
+    problems = validate_instruction_item(
+        clean, scope_type=scope_type, party_names=_party_names(user) if scope_type == "user" else ()
+    )
+    if problems:
+        raise _unprocessable(problems)
+    return clean
+
+
+def _instruction_set_payload(
+    scope_type: str,
+    scope_id: str,
+    case_scope: CaseScope | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    data = repository.get_instruction_set(scope_type, scope_id)
+    ids = [str(item.get("id")) for item in data.get("items") or [] if item.get("id")]
+    session = normalize_session_id(session_id)
+    overrides: dict[str, Any] = {}
+    if ids and (case_scope is not None or session):
+        overrides = repository.get_instruction_overrides(
+            ids, case_key=case_scope.case_key if case_scope else None, session_id=session or None
+        )
+    items = annotate(data.get("items") or [], scope_type, overrides)
+    return {
+        "scope": scope_type,
+        "version": data.get("version"),
+        "items": items,
+        "case_key": case_scope.case_key if case_scope else None,
+        "session_id": session or None,
+        "max_items": MAX_INSTRUCTION_ITEMS,
+        "max_item_chars": MAX_INSTRUCTION_ITEM_CHARS,
+        "max_chars": _INSTRUCTION_SET_CAPS[scope_type],
+    }
+
+
+@router.get("/instructions")
+def list_instructions(
+    scope: InstructionScope = Query(default="user"),
+    folder_name: str | None = Query(default=None),
+    session_id: str | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One set of instructions with, when a case or session is given, each item's state there."""
+    scope_id, case_scope = _instruction_target(scope, folder_name, user)
+    return _instruction_set_payload(scope, scope_id, case_scope, session_id)
+
+
+@router.post("/instructions")
+def add_instruction(
+    body: InstructionCreate,
+    scope: InstructionScope = Query(default="user"),
+    folder_name: str | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    scope_id, case_scope = _instruction_target(scope, folder_name, user)
+    text = _check_instruction(body.text, scope, user)
+    current = repository.get_instruction_set(scope, scope_id)
+    room = instruction_set_room(current.get("items") or [], text, scope_type=scope)
+    if room is not None:
+        raise _unprocessable([room])
+    ref: dict[str, Any] = {"kind": "user"}
+    if body.polished:
+        ref["polished"] = True
+    try:
+        result = repository.add_instruction(
+            scope, scope_id, text, body.version, enabled=body.enabled, origin="user", source_ref=ref, actor=_actor(user)
+        )
+    except VersionConflict as exc:
+        raise _instruction_conflict(exc, scope) from exc
+    logger.info("[Memory] user_id=%s added %s instruction -> v%s", _actor(user), scope, result.get("version"))
+    item = annotate([result.get("item") or {}], scope, {})[0]
+    return {"scope": scope, "version": result.get("version"), "item": item, "case_key": case_scope.case_key if case_scope else None}
+
+
+@router.patch("/instructions/{instruction_id}")
+def update_instruction(
+    instruction_id: str,
+    body: InstructionPatch,
+    scope: InstructionScope = Query(default="user"),
+    folder_name: str | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Change an item's text, or switch it on or off everywhere it applies."""
+    scope_id, _case_scope = _instruction_target(scope, folder_name, user)
+    text = _check_instruction(body.text, scope, user) if body.text is not None else None
+    if text is None and body.enabled is None:
+        raise _unprocessable([Rejection("empty", "Nothing to change.")])
+    try:
+        result = repository.update_instruction(
+            scope, scope_id, instruction_id, body.version, text=text, enabled=body.enabled, actor=_actor(user)
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except VersionConflict as exc:
+        raise _instruction_conflict(exc, scope) from exc
+    return {"scope": scope, "version": result.get("version"), "item": annotate([result.get("item") or {}], scope, {})[0]}
+
+
+@router.delete("/instructions/{instruction_id}")
+def delete_instruction(
+    instruction_id: str,
+    scope: InstructionScope = Query(default="user"),
+    folder_name: str | None = Query(default=None),
+    version: int | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Remove one instruction. One JuriNex saved from chat is not saved again by itself."""
+    scope_id, _case_scope = _instruction_target(scope, folder_name, user)
+    try:
+        result = repository.delete_instruction(scope, scope_id, instruction_id, version, actor=_actor(user))
+    except VersionConflict as exc:
+        raise _instruction_conflict(exc, scope) from exc
+    if not result.get("deleted"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That instruction no longer exists.")
+    item = result.get("item") or {}
+    if str(item.get("origin") or "") == "chat":
+        try:
+            repository.reject_proposals_for_instruction(instruction_id)
+        except Exception as exc:  # noqa: BLE001 — the delete itself has happened
+            logger.warning("[Memory] could not mark the chat record for %s: %s", instruction_id, exc)
+    logger.info("[Memory] user_id=%s deleted %s instruction %s", _actor(user), scope, instruction_id)
+    return {"scope": scope, "version": result.get("version"), "deleted": True, "id": instruction_id}
+
+
+@router.put("/instructions/{instruction_id}/override")
+def set_instruction_override(
+    instruction_id: str,
+    body: OverrideUpdate,
+    scope: InstructionScope = Query(default="user"),
+    folder_name: str | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Switch one item off (or back on) for this case only, or mute it for one chat."""
+    scope_id, case_scope = _instruction_target(scope, folder_name, user)
+    current = repository.get_instruction_set(scope, scope_id)
+    if not any(str(item.get("id")) == str(instruction_id) for item in current.get("items") or []):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That instruction no longer exists.")
+
+    if body.override == "case":
+        if scope != "user":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A case instruction already applies to one case; use its own switch.",
+            )
+        if case_scope is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="folder_name is required to switch an instruction off for a case.",
+            )
+        override_id = case_scope.case_key
+    else:
+        override_id = normalize_session_id(body.session_id)
+        if not override_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="session_id is required to mute an instruction for a chat.",
+            )
+
+    repository.set_instruction_override(instruction_id, body.override, override_id, body.enabled, actor=_actor(user))
+    return {"id": instruction_id, "override": body.override, "enabled": body.enabled}
+
+
+@router.post("/instructions/polish")
+def polish_instruction_route(
+    body: PolishRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Tidy a draft instruction. Returns a suggestion; nothing is saved."""
+    from app.services.memory.polish import polish_instruction
+
+    names = _party_names(user) if body.scope == "user" else ()
+    return polish_instruction(body.text, scope_type=body.scope, party_names=names).as_dict()
+
+
+def _replace_from_text(
+    scope_type: str,
+    scope_id: str,
+    content: str,
+    version: int | None,
+    user: dict[str, Any],
+) -> dict[str, Any]:
+    """The old one-box save: the text becomes the whole set, one item per line."""
+    texts = split_instruction_text(content)
+    problems: list[Rejection] = []
+    names = _party_names(user) if scope_type == "user" else ()
+    for text in texts:
+        problems.extend(validate_instruction_item(text, scope_type=scope_type, party_names=names))
+    if problems:
+        raise _unprocessable(problems)
+    if len(texts) > MAX_INSTRUCTION_ITEMS:
+        raise _unprocessable([Rejection("set_full", f"At most {MAX_INSTRUCTION_ITEMS} instructions can be kept here.")])
+    if sum(len(t) for t in texts) > _INSTRUCTION_SET_CAPS[scope_type]:
+        raise _unprocessable(
+            [Rejection("too_long", f"These are capped at {_INSTRUCTION_SET_CAPS[scope_type]} characters in total.")]
+        )
+    try:
+        result = repository.replace_instruction_set(
+            scope_type,
+            scope_id,
+            [{"text": text, "enabled": True, "origin": "user", "source_ref": {"kind": "user"}} for text in texts],
+            version,
+            actor=_actor(user),
+        )
+    except VersionConflict as exc:
+        raise _instruction_conflict(exc, scope_type) from exc
+    items = annotate(result.get("items") or [], scope_type, {})
+    return {"scope": scope_type, "version": result.get("version"), "items": items, "content": "\n".join(texts)}
+
+
+# ── Layer 1: the advocate's universal instructions (older "preferences" routes) ──
 
 @router.get("/preferences")
 def get_preferences(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    stored = repository.get_preferences(_actor(user)) or {}
-    return {
-        "content": stored.get("content") or "",
-        "version": stored.get("version"),
-        "updated_at": stored.get("updated_at"),
-        "max_words": 300,
-        "max_chars": MAX_PREFERENCES_CHARS,
-    }
+    payload = _instruction_set_payload("user", _actor(user), None, None)
+    payload["content"] = "\n".join(
+        str(item.get("text") or "") for item in payload["items"] if item.get("enabled", True)
+    )
+    payload["max_words"] = 300
+    return payload
 
 
 @router.put("/preferences")
@@ -251,24 +540,7 @@ def put_preferences(
     body: ContentUpdate,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    problems = validate_preferences(body.content)
-    if problems:
-        raise _unprocessable(problems)
-    try:
-        saved = repository.put_preferences(
-            _actor(user), body.content, body.version, updated_by=_actor(user)
-        )
-    except VersionConflict as exc:
-        current = repository.get_preferences(_actor(user)) or {}
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "detail": "stale_version",
-                "current_version": exc.current_version,
-                "content": current.get("content") or "",
-            },
-        ) from exc
-    return {"content": saved.get("content") or "", "version": saved.get("version")}
+    return _replace_from_text("user", _actor(user), body.content, body.version, user)
 
 
 # ── Case overview ────────────────────────────────────────────────────────────
@@ -282,13 +554,14 @@ def get_case_memory(
     scope = _scope_or_404(folder_name, user)
     index = repository.get_section_index(scope.case_key)
     summary = repository.get_section(scope.case_key, "summary")
-    instructions = repository.get_instructions(scope.case_key) or {}
+    instructions = repository.get_instruction_set("case", scope.case_key)
     case_settings = repository.get_settings("case", scope.case_key)
     effective = repository.effective_settings(
         user_id=scope.user_id, case_key=scope.case_key, firm_id=scope.firm_id
     )
     pending = repository.list_proposals(scope.case_key, "pending")
     seed_meta = _seed_meta(scope.case_key)
+    items = instructions.get("items") or []
 
     return {
         "case_key": scope.case_key,
@@ -297,9 +570,9 @@ def get_case_memory(
         "sections": index,
         "summary": summary,
         "instructions": {
-            "content": instructions.get("content") or "",
             "version": instructions.get("version"),
-            "updated_at": instructions.get("updated_at"),
+            "count": len(items),
+            "enabled_count": sum(1 for item in items if item.get("enabled", True)),
         },
         "settings": {
             "case": {flag: bool((case_settings or {}).get(flag, True)) for flag in SETTINGS_FLAGS}
@@ -438,22 +711,20 @@ def forget_case(
     return {"case_key": scope.case_key, "deleted": counts}
 
 
-# ── Layer 2: case instructions ───────────────────────────────────────────────
+# ── Layer 2: case instructions (older one-box routes, kept for compatibility) ──
 
 @router.get("/cases/{folder_name}/instructions")
 def get_instructions(
     folder_name: str,
+    session_id: str | None = Query(default=None),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     scope = _scope_or_404(folder_name, user)
-    stored = repository.get_instructions(scope.case_key) or {}
-    return {
-        "case_key": scope.case_key,
-        "content": stored.get("content") or "",
-        "version": stored.get("version"),
-        "updated_at": stored.get("updated_at"),
-        "max_chars": MAX_INSTRUCTIONS_CHARS,
-    }
+    payload = _instruction_set_payload("case", scope.case_key, scope, session_id)
+    payload["content"] = "\n".join(
+        str(item.get("text") or "") for item in payload["items"] if item.get("enabled", True)
+    )
+    return payload
 
 
 @router.put("/cases/{folder_name}/instructions")
@@ -463,28 +734,7 @@ def put_instructions(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     scope = _scope_or_404(folder_name, user)
-    problems = validate_instructions(body.content)
-    if problems:
-        raise _unprocessable(problems)
-    try:
-        saved = repository.put_instructions(
-            scope.case_key,
-            body.content,
-            body.version,
-            updated_by=_actor(user),
-            folder_name=scope.folder_name,
-        )
-    except VersionConflict as exc:
-        current = repository.get_instructions(scope.case_key) or {}
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "detail": "stale_version",
-                "current_version": exc.current_version,
-                "content": current.get("content") or "",
-            },
-        ) from exc
-    return {"content": saved.get("content") or "", "version": saved.get("version")}
+    return _replace_from_text("case", scope.case_key, body.content, body.version, user)
 
 
 # ── Settings ─────────────────────────────────────────────────────────────────
@@ -623,21 +873,40 @@ def get_turn(
         "lines": list(details.get("lines") or []),
         "instructions": list(details.get("instructions") or []),
         "suggestions": list(details.get("suggestions") or []),
+        "instructions_applied": len(details.get("instructions_applied") or []),
         "seeded": seeded if isinstance(seeded, dict) else None,
     }
 
 
-@router.get("/cases/{folder_name}/instructions/from-chat")
-def list_instructions_from_chat(
-    folder_name: str,
-    user: dict[str, Any] = Depends(get_current_user),
+# ── Suggestions (the model may suggest; only the advocate saves) ─────────────
+
+def _accept_suggestion(
+    proposal: dict[str, Any],
+    *,
+    case_scope: CaseScope | None,
+    user: dict[str, Any],
 ) -> dict[str, Any]:
-    """Instructions JuriNex saved from chat on its own, newest first, so each can be undone."""
-    scope = _scope_or_404(folder_name, user)
-    return {"case_key": scope.case_key, "items": repository.list_saved_from_chat(scope.case_key)}
+    """Turn an accepted suggestion into an instruction item in the right set."""
+    text = " ".join(str(proposal.get("text") or "").split())
+    scope_type = "case" if str(proposal.get("kind") or "instruction") == "instruction" and case_scope else "user"
+    if scope_type == "case":
+        scope_id = case_scope.case_key  # type: ignore[union-attr]
+    else:
+        scope_id = _actor(user)
+    _check_instruction(text, scope_type, user)
+    current = repository.get_instruction_set(scope_type, scope_id)
+    room = instruction_set_room(current.get("items") or [], text, scope_type=scope_type)
+    if room is not None:
+        raise _unprocessable([room])
+    source = proposal.get("source_ref") if isinstance(proposal.get("source_ref"), dict) else {}
+    ref: dict[str, Any] = {"kind": "learned", "proposal_id": str(proposal.get("id") or "")}
+    if source.get("learned_from"):
+        ref["learned_from"] = source.get("learned_from")
+    result = repository.add_instruction(
+        scope_type, scope_id, text, None, origin="learned", source_ref=ref, actor=_actor(user)
+    )
+    return {"scope": scope_type, "version": result.get("version"), "item": result.get("item")}
 
-
-# ── Proposals (the model may suggest; only the advocate saves) ────────────────
 
 @router.get("/cases/{folder_name}/proposals")
 def list_proposals(
@@ -656,107 +925,54 @@ def list_proposals(
 def resolve_proposal(
     folder_name: str,
     proposal_id: str,
-    decision: Literal["accept", "reject", "undo"],
+    decision: Literal["accept", "reject"],
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Accepting appends the suggestion to the layer it belongs to, validated.
-
-    `undo` takes back an instruction JuriNex saved from chat on its own: the line
-    is removed from the case's instructions if it is still there, and the record
-    is marked rejected so the writer does not save it by itself again.
-    """
+    """Accepting adds the suggestion to the set it belongs to, validated."""
     scope = _scope_or_404(folder_name, user)
     proposal = repository.get_proposal(scope.case_key, proposal_id)
     if proposal is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proposal not found.")
-
-    if decision == "undo":
-        return _undo_saved_instruction(scope, proposal_id, proposal, user)
-
     if str(proposal.get("status") or "pending") != "pending":
-        # Already handled, perhaps in another window: never append it twice.
+        # Already handled, perhaps in another window: never add it twice.
         return {"id": proposal_id, "status": proposal.get("status"), "kind": proposal.get("kind")}
 
     if decision == "reject":
         repository.set_proposal_status(scope.case_key, proposal_id, "rejected")
         return {"id": proposal_id, "status": "rejected"}
 
-    text = str(proposal.get("text") or "").strip()
-    kind = str(proposal.get("kind") or "instruction")
-
-    if kind == "instruction":
-        stored = repository.get_instructions(scope.case_key) or {}
-        merged = "\n".join(filter(None, [str(stored.get("content") or "").strip(), text]))
-        problems = validate_instructions(merged)
-        if problems:
-            raise _unprocessable(problems)
-        repository.put_instructions(
-            scope.case_key, merged, stored.get("version"), updated_by=_actor(user),
-            folder_name=scope.folder_name,
-        )
-    else:
-        stored = repository.get_preferences(_actor(user)) or {}
-        merged = "\n".join(filter(None, [str(stored.get("content") or "").strip(), text]))
-        problems = validate_preferences(merged)
-        if problems:
-            raise _unprocessable(problems)
-        repository.put_preferences(_actor(user), merged, stored.get("version"), updated_by=_actor(user))
-
+    added = _accept_suggestion(proposal, case_scope=scope, user=user)
     repository.set_proposal_status(scope.case_key, proposal_id, "accepted")
-    return {"id": proposal_id, "status": "accepted", "kind": kind}
+    return {"id": proposal_id, "status": "accepted", "kind": proposal.get("kind"), **added}
 
 
-def _undo_saved_instruction(
-    scope: CaseScope,
-    proposal_id: str,
-    proposal: dict[str, Any],
-    user: dict[str, Any],
+@router.get("/suggestions")
+def list_user_suggestions(
+    status_filter: str | None = Query(default="pending", alias="status"),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    source = proposal.get("source_ref") if isinstance(proposal.get("source_ref"), dict) else {}
-    if proposal.get("kind") != "instruction" or not source.get("auto"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only an instruction JuriNex saved from chat can be undone.",
-        )
-    if proposal.get("status") != "accepted":
-        return {"id": proposal_id, "status": proposal.get("status"), "removed": False}
+    """Suggestions for all of this advocate's cases: rules noticed in more than one matter."""
+    return {"scope": "user", "proposals": repository.list_proposals(user_proposal_key(_actor(user)), status_filter)}
 
-    stored = repository.get_instructions(scope.case_key) or {}
-    content = str(stored.get("content") or "")
-    version = stored.get("version")
-    remaining, removed = drop_matching_line(content, str(proposal.get("text") or ""))
-    if removed:
-        try:
-            saved = repository.put_instructions(
-                scope.case_key,
-                remaining,
-                version,
-                updated_by=_actor(user),
-                folder_name=scope.folder_name,
-            )
-        except VersionConflict as exc:
-            current = repository.get_instructions(scope.case_key) or {}
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "detail": "stale_version",
-                    "current_version": exc.current_version,
-                    "content": current.get("content") or "",
-                },
-            ) from exc
-        content, version = str(saved.get("content") or ""), saved.get("version")
 
-    repository.set_proposal_status(scope.case_key, proposal_id, "rejected")
-    logger.info(
-        "[Memory] user_id=%s undid instruction from chat case_key=%s proposal=%s removed=%s",
-        _actor(user), scope.case_key, proposal_id, removed,
-    )
-    return {
-        "id": proposal_id,
-        "status": "rejected",
-        "removed": removed,
-        "instructions": {"content": content, "version": version},
-    }
+@router.post("/suggestions/{proposal_id}/{decision}")
+def resolve_user_suggestion(
+    proposal_id: str,
+    decision: Literal["accept", "reject"],
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    key = user_proposal_key(_actor(user))
+    proposal = repository.get_proposal(key, proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found.")
+    if str(proposal.get("status") or "pending") != "pending":
+        return {"id": proposal_id, "status": proposal.get("status")}
+    if decision == "reject":
+        repository.set_proposal_status(key, proposal_id, "rejected")
+        return {"id": proposal_id, "status": "rejected"}
+    added = _accept_suggestion(proposal, case_scope=None, user=user)
+    repository.set_proposal_status(key, proposal_id, "accepted")
+    return {"id": proposal_id, "status": "accepted", **added}
 
 
 # ── Case lifecycle: export, import, seed ─────────────────────────────────────
