@@ -11,3 +11,14 @@ if (-not (Test-Path ".venv\Scripts\uvicorn.exe")) {
 Write-Host "Starting agentic-document-service on http://localhost:8092 ..."
 Write-Host "Wait for Application startup complete. First boot can take 30-90s."
 & .\.venv\Scripts\uvicorn.exe main:app --host 0.0.0.0 --port 8092 --reload --reload-dir app --reload-dir agents
+
+
+
+# From Backend\agentic-document-service:
+
+# $env:PYTHONUNBUFFERED="1"
+# .venv\Scripts\uvicorn.exe main:app --host 0.0.0.0 --port 8092
+# Or:
+
+# .\start.ps1
+# Wait for Application startup complete. First boot can take 30–90 seconds. Service URL: http://localhost:8092.

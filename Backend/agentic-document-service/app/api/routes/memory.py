@@ -17,7 +17,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Callable
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from app.api.routes.rbac.auth import get_current_user
@@ -44,7 +48,41 @@ from app.services.memory.validator import (
 
 logger = logging.getLogger("agentic_document_service.api.memory")
 
-router = APIRouter(prefix="/api/memory", tags=["memory"])
+
+class _StructuredErrorRoute(APIRoute):
+    """Return this router's structured error bodies as real JSON.
+
+    The service-wide HTTPException handler in main.py stringifies `detail` so it
+    can attach CORS headers. That suits plain messages, but a 409 carrying the
+    current section content, or a 422 carrying rule codes, would reach the
+    browser as an unparseable Python repr — and the client could not recover
+    from a stale edit.
+
+    Routes here raise dict details; this unwraps them into a normal JSON
+    response (which the CORS middleware decorates as usual). String details are
+    re-raised untouched, so every other route in the service keeps its existing
+    error shape.
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Any]:
+        original = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            try:
+                return await original(request)
+            except HTTPException as exc:
+                if isinstance(exc.detail, dict):
+                    return JSONResponse(
+                        status_code=exc.status_code,
+                        content=exc.detail,
+                        headers=getattr(exc, "headers", None),
+                    )
+                raise
+
+        return handler
+
+
+router = APIRouter(prefix="/api/memory", tags=["memory"], route_class=_StructuredErrorRoute)
 
 
 # ── Request models ───────────────────────────────────────────────────────────
@@ -111,7 +149,9 @@ def _scope_or_404(folder_name: str, user: dict[str, Any]) -> CaseScope:
 
 def _unprocessable(problems: list[Rejection]) -> HTTPException:
     return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        # Literal 422: newer Starlette renamed the constant, older releases lack
+        # the new name, and requirements are not pinned.
+        status_code=422,
         detail={
             "detail": "rejected",
             "problems": [{"code": p.code, "message": p.detail} for p in problems],
