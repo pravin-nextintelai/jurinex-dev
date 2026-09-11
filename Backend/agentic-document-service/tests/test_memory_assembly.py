@@ -103,13 +103,10 @@ class BlockOrderTests(unittest.TestCase):
         self.assertIn("\n- Refer to the accused as the Applicant.", suffix)
 
     def test_the_session_reaches_the_instruction_switches(self) -> None:
-        patches = fake_store()
         with ExitStack() as stack:
-            for item in patches:
-                stack.enter_context(item)
+            mocks = [stack.enter_context(item) for item in fake_store()]
             build_context_layers(SCOPE, question_raw="hello", session_id="s-7")
-        resolve = patches[1].new if hasattr(patches[1], "new") else None
-        self.assertIsNotNone(resolve)
+        resolve = mocks[1]
         self.assertEqual(resolve.call_args.args, ("42", "512", "s-7"))
         self.assertTrue(resolve.call_args.kwargs["include_case"])
 

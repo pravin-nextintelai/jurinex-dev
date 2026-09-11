@@ -237,9 +237,12 @@ def parse_import(payload: Any, *, doc_names: Sequence[str] | None = None) -> Par
                 continue
             if any(normalize_for_compare(item["text"]) == normalize_for_compare(text) for item in parsed.instructions):
                 continue
+            # Where the item came from in the source case, when that says
+            # something ("chat", "learned"); "user" is the default and "import"
+            # would be this import itself.
             origin = str(candidate.get("origin") or "")
             ref: dict[str, Any] = {"kind": "import"}
-            if origin and origin != "import" and origin in INSTRUCTION_ORIGINS:
+            if origin in INSTRUCTION_ORIGINS and origin not in ("import", "user"):
                 ref["imported_origin"] = origin
             parsed.instructions.append(
                 {"text": text, "enabled": bool(candidate.get("enabled", True)), "origin": "import", "source_ref": ref}
