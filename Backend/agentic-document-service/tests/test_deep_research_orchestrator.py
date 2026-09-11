@@ -142,6 +142,15 @@ class DeepAnswerSafetyTests(unittest.TestCase):
         self.assertIn("Supreme Court of India", redacted)
 
 
+class DeepResearchConfigTests(unittest.TestCase):
+    def test_timeout_defaults_allow_a_full_quality_retry_window(self):
+        cfg = DeepResearchConfig.from_settings(SimpleNamespace())
+
+        self.assertEqual(cfg.stage_timeout_s, 240.0)
+        self.assertEqual(cfg.run_timeout_s, 720.0)
+        self.assertEqual(cfg.synthesis_timeout_retries, 1)
+
+
 class DeepProviderAccountingTests(unittest.IsolatedAsyncioTestCase):
     async def test_synthesis_emits_live_preview_then_settled_result(self):
         chunk = SimpleNamespace(
