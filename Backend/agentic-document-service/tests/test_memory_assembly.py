@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import ExitStack
 from unittest.mock import patch
 
 from app.services.memory import assembly as assembly_mod
@@ -11,6 +12,7 @@ from app.services.memory.assembly import (
     _clip,
     _render_line,
 )
+from app.services.memory.instructions import InstructionContext
 from app.services.memory.schemas import MemorySettings
 from app.services.memory.scope import CaseScope
 
@@ -43,22 +45,31 @@ def fake_store(
         {"section": name, "version": data["version"], "line_count": len(data["lines"]), "char_count": 40}
         for name, data in sections.items()
     ]
+
+    def resolve(user_id, case_key, session_id=None, *, include_case=True):
+        """One universal item and one case item, as the instructions module would return them."""
+        user_items = [{"id": "u1", "text": prefs, "enabled": True, "effective": True}] if prefs else []
+        case_items = (
+            [{"id": "c1", "text": instructions, "enabled": True, "effective": True}]
+            if instructions and include_case
+            else []
+        )
+        return InstructionContext(
+            user_version=3 if prefs else None,
+            case_version=2 if instructions and include_case else None,
+            user_items=user_items,
+            case_items=case_items,
+            applied_ids=[item["id"] for item in [*user_items, *case_items]],
+            muted_ids=["u9"] if prefs else [],
+        )
+
     return (
         patch.object(
             assembly_mod.repository,
             "effective_settings",
             return_value=settings or MemorySettings(),
         ),
-        patch.object(
-            assembly_mod.repository,
-            "get_preferences",
-            return_value={"content": prefs, "version": 3} if prefs else None,
-        ),
-        patch.object(
-            assembly_mod.repository,
-            "get_instructions",
-            return_value={"content": instructions, "version": 2} if instructions else None,
-        ),
+        patch.object(assembly_mod, "resolve_instructions", side_effect=resolve),
         patch.object(assembly_mod.repository, "get_section_index", return_value=index),
         patch.object(
             assembly_mod.repository,
@@ -71,18 +82,43 @@ def fake_store(
 def build(question: str = "What are the facts?", **kwargs):
     patches = fake_store(**{k: v for k, v in kwargs.items() if k in {"prefs", "instructions", "sections", "settings"}})
     call_kwargs = {k: v for k, v in kwargs.items() if k not in {"prefs", "instructions", "sections", "settings"}}
-    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
         return build_context_layers(SCOPE, question_raw=question, **call_kwargs)
 
 
 class BlockOrderTests(unittest.TestCase):
     def test_layers_appear_in_precedence_order(self) -> None:
         suffix = build().system_suffix
-        prefs_at = suffix.index("ADVOCATE STANDING PREFERENCES")
+        prefs_at = suffix.index("ADVOCATE STANDING INSTRUCTIONS")
         instructions_at = suffix.index("CASE INSTRUCTIONS")
         memory_at = suffix.index("CASE MEMORY")
         self.assertLess(prefs_at, instructions_at)
         self.assertLess(instructions_at, memory_at)
+
+    def test_instructions_are_rendered_one_per_line(self) -> None:
+        suffix = build().system_suffix
+        self.assertIn("\n- English drafts; Marathi client summaries.", suffix)
+        self.assertIn("\n- Refer to the accused as the Applicant.", suffix)
+
+    def test_the_session_reaches_the_instruction_switches(self) -> None:
+        patches = fake_store()
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            build_context_layers(SCOPE, question_raw="hello", session_id="s-7")
+        resolve = patches[1].new if hasattr(patches[1], "new") else None
+        self.assertIsNotNone(resolve)
+        self.assertEqual(resolve.call_args.args, ("42", "512", "s-7"))
+        self.assertTrue(resolve.call_args.kwargs["include_case"])
+
+    def test_the_bundle_reports_which_instructions_applied(self) -> None:
+        bundle = build("hello")
+        self.assertEqual(bundle.instructions_applied, ["u1", "c1"])
+        self.assertEqual(bundle.instructions_muted, ["u9"])
+        self.assertEqual(bundle.log_entry["details"], {"instructions_applied": ["u1", "c1"], "instructions_muted": ["u9"]})
+        self.assertEqual(bundle.metadata()["instructions"], {"applied": 2, "muted": 1})
 
     def test_summary_precedes_the_index_and_loaded_sections(self) -> None:
         suffix = build("What are the facts?").system_suffix
@@ -184,8 +220,9 @@ class SkipPathTests(unittest.TestCase):
     def test_instructions_toggle_drops_only_that_block(self) -> None:
         bundle = build("hello", settings=MemorySettings(instructions_enabled=False))
         self.assertNotIn("CASE INSTRUCTIONS", bundle.system_suffix)
-        self.assertIn("ADVOCATE STANDING PREFERENCES", bundle.system_suffix)
+        self.assertIn("ADVOCATE STANDING INSTRUCTIONS", bundle.system_suffix)
         self.assertIn("CASE MEMORY", bundle.system_suffix)
+        self.assertIsNone(bundle.instructions_version)
 
     def test_global_kill_switch_wins(self) -> None:
         class Off:
@@ -264,7 +301,7 @@ class MetadataTests(unittest.TestCase):
         meta = build("When is the hearing?").metadata()
         self.assertEqual(
             sorted(meta.keys()),
-            ["case_key", "enabled", "recall_chat_ids", "sections_loaded", "skipped_reason"],
+            ["case_key", "enabled", "instructions", "recall_chat_ids", "sections_loaded", "skipped_reason"],
         )
         self.assertTrue(meta["enabled"])
         self.assertEqual(meta["case_key"], "512")
@@ -336,7 +373,7 @@ class RecallAssemblyTests(unittest.TestCase):
         with patch.object(recall_mod, "search_past_sessions", side_effect=RuntimeError("statement timeout")):
             bundle = build("Add the ground we discussed")
         self.assertEqual(bundle.recall_block, "")
-        self.assertIn("ADVOCATE STANDING PREFERENCES", bundle.system_suffix)
+        self.assertIn("ADVOCATE STANDING INSTRUCTIONS", bundle.system_suffix)
         self.assertIn("CASE INSTRUCTIONS", bundle.system_suffix)
 
     def test_recall_alone_counts_as_content(self) -> None:

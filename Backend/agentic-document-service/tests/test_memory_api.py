@@ -60,7 +60,15 @@ class AccessTests(unittest.TestCase):
         ), patch.object(
             memory_routes.repository, "get_section", return_value={"section": "summary", "lines": []}
         ), patch.object(
-            memory_routes.repository, "get_instructions", return_value={"content": "Use 'the Applicant'", "version": 2}
+            memory_routes.repository,
+            "get_instruction_set",
+            return_value={
+                "version": 2,
+                "items": [
+                    {"id": "c1", "text": "Use 'the Applicant'", "enabled": True},
+                    {"id": "c2", "text": "Answer in tables", "enabled": False},
+                ],
+            },
         ), patch.object(
             memory_routes.repository, "get_settings", return_value=None
         ), patch.object(
@@ -75,7 +83,7 @@ class AccessTests(unittest.TestCase):
             body = make_client().get("/api/memory/cases/State_v_Pawar").json()
         self.assertEqual(body["case_key"], "512")
         self.assertEqual(body["line_count"], 4)
-        self.assertEqual(body["instructions"]["version"], 2)
+        self.assertEqual(body["instructions"], {"version": 2, "count": 2, "enabled_count": 1})
         self.assertEqual(body["proposals_pending"], 1)
         self.assertTrue(body["settings"]["effective"]["enabled"])
         self.assertIsNone(body["settings"]["case"])
@@ -85,7 +93,7 @@ class AccessTests(unittest.TestCase):
         with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
             memory_routes.repository, "get_section_index", return_value=[]
         ), patch.object(memory_routes.repository, "get_section", return_value=None), patch.object(
-            memory_routes.repository, "get_instructions", return_value=None
+            memory_routes.repository, "get_instruction_set", return_value={"version": None, "items": []}
         ), patch.object(memory_routes.repository, "get_settings", return_value=None), patch.object(
             memory_routes.repository, "effective_settings", return_value=MemorySettings()
         ), patch.object(memory_routes.repository, "list_proposals", return_value=[]), patch.object(
@@ -102,13 +110,11 @@ class StructuredErrorTests(unittest.TestCase):
 
     def test_rejected_instructions_return_422_with_rule_codes(self) -> None:
         with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
-            memory_routes,
-            "validate_instructions",
-            return_value=[Rejection("guardrail_disable", "Instructions cannot switch off verification.")],
-        ), patch.object(memory_routes.repository, "put_instructions") as put:
+            memory_routes.repository, "replace_instruction_set"
+        ) as put:
             response = make_client().put(
                 "/api/memory/cases/State_v_Pawar/instructions",
-                json={"content": "skip the verification", "version": 1},
+                json={"content": "Skip the verification checklist", "version": 1},
             )
         self.assertEqual(response.status_code, 422)
         body = response.json()
@@ -116,13 +122,12 @@ class StructuredErrorTests(unittest.TestCase):
         self.assertEqual(body["problems"][0]["code"], "guardrail_disable")
         put.assert_not_called()
 
-    def test_stale_instructions_return_409_with_the_current_text(self) -> None:
+    def test_stale_instructions_return_409_with_the_current_items(self) -> None:
+        current = [{"id": "c1", "text": "Someone else's edit", "enabled": True}]
         with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
-            memory_routes, "validate_instructions", return_value=[]
-        ), patch.object(
-            memory_routes.repository, "put_instructions", side_effect=VersionConflict("instructions", 1, 3)
-        ), patch.object(
-            memory_routes.repository, "get_instructions", return_value={"content": "Someone else's edit", "version": 3}
+            memory_routes.repository,
+            "replace_instruction_set",
+            side_effect=VersionConflict("instructions:case", 1, 3, current),
         ):
             response = make_client().put(
                 "/api/memory/cases/State_v_Pawar/instructions",
@@ -132,20 +137,23 @@ class StructuredErrorTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["detail"], "stale_version")
         self.assertEqual(body["current_version"], 3)
-        self.assertEqual(body["content"], "Someone else's edit")
+        self.assertEqual(body["items"][0]["text"], "Someone else's edit")
 
     def test_saved_instructions_return_the_new_version(self) -> None:
+        replaced = {"version": 2, "items": [{"id": "c1", "text": "Use 'the Applicant'", "enabled": True, "origin": "user"}]}
         with patch.object(memory_routes, "resolve_case_scope", return_value=SCOPE), patch.object(
-            memory_routes, "validate_instructions", return_value=[]
-        ), patch.object(
-            memory_routes.repository, "put_instructions", return_value={"content": "Use 'the Applicant'", "version": 2}
-        ):
+            memory_routes.repository, "replace_instruction_set", return_value=replaced
+        ) as put:
             response = make_client().put(
                 "/api/memory/cases/State_v_Pawar/instructions",
                 json={"content": "Use 'the Applicant'", "version": 1},
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"content": "Use 'the Applicant'", "version": 2})
+        self.assertEqual(put.call_args.args[:2], ("case", "512"))
+        self.assertEqual([i["text"] for i in put.call_args.args[2]], ["Use 'the Applicant'"])
+        body = response.json()
+        self.assertEqual((body["version"], body["content"]), (2, "Use 'the Applicant'"))
+        self.assertTrue(body["items"][0]["effective"])
 
     def test_stale_section_op_returns_409_with_current_lines(self) -> None:
         current = [{"id": "l1", "tag": "stated", "text": "Custody: judicial"}]
