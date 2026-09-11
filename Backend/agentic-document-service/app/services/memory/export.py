@@ -24,14 +24,15 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from app.services.memory import repository
-from app.services.memory.schemas import SECTIONS, SETTINGS_FLAGS
+from app.services.memory.schemas import INSTRUCTION_ORIGINS, SECTIONS, SETTINGS_FLAGS
 from app.services.memory.scope import CaseScope
 from app.services.memory.seed import dedupe_threshold
 from app.services.memory.validator import (
     find_duplicate,
     normalize_for_compare,
+    split_instruction_text,
     strip_tag_prefix,
-    validate_instructions,
+    validate_instruction_item,
     validate_line,
 )
 
@@ -52,7 +53,9 @@ class ParsedImport:
 
     lines: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     rejected: list[dict[str, Any]] = field(default_factory=list)
-    instructions: str | None = None
+    # Instruction items to write, each {text, enabled, origin, source_ref}; None
+    # when the file carries no instructions at all.
+    instructions: list[dict[str, Any]] | None = None
     settings: dict[str, bool] | None = None
 
     @property
@@ -82,7 +85,7 @@ def export_case(scope: CaseScope) -> dict[str, Any]:
     """Everything JuriNex knows about one case, in a portable document."""
     key = scope.case_key
     stored = repository.get_sections(key)
-    instructions = repository.get_instructions(key) or {}
+    instructions = repository.get_instruction_set("case", key)
     settings = repository.get_settings("case", key)
 
     sections: list[dict[str, Any]] = []
@@ -106,9 +109,24 @@ def export_case(scope: CaseScope) -> dict[str, Any]:
         "schema_version": EXPORT_SCHEMA_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "case": {"folder_name": scope.folder_name, "case_id": scope.case_id},
+        # `items` is what import reads; `content` keeps the file readable by
+        # anything that expects the old one-box text.
         "instructions": {
-            "content": str(instructions.get("content") or ""),
             "version": instructions.get("version"),
+            "items": [
+                {
+                    "text": str(item.get("text") or ""),
+                    "enabled": bool(item.get("enabled", True)),
+                    "origin": str(item.get("origin") or "user"),
+                }
+                for item in instructions.get("items") or []
+                if str(item.get("text") or "").strip()
+            ],
+            "content": "\n".join(
+                str(item.get("text") or "")
+                for item in instructions.get("items") or []
+                if item.get("enabled", True) and str(item.get("text") or "").strip()
+            ),
         },
         "settings": (
             {flag: bool(settings.get(flag, True)) for flag in SETTINGS_FLAGS} if settings else None

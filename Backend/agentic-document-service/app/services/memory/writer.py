@@ -211,8 +211,9 @@ line. Put it in "proposals", written as a short instruction in the advocate's
 own words:
 - kind "instruction" for this case, such as "Refer to my client as the
   Applicant" or "From now on, answer in a table";
-- kind "preference" for all of the advocate's work, such as "In all my matters,
-  cite SCC first".
+- kind "preference" only when the advocate says the rule is for all their
+  cases ("in all my matters", "in every case", "not just this case"), such as
+  "In all my matters, cite SCC first". Keep those words in the proposal.
 Propose a rule when the advocate states one ("always", "never", "from now on",
 "going forward", "every time", "remember to"), and keep that word in the
 proposal. Also propose one when the latest message repeats a formatting or style
@@ -756,13 +757,9 @@ def _apply_ops(
                 )
 
 
-def _already_saved(text: str, saved: str) -> bool:
-    if not saved.strip():
-        return False
-    if normalize_for_compare(text) in normalize_for_compare(saved):
-        return True
-    rows = [{"text": row} for row in saved.splitlines() if row.strip()]
-    return find_duplicate(text, rows) is not None
+def _already_saved(text: str, items: Sequence[dict[str, Any]]) -> bool:
+    """Whether an instruction with this meaning is already in the set."""
+    return find_duplicate(text, list(items)) is not None
 
 
 def _is_auto(row: dict[str, Any]) -> bool:
@@ -770,65 +767,156 @@ def _is_auto(row: dict[str, Any]) -> bool:
     return isinstance(ref, dict) and bool(ref.get("auto"))
 
 
+def _proposal_history(key: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(pending, dismissed by the advocate, saved-then-deleted) suggestions under one key."""
+    try:
+        history = list(repository.list_proposals(key, None) or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] could not read earlier proposals for %s: %s", key, exc)
+        history = []
+    pending = [row for row in history if row.get("status") == "pending"]
+    dismissed = [row for row in history if row.get("status") == "rejected" and not _is_auto(row)]
+    undone = [row for row in history if row.get("status") == "rejected" and _is_auto(row)]
+    return pending, dismissed, undone
+
+
+def _instruction_items(scope_type: str, scope_id: str) -> list[dict[str, Any]]:
+    try:
+        return list(repository.get_instruction_set(scope_type, scope_id).get("items") or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] could not read %s instructions for %s: %s", scope_type, scope_id, exc)
+        return []
+
+
+def _seen_in_other_cases(scope: CaseScope, text: str) -> list[str]:
+    """Case keys where the advocate asked for the same thing before."""
+    try:
+        rows = repository.list_user_proposals(scope.user_id, exclude_case_key=scope.case_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] could not read cross-case proposals: %s", exc)
+        return []
+    keys: list[str] = []
+    for row in rows:
+        if find_duplicate(text, [row]) is not None:
+            key = str(row.get("case_key") or "")
+            if key and key not in keys:
+                keys.append(key)
+    return keys
+
+
+class _Rulebook:
+    """What this turn's proposals are checked against, read once per turn."""
+
+    def __init__(self, scope: CaseScope) -> None:
+        self.scope = scope
+        self.items = {
+            "case": _instruction_items("case", scope.case_key),
+            "user": _instruction_items("user", scope.user_id),
+        }
+        self.pending, self.dismissed, self.undone = {}, {}, {}
+        for scope_type, key in (("case", scope.case_key), ("user", user_proposal_key(scope.user_id))):
+            self.pending[scope_type], self.dismissed[scope_type], self.undone[scope_type] = _proposal_history(key)
+        try:
+            self.party_names = party_names_for_user(scope.user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Memory] party names unavailable: %s", exc)
+            self.party_names = ()
+
+    def key(self, scope_type: str) -> str:
+        return self.scope.case_key if scope_type == "case" else user_proposal_key(self.scope.user_id)
+
+    def scope_id(self, scope_type: str) -> str:
+        return self.scope.case_key if scope_type == "case" else str(self.scope.user_id)
+
+    def problems(self, text: str, scope_type: str) -> list[Any]:
+        return validate_instruction_item(
+            text, scope_type=scope_type, party_names=self.party_names if scope_type == "user" else ()
+        )
+
+
 def _save_instruction(
-    scope: CaseScope,
+    book: _Rulebook,
     text: str,
+    scope_type: str,
     source_extra: dict[str, Any],
     report: WriteReport,
 ) -> str:
-    """Append an explicit standing instruction to this case's instructions.
+    """Add an explicit standing instruction to the case's, or the advocate's, set.
 
-    Returns "saved", "already_saved", "invalid" (the instructions would go over
-    their cap), "conflict" (changed twice underneath us) or "failed".
+    Returns "saved", "already_saved", "full" (no room in the set) or "failed".
     """
-    for _attempt in range(2):
-        try:
-            stored = repository.get_instructions(scope.case_key) or {}
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Memory] instructions unreadable case_key=%s: %s", scope.case_key, exc)
-            return "failed"
-        content = str(stored.get("content") or "")
-        if _already_saved(text, content):
-            return "already_saved"
-        merged = "\n".join(part for part in (content.rstrip(), text) if part)
-        if validate_instructions(merged):
-            return "invalid"
-        try:
-            saved = repository.put_instructions(
-                scope.case_key,
-                merged,
-                stored.get("version"),
-                updated_by=WRITER_ACTOR,
-                folder_name=scope.folder_name,
-            )
-        except VersionConflict:
-            continue
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Memory] instruction save failed case_key=%s: %s", scope.case_key, exc)
-            report.reject("instruction_write_failed")
-            return "failed"
+    items = book.items[scope_type]
+    if _already_saved(text, items):
+        return "already_saved"
+    if instruction_set_room(items, text, scope_type=scope_type) is not None:
+        return "full"
+    try:
+        result = repository.add_instruction(
+            scope_type,
+            book.scope_id(scope_type),
+            text,
+            None,
+            origin="chat",
+            source_ref={**source_extra, "auto": True},
+            actor=WRITER_ACTOR,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] instruction save failed scope=%s: %s", scope_type, exc)
+        report.reject("instruction_write_failed")
+        return "failed"
 
-        record_id: str | None = None
-        try:
-            # Recorded as an accepted proposal, so the advocate can see where it
-            # came from and undo it.
-            record_id = repository.add_proposal(
-                scope.case_key,
-                scope.user_id,
-                "instruction",
-                text,
-                {**source_extra, "auto": True, "instructions_version": saved.get("version")},
-                status="accepted",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Memory] saved instruction not recorded case_key=%s: %s", scope.case_key, exc)
-        report.writes += 1
-        report.instructions_saved += 1
-        report.note("instructions", {"id": record_id, "text": text, "version": saved.get("version")})
-        return "saved"
+    item = dict(result.get("item") or {})
+    items.append(item)
+    try:
+        # Recorded as an accepted suggestion, so deleting the instruction later
+        # tells the writer not to save it again.
+        repository.add_proposal(
+            book.key(scope_type),
+            book.scope.user_id,
+            "instruction" if scope_type == "case" else "preference",
+            text,
+            {**source_extra, "auto": True, "instruction_id": item.get("id")},
+            status="accepted",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] saved instruction not recorded scope=%s: %s", scope_type, exc)
+    report.writes += 1
+    report.instructions_saved += 1
+    report.note(
+        "instructions",
+        {"id": item.get("id"), "text": text, "scope": scope_type, "version": result.get("version")},
+    )
+    return "saved"
 
-    report.reject("instruction_conflict")
-    return "conflict"
+
+def _suggest(
+    book: _Rulebook,
+    text: str,
+    scope_type: str,
+    source_extra: dict[str, Any],
+    report: WriteReport,
+) -> bool:
+    """Record a suggestion the advocate can accept, unless one like it is already waiting."""
+    if find_duplicate(text, book.pending[scope_type]) is not None:
+        return False
+    try:
+        proposal_id = repository.add_proposal(
+            book.key(scope_type),
+            book.scope.user_id,
+            "instruction" if scope_type == "case" else "preference",
+            text,
+            dict(source_extra),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] proposal write failed scope=%s: %s", scope_type, exc)
+        report.reject("proposal_write_failed")
+        return False
+    if not proposal_id:
+        return False
+    report.proposals += 1
+    report.note("suggestions", {"id": proposal_id, "kind": "instruction", "scope": scope_type, "text": text})
+    book.pending[scope_type].append({"text": text})
+    return True
 
 
 def _handle_proposals(
@@ -840,24 +928,19 @@ def _handle_proposals(
     *,
     settings: MemorySettings | None = None,
 ) -> None:
+    """Route each rule the extractor found: save it, suggest it, or drop it.
+
+    A rule stated in so many words is saved, to the case's instructions, or to
+    the advocate's universal ones when the message says it is for all their
+    cases. Anything else becomes a suggestion, and a suggestion that keeps
+    coming up in different cases is also suggested as universal.
+    """
     if not proposals:
         return
     settings = settings or MemorySettings()
-    try:
-        instructions = str((repository.get_instructions(scope.case_key) or {}).get("content") or "")
-        preferences = str((repository.get_preferences(scope.user_id) or {}).get("content") or "")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[Memory] could not read saved instructions for proposals: %s", exc)
-        instructions = preferences = ""
-    try:
-        history = list(repository.list_proposals(scope.case_key, None) or [])
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[Memory] could not read earlier proposals: %s", exc)
-        history = []
-    pending = [row for row in history if row.get("status") == "pending"]
-    dismissed = [row for row in history if row.get("status") == "rejected" and not _is_auto(row)]
-    undone = [row for row in history if row.get("status") == "rejected" and _is_auto(row)]
-    message_states_rule = has_standing_rule(turn.question_raw)
+    book = _Rulebook(scope)
+    message_rule = has_standing_rule(turn.question_raw)
+    message_universal = has_universal_cue(turn.question_raw)
 
     for proposal in proposals:
         text = " ".join(str(proposal.text or "").split())
@@ -869,48 +952,40 @@ def _handle_proposals(
         if not is_grounded(text, turn.question_raw):
             report.reject("proposal_not_in_advocate_message")
             continue
-        if proposal.kind == "instruction":
-            problems, saved = validate_instructions(text), instructions
-        else:
-            problems, saved = validate_preferences(text), preferences
-        if problems:
+
+        # The extractor's "preference" label is honoured only when the advocate's
+        # own words widen the rule to all their cases.
+        scope_type = "user" if (proposal.kind == "preference" and message_universal) else "case"
+        if book.problems(text, scope_type):
             report.reject("proposal_invalid")
             continue
-        if _already_saved(text, saved):
+        if _already_saved(text, book.items[scope_type]):
             continue
 
-        explicit = message_states_rule and has_standing_rule(text)
-        if (
-            explicit
-            and proposal.kind == "instruction"
-            and settings.instructions_enabled
-            and find_duplicate(text, undone) is None
-        ):
-            outcome = _save_instruction(scope, text, source_extra, report)
-            if outcome == "saved":
-                instructions = "\n".join(part for part in (instructions.rstrip(), text) if part)
+        explicit = message_rule and has_standing_rule(text)
+        if explicit and settings.instructions_enabled and find_duplicate(text, book.undone[scope_type]) is None:
+            outcome = _save_instruction(book, text, scope_type, source_extra, report)
+            if outcome in ("saved", "already_saved"):
                 continue
-            if outcome == "already_saved":
-                continue
-            # Too long to append, or it kept changing underneath: ask instead.
-        elif not explicit and find_duplicate(text, dismissed) is not None:
+            # No room in the set, or the write failed: ask instead.
+        elif not explicit and find_duplicate(text, book.dismissed[scope_type]) is not None:
             report.reject("proposal_dismissed_before")
             continue
 
-        if find_duplicate(text, pending) is not None:
-            continue
-        try:
-            proposal_id = repository.add_proposal(
-                scope.case_key, scope.user_id, proposal.kind, text, dict(source_extra)
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Memory] proposal write failed case_key=%s: %s", scope.case_key, exc)
-            report.reject("proposal_write_failed")
-            continue
-        if proposal_id:
-            report.proposals += 1
-            report.note("suggestions", {"id": proposal_id, "kind": proposal.kind, "text": text})
-            pending.append({"text": text})
+        _suggest(book, text, scope_type, source_extra, report)
+
+        # The same request in another case too: worth suggesting for all cases,
+        # if it is fit to be universal and the advocate has not turned it down.
+        if (
+            scope_type == "case"
+            and not book.problems(text, "user")
+            and not _already_saved(text, book.items["user"])
+            and find_duplicate(text, book.dismissed["user"]) is None
+            and find_duplicate(text, book.undone["user"]) is None
+        ):
+            elsewhere = _seen_in_other_cases(scope, text)
+            if elsewhere:
+                _suggest(book, text, "user", {**source_extra, "learned_from": elsewhere[:5]}, report)
 
 
 # Upload paths prefix the original file name with an id ("<uuid>_Bail.pdf",
@@ -1071,7 +1146,10 @@ def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
         f"read:{entry['skipped_reason']}" if entry.get("skipped_reason") else "",
         f"write:{report.skipped_reason}" if report.skipped_reason else "",
     ]
-    details = {key: value for key, value in report.details.items() if value}
+    # The read side recorded which instructions applied; the write side adds
+    # what this turn changed.
+    details = {key: value for key, value in (entry.get("details") or {}).items() if value}
+    details.update({key: value for key, value in report.details.items() if value})
     if report.rejection_codes:
         details["rejection_codes"] = sorted(set(report.rejection_codes))
     entry.update(
