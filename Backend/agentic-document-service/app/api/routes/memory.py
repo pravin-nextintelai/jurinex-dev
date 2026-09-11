@@ -637,6 +637,106 @@ def resolve_proposal(
     return {"id": proposal_id, "status": "accepted", "kind": kind}
 
 
+# ── Case lifecycle: export, import, seed ─────────────────────────────────────
+
+class ImportRequest(BaseModel):
+    payload: dict[str, Any]
+    # False merges into what the case already knows. True replaces its memory
+    # sections, instructions and case-level settings with the file's.
+    replace: bool = False
+
+
+@router.get("/cases/{folder_name}/export")
+def export_case_memory(
+    folder_name: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Everything JuriNex knows about this case, as a portable JSON document."""
+    from app.services.memory.export import export_case
+
+    scope = _scope_or_404(folder_name, user)
+    logger.info("[Memory] user_id=%s exported case_key=%s", _actor(user), scope.case_key)
+    return export_case(scope)
+
+
+@router.post("/cases/{folder_name}/import")
+def import_case_memory(
+    folder_name: str,
+    body: ImportRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Load an export into this case. Every line is re-validated on the way in."""
+    from app.services.memory.export import import_case
+
+    scope = _scope_or_404(folder_name, user)
+    try:
+        return import_case(
+            scope,
+            body.payload,
+            actor=_actor(user),
+            replace=body.replace,
+            doc_names=_document_names(scope),
+        )
+    except VersionConflict as exc:
+        raise _conflict(exc) from exc
+    except ValueError as exc:
+        raise _unprocessable([Rejection("invalid_export", str(exc))]) from exc
+
+
+def _seed_inputs(scope: CaseScope) -> tuple[dict[str, Any] | None, Any, list[dict[str, Any]]]:
+    """The confirmed case row, the chronology and the documents for one case.
+
+    Each is loaded independently and best-effort: seeding from whatever is
+    available beats refusing to seed because one source failed.
+    """
+    from app.services.container import get_folder_service
+
+    service = get_folder_service()
+    case_row: dict[str, Any] | None = None
+    if scope.case_id:
+        try:
+            case_row = service._get_case_from_db(scope.case_id, scope.user_id)  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] seed could not load case_id=%s: %s", scope.case_id, exc)
+
+    tree: Any = None
+    try:
+        tree = service.get_chronology(scope.case_id or scope.case_key, folder_name=scope.folder_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] seed could not load the chronology for %s: %s", scope.case_key, exc)
+
+    files: list[dict[str, Any]] = []
+    try:
+        listing = service.get_documents_in_folder(scope.folder_name, scope.user_id) or {}
+        files = list(listing.get("documents") or listing.get("files") or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] seed could not list documents for %s: %s", scope.folder_name, exc)
+
+    return case_row, tree, files
+
+
+@router.post("/cases/{folder_name}/seed")
+def seed_case(
+    folder_name: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Re-run seeding: add what is new since creation, update changed seeded facts."""
+    from app.services.memory.seed import seed_case_memory
+
+    scope = _scope_or_404(folder_name, user)
+    case_row, tree, files = _seed_inputs(scope)
+    return seed_case_memory(
+        scope.case_key,
+        folder_name=scope.folder_name,
+        user_id=scope.user_id,
+        firm_id=scope.firm_id,
+        case_row=case_row,
+        tree=tree,
+        files=files,
+        actor=_actor(user),
+    )
+
+
 @router.get("/sections")
 def list_section_names() -> dict[str, Any]:
     """The fixed section vocabulary, so the UI does not hardcode it."""

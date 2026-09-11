@@ -1514,6 +1514,37 @@ class FolderWorkflowService:
                     else:
                         db_counts["cases"] = 0
 
+                    # Case memory is sensitive case data, so it goes with the case,
+                    # in the same transaction. The keys cover every form this case's
+                    # memory can sit under: the case id, the folder key, and a temp-*
+                    # intake name. A plain folder name is never a memory key, so it is
+                    # deliberately not used. Each table is purged under its own
+                    # savepoint inside purge_case_keys, so a database without the
+                    # memory tables still deletes the case.
+                    memory_keys: list[str] = []
+                    if case_row and case_row.get("id"):
+                        memory_keys.append(str(case_row.get("id")))
+                    if folder_row and folder_row.get("id"):
+                        memory_keys.append(f"folder:{folder_row.get('id')}")
+                    for intake_name in {str(case_id or "").strip(), str(resolved_folder_name or "").strip()}:
+                        if intake_name.lower().startswith("temp-"):
+                            memory_keys.append(intake_name)
+                    if memory_keys:
+                        try:
+                            from app.services.memory.repository import purge_case_keys
+
+                            for table, count in purge_case_keys(cur, memory_keys).items():
+                                db_counts[f"memory_{table}"] = count
+                        except Exception as memory_exc:  # noqa: BLE001
+                            # Rows left under a deleted case id or folder key cannot
+                            # be reached again (neither is ever reused), so a failed
+                            # purge is logged rather than allowed to block the delete.
+                            logger.warning(
+                                "[FolderService] task=delete_case memory purge failed keys=%s error=%s",
+                                memory_keys,
+                                memory_exc,
+                            )
+
                     conn.commit()
                     db_deleted = any(value > 0 for value in db_counts.values())
             except Exception as exc:
@@ -3607,6 +3638,7 @@ class FolderWorkflowService:
         prompt_label: str | None = None,
         secret_id: str | None = None,
         raise_on_error: bool = False,
+        chat_id: str | None = None,
     ) -> bool | None:
         if not is_db_available():
             if raise_on_error:
@@ -3628,6 +3660,10 @@ class FolderWorkflowService:
         secret_uuid = None
         if secret_id and uuid_re.match(str(secret_id)):
             secret_uuid = str(secret_id)
+        # A caller may pre-mint the row id so that memory written about this turn
+        # can point back at the exact chat row (source_ref.chat_id). Anything that
+        # is not a well-formed UUID is ignored and a fresh id is minted as before.
+        row_id = str(chat_id) if chat_id and uuid_re.match(str(chat_id)) else str(uuid.uuid4())
         try:
             with get_db_connection() as conn, conn.cursor() as cur:
                 cur.execute(
@@ -3640,7 +3676,7 @@ class FolderWorkflowService:
                        %s, %s, %s::uuid, %s::jsonb, %s::jsonb, NOW())
                     """,
                     (
-                        str(uuid.uuid4()),
+                        row_id,
                         str(user_id),
                         folder_name,
                         question,
