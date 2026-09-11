@@ -1130,6 +1130,36 @@ class FolderWorkflowService:
             folder_name=safe_case_name,
         )
 
+        # Controlled memory: anything written while this was still an intake
+        # folder moves onto the real case key, then the case is seeded from what
+        # creation established — the case form the advocate just confirmed, the
+        # grounded chronology, and the migrated documents. Best-effort: a memory
+        # failure must never fail case creation.
+        try:
+            from app.services.memory import repository as memory_repository
+            from app.services.memory.seed import seed_case_memory
+
+            temp_name = str(case_data.get("temp_folder_name") or "").strip().strip("/")
+            if temp_name:
+                memory_repository.rebind_case_key(temp_name, case_id, safe_case_name)
+            case_documents = (self.get_documents_in_folder(safe_case_name, str(user_id)) or {}).get(
+                "documents"
+            ) or []
+            seed_case_memory(
+                case_id,
+                folder_name=safe_case_name,
+                user_id=str(user_id),
+                case_row=dict(updated_case or new_case or {}),
+                tree=self.get_chronology(case_id, folder_name=safe_case_name),
+                files=case_documents,
+            )
+        except Exception as memory_exc:  # noqa: BLE001
+            logger.warning(
+                "[FolderService] task=create_case memory bind/seed skipped case_id=%s error=%s",
+                case_id,
+                memory_exc,
+            )
+
         folder_dict = {
             "id": folder_id,
             "name": safe_case_name,

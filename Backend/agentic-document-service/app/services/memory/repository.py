@@ -761,6 +761,106 @@ def delete_all(case_key: str, *, conn: Any = None) -> dict[str, int]:
     return counts
 
 
+def append_lines(
+    case_key: str,
+    section: str,
+    lines: Sequence[dict[str, Any]],
+    actor: str | None = None,
+    folder_name: str | None = None,
+    *,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Append several already-validated lines to one section, in one transaction.
+
+    Seeding and import write many lines at once; this costs one version bump
+    instead of one per line. Lines beyond the section's cap are not written, and
+    a full section is left untouched rather than having its version bumped for
+    nothing. Returns `{section, version, added}`.
+    """
+    key = _require_case_key(case_key)
+    name = str(section)
+    if name not in SECTIONS:
+        raise ValueError(f"Unknown memory section '{name}'.")
+    items = [line for line in lines if str(line.get("text") or "").strip()]
+    if not items:
+        return {"section": name, "version": None, "added": 0}
+
+    limit = MAX_SUMMARY_LINES if name == "summary" else MAX_SECTION_LINES
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            version = _ensure_section(cur, key, name, folder_name)
+            room = max(0, limit - len(_fetch_lines(cur, key, name)))
+            if room == 0:
+                connection.rollback()
+                logger.info("[Memory] append skipped: case_key=%s section=%s is full", key, name)
+                return {"section": name, "version": version, "added": 0}
+
+            version = _bump_version(cur, key, name, None)
+            next_ord = _next_ord(cur, key, name)
+            added = 0
+            for line in items[:room]:
+                cur.execute(
+                    "INSERT INTO case_memory_lines (case_key, section, ord, tag, text, source_ref, created_by) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)",
+                    (
+                        key,
+                        name,
+                        next_ord + added,
+                        str(line.get("tag") or "stated"),
+                        str(line.get("text") or ""),
+                        _json(dict(line.get("source_ref") or {})),
+                        actor,
+                    ),
+                )
+                added += 1
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"section": name, "version": version, "added": added}
+
+
+def replace_case_memory(
+    case_key: str,
+    sections: dict[str, Sequence[dict[str, Any]]],
+    actor: str | None = None,
+    folder_name: str | None = None,
+    *,
+    conn: Any = None,
+) -> dict[str, int]:
+    """Replace every memory section of one case in a single transaction.
+
+    Used by a replacing import. Instructions, settings, the assembly log and
+    proposals are left alone: an import restores what JuriNex knows about the
+    case, it does not rewrite the audit trail. Sections not named in `sections`
+    end up empty. Returns `{section: lines written}`.
+    """
+    key = _require_case_key(case_key)
+    written: dict[str, int] = {}
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute("DELETE FROM case_memory_lines WHERE case_key = %s", (key,))
+            cur.execute("DELETE FROM case_memory_sections WHERE case_key = %s", (key,))
+            for name in SECTIONS:
+                lines = [line for line in (sections.get(name) or []) if str(line.get("text") or "").strip()]
+                if not lines:
+                    continue
+                cur.execute(
+                    "INSERT INTO case_memory_sections (case_key, folder_name, section) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (case_key, section) DO NOTHING RETURNING version",
+                    (key, folder_name, name),
+                )
+                cur.fetchone()
+                _insert_lines(cur, key, name, lines, actor, {})
+                limit = MAX_SUMMARY_LINES if name == "summary" else MAX_SECTION_LINES
+                written[name] = min(len(lines), limit)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return written
+
+
 # ── Purge / rebind (case lifecycle) ──────────────────────────────────────────
 
 def purge_case_keys(cur: Any, keys: Sequence[str]) -> dict[str, int]:
