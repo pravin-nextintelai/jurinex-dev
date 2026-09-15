@@ -4259,7 +4259,7 @@ const ChatInterface = () => {
                     Ask a question above to start a new analysis session or select an existing one from the history.
                   </p>
                 </div>
-              ) : (loadingChat && currentChatHistory.length === 0) ? (
+              ) : (loadingChat && currentChatHistory.length === 0 && !pendingQuestion) ? (
                 <div className="flex justify-center py-16">
                   <Loader2 className="h-7 w-7 animate-spin text-[#21C1B6]" />
                 </div>
