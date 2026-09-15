@@ -716,6 +716,22 @@ class Settings(BaseSettings):
         default="gemini-3.1-flash-lite",
         validation_alias=AliasChoices("MEMORY_POLISH_MODEL"),
     )
+    # Prompt budgets are set in estimated tokens (see app/services/token_budget.py).
+    # Measured on English case OCR: about 3 characters per Gemini token.
+    chars_per_token_estimate: float = Field(
+        default=3.0,
+        validation_alias=AliasChoices("CHARS_PER_TOKEN_ESTIMATE"),
+    )
+    # Passages a specific (not comprehensive) case-chat question is answered from, on paid
+    # models. Free-tier Gemma keeps its own per-minute-safe limits.
+    chat_passage_budget_tokens: int = Field(
+        default=24000,
+        validation_alias=AliasChoices("CHAT_PASSAGE_BUDGET_TOKENS"),
+    )
+    chat_passage_top_k: int = Field(
+        default=36,
+        validation_alias=AliasChoices("CHAT_PASSAGE_TOP_K"),
+    )
     # Reading memory sits in the chat's critical path, so it is time-boxed; on
     # timeout the turn proceeds with no memory rather than stalling.
     memory_context_timeout_s: float = Field(

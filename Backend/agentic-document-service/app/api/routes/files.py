@@ -304,6 +304,32 @@ def _is_trivial_query(query: str) -> bool:
     return all(w in _GREETING_WORDS for w in words)
 
 
+def _passage_budget_for_question(
+    *,
+    broad_gemma: bool,
+    gemma_capped: bool,
+    gemma_cap_chars: int,
+) -> tuple[int, int]:
+    """(top_k, character budget) for the retrieved passages a question is answered from.
+
+    A specific question on a paid model gets CHAT_PASSAGE_BUDGET_TOKENS of passages (default
+    24,000 estimated tokens, about 72,000 characters) drawn from up to CHAT_PASSAGE_TOP_K hits,
+    so an answer is less likely to miss the passage it needs. It used to be 12 hits and 24,000
+    characters (about 8,000 tokens). Free-tier Gemma keeps its small per-minute-safe slices.
+    """
+    from app.services.token_budget import chars_for_tokens
+
+    if broad_gemma:
+        # Leave ~4K chars of headroom under the cap for the system prompt + question.
+        return 30, max(24000, gemma_cap_chars - 4000)
+    if gemma_capped:
+        return 12, 24000
+    settings = get_settings()
+    top_k = max(12, min(48, int(getattr(settings, "chat_passage_top_k", 36) or 36)))
+    tokens = max(2000, int(getattr(settings, "chat_passage_budget_tokens", 24000) or 24000))
+    return top_k, chars_for_tokens(tokens)
+
+
 def _doc_context_char_budget(
     query: str, *, learning_mode: bool, is_deep: bool, is_comprehensive: bool,
     model_name: str | None = None,
@@ -328,7 +354,12 @@ def _doc_context_char_budget(
     elif is_comprehensive:
         budget = 260000
     else:
-        budget = 90000
+        # Room for the passage budget (CHAT_PASSAGE_BUDGET_TOKENS) plus document headers, so the
+        # retrieved passages are never cut again here when the budget is raised.
+        from app.services.token_budget import chars_for_tokens
+
+        passage_tokens = int(getattr(get_settings(), "chat_passage_budget_tokens", 24000) or 24000)
+        budget = max(90000, chars_for_tokens(passage_tokens) + 8000)
     try:
         from app.services.adapters.document_ai import _is_gemma_model
         if _is_gemma_model(model_name):
@@ -4172,9 +4203,11 @@ async def intelligent_chat_stream(
                     _focus_top_k = min(48, _fixed_chunks)
                     _focus_budget = 10 ** 9  # count controls the feed, not chars
                 else:
-                    _focus_top_k = 30 if _broad_gemma else 12
-                    # Leave ~4K chars of headroom under the cap for the system prompt + question.
-                    _focus_budget = max(24000, _gemma_cap_chars - 4000) if _broad_gemma else 24000
+                    _focus_top_k, _focus_budget = _passage_budget_for_question(
+                        broad_gemma=_broad_gemma,
+                        gemma_capped=_gemma_capped_chat,
+                        gemma_cap_chars=_gemma_cap_chars,
+                    )
                 try:
                     from app.services.learning_document_retrieval import get_relevant_chunks
 
