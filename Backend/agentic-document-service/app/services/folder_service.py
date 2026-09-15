@@ -1765,10 +1765,56 @@ class FolderWorkflowService:
         marked = text_with_page_markers(self._ocr_structured_pages(file_id))
         return marked or text
 
-    def extract_case_fields(self, folder_name: str) -> ExtractCaseFieldsResponse:
+    def _stored_case_from_db(self, folder_name: str, user_id: str | None) -> StoredCase | None:
+        """A folder's processed documents read back from user_files.
+
+        The in-memory case only exists for documents processed since the service started, and
+        only under the folder name used at upload (temp-* during intake). Without this, the
+        chronology rebuild fails with "does not exist" after any restart or once a case is created.
+        """
+        if not user_id or not is_db_available():
+            return None
+        try:
+            rows = self._get_documents_in_folder_from_db(folder_name, user_id) or []
+        except Exception as exc:  # noqa: BLE001 — fall through to the in-memory case / 404
+            logger.warning("[FolderService] could not load documents for %s: %s", folder_name, exc)
+            return None
+        from app.schemas.contracts import DocumentType
+        from app.services.pipeline_service import StoredDocument
+
+        documents = [
+            StoredDocument(
+                document_id=str(row["id"]),
+                document_name=str(row.get("originalname") or row.get("name") or "document"),
+                doc_type=DocumentType.unknown,
+                stored_document_uri=str(row.get("gcs_path") or ""),
+                text=str(row.get("full_text_content") or ""),
+                metadata={"db_file_id": str(row["id"])},
+            )
+            for row in rows
+            if str(row.get("full_text_content") or "").strip()
+        ]
+        if not documents:
+            return None
+        return StoredCase(
+            case_id=folder_name,
+            user_id=str(user_id),
+            created_at=datetime.now(tz=UTC),
+            documents=documents,
+        )
+
+    def extract_case_fields(
+        self,
+        folder_name: str,
+        *,
+        user_id: str | None = None,
+        force_rebuild: bool = False,
+    ) -> ExtractCaseFieldsResponse:
         from app.services.adapters.document_ai import _call_gemini_for_extraction
         case_id = folder_name
         stored_case = self._pipeline._cases.get(case_id)
+        if not stored_case or not stored_case.documents:
+            stored_case = self._stored_case_from_db(case_id, user_id) or stored_case
         if not stored_case:
             raise ValueError(f"Case '{case_id}' does not exist.")
         extracted = dict(self._extracted_by_case.get(case_id, {}))
@@ -1777,7 +1823,8 @@ class FolderWorkflowService:
         meaningful_fields = {"caseTitle", "caseNumber", "caseType", "courtName", "jurisdiction",
                              "filingDate", "petitioners", "respondents"}
         has_rich_data = len([k for k in extracted if k in meaningful_fields and extracted[k]]) >= 2
-        needs_chronology = not tree.dates
+        # The chronology panel's rebuild asks for a fresh run even when a tree is already stored.
+        needs_chronology = force_rebuild or not tree.dates
         did_rebuild = False
 
         parts = []
@@ -1824,7 +1871,10 @@ class FolderWorkflowService:
                     corrected=len(report.corrections),
                     cited=f"{report.pages_cited}/{report.kept}",
                 )
-                tree = merge_into_tree(tree, report.events)
+                # A requested rebuild replaces the stored tree, so stale events from an earlier
+                # (e.g. empty-output) run do not linger. If the new run found nothing, keep the old one.
+                base_tree = empty_tree() if force_rebuild and report.events else tree
+                tree = merge_into_tree(base_tree, report.events)
                 tree = refresh_tree(tree, combined_text)
                 self._store_chronology(case_id, tree, folder_name=folder_name)
                 did_rebuild = True

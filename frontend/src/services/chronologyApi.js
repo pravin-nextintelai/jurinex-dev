@@ -37,12 +37,16 @@ export const getCaseChronology = async (folderName) => {
   return normalizeTree(response.data);
 };
 
-/** POST /api/files/{folderName}/extract-case-fields — rebuilds form fields + chronology from OCR. */
+/**
+ * POST /api/files/{folderName}/extract-case-fields?rebuild=true — re-reads the case's OCR and
+ * builds the chronology again, even when one is already stored. No client timeout: long paper
+ * books can take a few minutes with a thinking model.
+ */
 export const rebuildCaseChronology = async (folderName) => {
   const response = await axios.post(
     `${DOCS_BASE_URL}/${folderSegment(folderName)}/extract-case-fields`,
     {},
-    { headers: getAuthHeader() }
+    { headers: getAuthHeader(), params: { rebuild: true }, timeout: 0 }
   );
   return normalizeTree(response.data);
 };

@@ -3072,9 +3072,26 @@ def get_folder_status(
 
 
 @router.post("/{folder_name}/extract-case-fields")
-def extract_case_fields(folder_name: str) -> dict:
+def extract_case_fields(
+    folder_name: str,
+    rebuild: bool = False,
+    x_user_id: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Auto-fill case fields and build the chronology from the folder's OCR.
+
+    `rebuild=true` (chronology panel) re-runs extraction even when a chronology is stored.
+    The user id lets processed documents be read back from the database after a restart.
+    """
+    user_id = _resolve_user_id(x_user_id, authorization)
     try:
-        return extract_case_fields_from_case_folder(folder_name)
+        if not user_id and not rebuild:
+            return extract_case_fields_from_case_folder(folder_name)
+        return (
+            get_folder_service()
+            .extract_case_fields(folder_name, user_id=user_id, force_rebuild=rebuild)
+            .model_dump(mode="json")
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

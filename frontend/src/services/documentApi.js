@@ -920,7 +920,9 @@ const documentApi = {
         {},
         {
           headers: getAuthHeader(),
-          timeout: 120000, // 2 minutes for extraction
+          // No client timeout: extraction reads the whole case file with a thinking model
+          // and can run past two minutes on long paper books.
+          timeout: 0,
         }
       );
 

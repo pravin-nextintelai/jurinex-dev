@@ -128,6 +128,17 @@ class Settings(BaseSettings):
         default="gemini-2.5-pro",
         validation_alias=AliasChoices("ADK_MODEL"),
     )
+    # Intake auto-fill and chronology extraction (form_population_agent). Both values win
+    # over the agent_prompts row, so they can be changed here without touching the admin DB.
+    # Thinking level: minimal | low | medium | high.
+    intake_extraction_model: str = Field(
+        default="gemini-3.8-flash",
+        validation_alias=AliasChoices("INTAKE_EXTRACTION_MODEL"),
+    )
+    intake_extraction_thinking_level: str = Field(
+        default="medium",
+        validation_alias=AliasChoices("INTAKE_EXTRACTION_THINKING_LEVEL"),
+    )
     embedding_model: str = Field(
         default="gemini-embedding-001",
         validation_alias=AliasChoices("EMBEDDING_MODEL"),

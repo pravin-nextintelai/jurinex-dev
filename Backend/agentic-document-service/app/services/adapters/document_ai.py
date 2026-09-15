@@ -69,6 +69,31 @@ _SPEAKER_LINE_RE = re.compile(r"\[\s*Speaker\s+([^\]]+?)\s*\]\s*:\s*(.+)", re.IG
 
 # Internal agent names used for document AI operations
 _AGENT_EXTRACTION = "form_population_agent"
+# llm_params marker: send max_output_tokens as-is, without the llm_max_tokens registry clamp.
+_NO_OUTPUT_TOKEN_CLAMP = "_skip_output_token_clamp"
+_INTAKE_THINKING_LEVELS = ("minimal", "low", "medium", "high")
+
+
+def _intake_extraction_settings(fallback_model: str) -> tuple[str, str]:
+    """Model and thinking level for form_population_agent (intake auto-fill + chronology).
+
+    INTAKE_EXTRACTION_MODEL wins over the agent_prompts row; an empty value keeps the row's
+    model (or ADK_MODEL). An unknown INTAKE_EXTRACTION_THINKING_LEVEL falls back to "medium".
+    """
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    model = str(getattr(settings, "intake_extraction_model", "") or "").strip() or fallback_model
+    level = str(getattr(settings, "intake_extraction_thinking_level", "") or "").strip().lower()
+    if level not in _INTAKE_THINKING_LEVELS:
+        if level:
+            logger.warning(
+                "[DocumentAI] INTAKE_EXTRACTION_THINKING_LEVEL=%r is not one of %s; using medium",
+                level,
+                "|".join(_INTAKE_THINKING_LEVELS),
+            )
+        level = "medium"
+    return model, level
 _AGENT_QA = "grounded_retrieval_agent"
 
 # Public name for routes that must use the same agent as document Q&A (folder chat SSE, etc.).
@@ -1535,18 +1560,26 @@ def _generation_config(
                 "temperature": float(cfg.temperature),
                 "max_output_tokens": max_tokens,
             }
-            # Intake auto-fill: Gemini 3.7 Flash rejects thinking_level=minimal (400).
-            # "low" is the fastest level that model accepts.
+            config_model = str(cfg.model_name)
+            # Intake auto-fill + chronology: model and thinking level come from .env
+            # (INTAKE_EXTRACTION_MODEL / INTAKE_EXTRACTION_THINKING_LEVEL) and win over any
+            # agent_prompts row. The call always gets the full output budget with no clamp from
+            # public.llm_max_tokens: a 4,000-token registry cap let thinking use the whole
+            # budget, the model returned nothing, and the chronology came out empty.
             if agent_name == _AGENT_EXTRACTION:
-                llm_params["thinking_level"] = "low"
+                config_model, level = _intake_extraction_settings(config_model)
+                llm_params["thinking_level"] = level
                 llm_params["thinking_mode"] = False
+                llm_params[_NO_OUTPUT_TOKEN_CLAMP] = True
+                max_tokens = DEFAULT_MAX_OUTPUT_TOKENS
+                gen_kwargs["max_output_tokens"] = max_tokens
             logger.info(
                 "[DocumentAI] generation_config  agent_prompts=%s  tokens=from_agent_prompts  "
                 "agent=%s  model=%s  temperature=%.2f  max_output_tokens=%s  "
                 "thinking_level=%s  url_context=%s  grounding_search=%s  code_execution=%s",
                 _describe_agent_prompts_origin(cfg),
                 agent_name,
-                cfg.model_name,
+                config_model,
                 gen_kwargs["temperature"],
                 max_tokens,
                 llm_params.get("thinking_level") or "—",
@@ -1556,10 +1589,10 @@ def _generation_config(
             )
             from app.services.llm_models_catalog import normalize_model_alias, resolve_chat_llm_model
 
-            raw_model = str(model_name_override or cfg.model_name).strip()
+            raw_model = str(model_name_override or config_model).strip()
             resolved_model_name = resolve_chat_llm_model(
                 normalize_model_alias(raw_model),
-                normalize_model_alias(str(cfg.model_name)),
+                normalize_model_alias(config_model),
             )
             return resolved_model_name, gen_kwargs, llm_params
         except Exception as exc:
@@ -1775,8 +1808,9 @@ def _build_gemini_config(
         # ── Clamp max_output_tokens to the model's real ceiling ──────────────
         # Requesting above a model's limit (e.g. 65536 on gemma-4, whose limit is 32768) is
         # invalid and can make the API fall back to a low default. Always ask for the real max.
+        # Intake extraction opts out (see _intake_extraction_settings): its budget is sent as-is.
         _mot = config_kwargs.get("max_output_tokens")
-        _lim = _model_max_output_tokens(model_name)
+        _lim = None if llm_params.get(_NO_OUTPUT_TOKEN_CLAMP) else _model_max_output_tokens(model_name)
         if _mot and _lim and int(_mot) > _lim:
             config_kwargs["max_output_tokens"] = _lim
             active_flags.append(f"max_output_tokens_clamped({_mot}->{_lim})")
