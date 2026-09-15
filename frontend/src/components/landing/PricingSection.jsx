@@ -310,7 +310,7 @@ const PricingSection = ({ onNavigateLogin, onNavigateContact }) => {
                   type="button"
                   onClick={() => handlePlanCheckout(plan)}
                   disabled={isProcessing}
-                  className="mt-5 w-full rounded-full border border-nx-teal bg-white py-2.5 text-sm font-semibold text-nx-teal transition-all duration-300 active:scale-[0.98] group-hover:bg-nx-teal group-hover:text-white"
+                  className="mt-5 w-full rounded-lg border border-nx-teal bg-white py-2.5 text-sm font-semibold text-nx-teal transition-all duration-300 active:scale-[0.98] group-hover:bg-nx-teal group-hover:text-white"
                 >
                   {isProcessing ? "Processing..." : plan.cta}
                 </button>
@@ -370,7 +370,7 @@ const PricingSection = ({ onNavigateLogin, onNavigateContact }) => {
           <button
             type="button"
             onClick={() => onNavigateContact?.()}
-            className="flex-none rounded-full bg-nx-teal px-7 py-2.5 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all hover:bg-nx-teal-deep active:scale-[0.98]"
+            className="flex-none rounded-lg bg-nx-teal px-7 py-2.5 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all hover:bg-nx-teal-deep active:scale-[0.98]"
           >
             Contact Us
           </button>

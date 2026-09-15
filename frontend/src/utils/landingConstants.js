@@ -262,27 +262,27 @@ export const WORKFLOW_STEPS = [
 export const INDIAN_COURTS = [
   {
     icon: "Languages",
-    title: "Supports Indian languages.",
-    text: "Marathi, Hindi, Tamil, Telugu, and other widely spoken Indian languages are supported by the system, enabling it to generate reports in these languages.",
+    title: "Supports Indian languages",
+    text: "Marathi, Hindi, Tamil, Telugu and other widely spoken Indian languages, so drafts and reports come out in the language the court and the client read.",
     tags: ["Marathi", "Hindi", "Tamil", "Telugu", "English"],
   },
   {
     icon: "Landmark",
-    title: "Built for Indian court hierarchy.",
-    text: "Drafts are prepared in formats suitable for District Courts, High Courts, Supreme Court, and tribunals.",
+    title: "Built for the Indian court hierarchy",
+    text: "Drafts follow the formats expected by District Courts, High Courts, the Supreme Court and tribunals, so a filing is ready for the forum it is going to.",
     tags: ["District Courts", "High Courts", "Supreme Court", "Tribunals"],
   },
   {
     icon: "BadgeCheck",
-    title: "Zero hallucination policy.",
-    text: "The system retrieves information solely from authorised and verified sources, subjecting each response to multiple verification checks for accuracy.",
+    title: "Zero-hallucination policy",
+    text: "Answers are drawn only from authorised, verified sources and pass multiple verification checks before they reach you. Gaps are flagged, never filled in.",
     tags: ["Authorised sources only", "Multiple verification checks", "Flags, never invents"],
   },
   {
     icon: "ShieldCheck",
-    title: "Data sensitivity and security.",
-    text: "All data storage infrastructure is in India. Complies with the Data Protection and Privacy Act (DPDPA). No cross-border data transfer policy. End-to-end encryption is provided for all data processed.",
-    tags: ["Stored in India", "DPDPA compliant", "End-to-end encrypted"],
+    title: "Data sensitivity and security",
+    text: "All data is stored on infrastructure in India and handled under the Digital Personal Data Protection Act, 2023. No cross-border transfer, and end-to-end encryption for everything processed.",
+    tags: ["Stored in India", "DPDP Act compliant", "End-to-end encrypted"],
   },
 ]
 
@@ -297,7 +297,7 @@ export const COURT_LADDER = [
 /** Compliance facts for the strip under the commitments. */
 export const INDIA_COMPLIANCE = [
   { icon: "MapPin", label: "All data stored in India" },
-  { icon: "FileCheck2", label: "DPDPA compliant" },
+  { icon: "FileCheck2", label: "DPDP Act, 2023 compliant" },
   { icon: "Ban", label: "No cross-border transfer" },
   { icon: "Lock", label: "End-to-end encryption" },
 ]
@@ -692,41 +692,40 @@ export const FOOTER_COLUMNS = [
   {
     heading: "Product",
     links: [
+      { title: "Create Case", href: "/products/create-case", type: "route" },
+      { title: "Case Storage", href: "/products/case-storage", type: "route" },
+      { title: "Quick Chat", href: "/products/quick-chat", type: "route" },
+      { title: "AI Drafting", href: "/products/ai-drafting", type: "route" },
+      { title: "Citation Research", href: "/products/citation-research", type: "route" },
       { title: "All Products", href: "/products", type: "route" },
-      { title: "Features", href: "#features", type: "anchor" },
-      { title: "Workflow", href: "#workflow", type: "anchor" },
-      { title: "Security", href: "#security", type: "anchor" },
-      { title: "Pricing", href: "#pricing", type: "anchor" },
-      { title: "Demo Request", href: "mailto:connect@jurinex.ai", type: "external" },
     ],
   },
   {
     heading: "Solutions",
     links: [
       { title: "Solo Practitioners", href: "#solutions", type: "anchor" },
-      { title: "Law Firms", href: "#solutions", type: "anchor" },
-      { title: "Corporate Legal", href: "#solutions", type: "anchor" },
-      { title: "Indian Courts", href: "#indian-courts", type: "anchor" },
+      { title: "Law Firms & Enterprises", href: "#solutions", type: "anchor" },
+      { title: "Built for Indian Courts", href: "#indian-courts", type: "anchor" },
+      { title: "Security & Trust", href: "#security", type: "anchor" },
+      { title: "Pricing", href: "#pricing", type: "anchor" },
     ],
   },
   {
     heading: "Resources",
     links: [
       { title: "Blogs", href: "/blogs", type: "route" },
-      { title: "Community", href: "/community", type: "route" },
       { title: "FAQs", href: "/faqs", type: "route" },
+      { title: "WhatsApp Community", href: "/community", type: "route" },
       { title: "Get Help", href: "/help", type: "route" },
-      { title: "Services", href: "/services", type: "route" },
-      { title: "Contact", href: "/contact", type: "route" },
+      { title: "Contact Us", href: "/contact", type: "route" },
     ],
   },
   {
     heading: "Company",
     links: [
-      { title: "Team", href: "/team", type: "route" },
       { title: "Why Jurinex", href: "#why", type: "anchor" },
-      { title: "About", href: "/aboutus", type: "route" },
-      { title: "Contact", href: "/contact", type: "route" },
+      { title: "Team", href: "/team", type: "route" },
+      { title: "Book a Demo", href: "demo", type: "demo" },
     ],
   },
   {
@@ -740,18 +739,27 @@ export const FOOTER_COLUMNS = [
       { title: "Disclosures", href: "https://drive.google.com/open?id=11oc-dhaFbjhPtraRuYucjfOtnE5WqQj4&usp=drive_copy", type: "external" },
       { title: "Cookie Policy", href: "https://drive.google.com/open?id=1iKeGRa0w86ERuGJLYRSaAFnw7H1fYeNS&usp=drive_copy", type: "external" },
       { title: "Refund Policy", href: "https://drive.google.com/open?id=1ryZoxjk55ESOU4QaSximCarJe2236DAC&usp=drive_copy", type: "external" },
-      { title: "Terms & Conditions", href: "terms", type: "policy" },
-      { title: "DPDPA Policy", href: "dpdpa", type: "policy" },
     ],
   },
 ]
 
+/** Newsletter signup copy under the Get in touch band. */
+export const NEWSLETTER_COPY = {
+  eyebrow: "Newsletter",
+  title: "Practice notes, once a month.",
+  text: "Product updates, drafting tips and Indian legal-AI news. No spam, unsubscribe any time.",
+  placeholder: "Your work email",
+  button: "Subscribe",
+  thanks: "Thanks, you're on the list.",
+}
+
 export const SOCIAL_LINKS = [
   { label: "Instagram", icon: "Instagram", href: "https://www.instagram.com/jurinex_/" },
-  { label: "LinkedIn", icon: "Linkedin", href: "https://www.linkedin.com/in/jurinex-ai-47935a3aa/" },
-  { label: "YouTube", icon: "Youtube", href: "https://www.youtube.com/@jurinex-b5t" },
-  { label: "Pinterest", icon: "pinterest", href: "https://in.pinterest.com/nexintel_ai/" },
+  { label: "Facebook", icon: "Facebook", href: "https://www.facebook.com/share/19VmrVEWYM" },
   { label: "X", icon: "x", href: "https://x.com/nexintel_ai" },
+  { label: "LinkedIn", icon: "Linkedin", href: "https://www.linkedin.com/company/jurinex" },
+  { label: "YouTube", icon: "Youtube", href: "https://www.youtube.com/@JuriNex_ai" },
+  { label: "Pinterest", icon: "pinterest", href: "https://in.pinterest.com/nexintel_ai/" },
 ]
 
 export const CONTACT_INFO = {
@@ -769,10 +777,13 @@ export const CONTACT_INFO = {
   incorporation: "Incorporated under the Companies Act, 2013.",
 }
 
-/** External links for the community page. Swap `whatsapp` for the group invite link when available. */
+/** External links for the community page. */
 export const COMMUNITY_LINKS = {
-  whatsapp: "https://wa.me/919684027372",
-  linkedin: "https://www.linkedin.com/in/jurinex-ai-47935a3aa/",
+  /** Two-way WhatsApp community (group invite). */
+  whatsapp: "https://chat.whatsapp.com/CXptyt4StG9GKSumtE3ybk",
+  /** One-way WhatsApp channel (announcements). */
+  whatsappChannel: "https://whatsapp.com/channel/0029Vb8NdX01Hsq606MtPe3h",
+  linkedin: "https://www.linkedin.com/company/jurinex",
 }
 
 export const COMMUNITY_PERKS = [

@@ -14,7 +14,7 @@ import { Icon } from "./primitives"
  * Renders the same landing Navbar and Footer around the page body, wires
  * Login / Book a Demo / policy modals, and scrolls to the top on mount.
  *
- * The Navbar is fixed and 4rem tall, so the body starts with a matching
+ * The Navbar is fixed and 5rem tall, so the body starts with a matching
  * top offset. An optional breadcrumb strip sits under the bar.
  */
 const PublicPageShell = ({ title, children, className = "" }) => {
@@ -36,7 +36,7 @@ const PublicPageShell = ({ title, children, className = "" }) => {
         }
       />
 
-      <main className={`pt-16 ${className}`}>
+      <main className={`pt-20 ${className}`}>
         {title && (
           <nav
             aria-label="Breadcrumb"
@@ -65,7 +65,11 @@ const PublicPageShell = ({ title, children, className = "" }) => {
         {children}
       </main>
 
-      <Footer onOpenPolicy={setPolicyKey} onGetInTouch={() => navigate("/contact")} />
+      <Footer
+        onOpenPolicy={setPolicyKey}
+        onGetInTouch={() => navigate("/contact")}
+        onRequestDemo={() => setDemoOpen(true)}
+      />
 
       <BookDemoModal isOpen={demoOpen} onClose={() => setDemoOpen(false)} />
       {policyKey && <PolicyModal policyKey={policyKey} onClose={() => setPolicyKey(null)} />}

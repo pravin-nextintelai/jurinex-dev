@@ -41,7 +41,7 @@ const BlogsPage = () => {
                     setOpenSlug(null)
                   }}
                   aria-pressed={active}
-                  className={`rounded-full border px-4 py-1.5 text-sm font-medium transition-colors ${
+                  className={`rounded-lg border px-4 py-1.5 text-sm font-medium transition-colors ${
                     active
                       ? "border-nx-teal bg-nx-teal text-white"
                       : "border-nx-ink/40 bg-white text-nx-ink hover:border-nx-teal hover:text-nx-teal"
@@ -129,7 +129,7 @@ const BlogsPage = () => {
                   href={s.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="rounded-full border border-nx-ink/40 bg-white px-4 py-1.5 text-sm font-medium text-nx-ink transition-colors hover:border-nx-teal hover:text-nx-teal"
+                  className="rounded-lg border border-nx-ink/40 bg-white px-4 py-1.5 text-sm font-medium text-nx-ink transition-colors hover:border-nx-teal hover:text-nx-teal"
                 >
                   {s.label}
                 </a>

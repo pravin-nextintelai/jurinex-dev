@@ -43,9 +43,8 @@ const AICapabilitiesSection = () => (
           <Reveal
             key={cap.title}
             delay={(i % 3) * 0.07}
-            className="group relative overflow-hidden rounded-2xl border border-white/40 bg-nx-ink/85 p-6 shadow-[0_0_0_1px_rgba(8,163,147,0.35),0_24px_50px_-20px_rgba(0,0,0,0.8)] ring-1 ring-nx-teal/40 transition-all duration-300 hover:-translate-y-1 hover:border-nx-mint hover:bg-nx-ink hover:shadow-[0_0_0_1px_rgba(166,236,227,0.6),0_0_40px_-8px_rgba(8,163,147,0.55),0_28px_60px_-20px_rgba(0,0,0,0.85)]"
+            className="group relative overflow-hidden rounded-2xl border border-white/20 bg-nx-ink/85 p-6 shadow-[0_24px_50px_-20px_rgba(0,0,0,0.8)] transition-all duration-300 hover:scale-[1.03] hover:border-white/40 hover:bg-nx-ink hover:shadow-[0_28px_60px_-20px_rgba(0,0,0,0.85)]"
           >
-            <span aria-hidden="true" className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-nx-teal via-nx-mint to-nx-teal" />
             <div className="flex items-center gap-3">
               <span className="inline-flex h-9 w-9 flex-none items-center justify-center rounded-lg bg-nx-teal text-white shadow-md shadow-teal-500/30">
                 <Icon name={cap.icon} className="h-4.5 w-4.5" />

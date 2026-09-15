@@ -7,6 +7,7 @@ import { useLandingScrollAnimation } from "../../hooks/useLandingScrollAnimation
 import { EASE } from "./motionTokens"
 import { Icon } from "./primitives"
 import BrandLogo from "./BrandLogo"
+import PromotionBanner from "./PromotionBanner"
 import productPhoto from "../../assets/landing/menu-product.jpg"
 import solutionsPhoto from "../../assets/landing/menu-solutions.jpg"
 import resourcesPhoto from "../../assets/landing/menu-resources.jpg"
@@ -102,7 +103,7 @@ const MegaMenu = ({ link, onGo, reduceMotion }) => {
       animate={{ opacity: 1, y: 0 }}
       exit={reduceMotion ? undefined : { opacity: 0, y: -4 }}
       transition={{ duration: 0.18, ease: EASE }}
-      className="hidden border-t border-teal-100 bg-white shadow-[0_24px_48px_-24px_rgba(13,60,55,0.28)] lg:block"
+      className="hidden overflow-hidden rounded-b-[2rem] border-t border-teal-100 bg-white shadow-[0_24px_48px_-24px_rgba(13,60,55,0.28)] lg:block"
       role="menu"
       aria-label={`${link.label} menu`}
     >
@@ -178,10 +179,9 @@ MegaMenu.propTypes = {
  * Brevo-style top bar: solid light-teal ground, brand + left-aligned nav
  * with full-width mega menus, a pill Login link and a teal trial button.
  * Used on the landing page and all public pages. The demo modal opens
- * on a timer instead of a bar button; `onRequestDemo` and `solid` are
- * accepted and ignored.
+ * on a timer or from the right-edge Schedule a demo tab.
  */
-const Navbar = ({ onLogin, onSectionNav } = {}) => {
+const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange } = {}) => {
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const reduceMotion = useReducedMotion()
@@ -277,19 +277,23 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
   const solidBar = !onDarkHero || scrolled || menuOpen || Boolean(openDropdown)
 
   return (
+    <>
     <header
       ref={headerRef}
       onMouseLeave={scheduleClose}
       className={`fixed inset-x-0 top-0 z-50 border border-t-0 font-body transition-[background-color,box-shadow,border-color,border-radius] duration-300 ${
-        menuOpen || openDropdown ? "rounded-none" : "rounded-b-[2rem]"
+        menuOpen ? "rounded-none" : "rounded-b-[2rem]"
       } ${
         solidBar
           ? "border-teal-200 bg-white/95 shadow-[0_1px_12px_rgba(8,163,147,0.12)] backdrop-blur"
           : "border-transparent bg-transparent"
       }`}
     >
+      {onDarkHero && <PromotionBanner onVisibilityChange={onPromoVisibilityChange} />}
       <nav
-        className="mx-auto flex h-16 w-full max-w-7xl items-center gap-6 px-5 sm:px-8"
+        className={`mx-auto flex h-20 w-full max-w-7xl items-center gap-6 px-5 transition-transform duration-300 sm:px-8 ${
+          solidBar ? "translate-y-0" : "translate-y-2.5"
+        }`}
         aria-label="Primary"
       >
         {/* Brand */}
@@ -306,7 +310,7 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
         </a>
 
         {/* Desktop links, left-aligned next to the brand */}
-        <ul className="hidden h-full items-center gap-1 lg:flex">
+        <ul className="mx-auto hidden h-full items-center gap-3 pl-6 lg:flex">
           {NAV_LINKS.map((link) => {
             const hasMenu =
               (Array.isArray(link.sections) && link.sections.length > 0) ||
@@ -328,7 +332,7 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
                   }}
                   aria-expanded={hasMenu ? isOpen : undefined}
                   aria-haspopup={hasMenu ? "menu" : undefined}
-                  className={`flex items-center gap-1 whitespace-nowrap rounded-md px-3 py-2 text-[15px] font-semibold transition-colors duration-200 ${
+                  className={`flex items-center gap-1 whitespace-nowrap rounded-lg px-3 py-2 text-[15px] font-semibold transition-colors duration-200 ${
                     isActive || isOpen
                       ? solidBar ? "text-teal-700" : "text-nx-mint"
                       : solidBar ? "text-nx-ink hover:text-teal-700" : "text-white hover:text-nx-mint"
@@ -362,10 +366,10 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
             type="button"
             onClick={() => onLogin?.()}
             aria-label="Log in to your account"
-            className={`whitespace-nowrap rounded-full border px-5 py-2 text-sm font-medium transition-colors ${
+            className={`whitespace-nowrap rounded-lg border px-5 py-2 text-sm font-semibold transition-colors ${
               solidBar
                 ? "border-nx-ink/30 text-black hover:border-teal-600 hover:text-teal-700"
-                : "border-white/50 text-white hover:border-white hover:bg-white/10"
+                : "border-white/70 text-white hover:border-white hover:bg-white/10"
             }`}
           >
             Login
@@ -374,7 +378,7 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
             type="button"
             onClick={() => navigate("/register")}
             aria-label="Start your free trial"
-            className="whitespace-nowrap rounded-full bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all duration-200 hover:bg-teal-700 active:scale-[0.98]"
+            className="whitespace-nowrap rounded-lg bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-all duration-200 hover:bg-teal-700 active:scale-[0.98]"
           >
             Start Free Trial
           </button>
@@ -427,7 +431,7 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
             animate={{ opacity: 1, height: "auto" }}
             exit={reduceMotion ? undefined : { opacity: 0, height: 0 }}
             transition={{ duration: 0.28, ease: EASE }}
-            className="max-h-[calc(100vh-4rem)] overflow-y-auto border-t border-nx-line bg-white lg:hidden"
+            className={`${onDarkHero ? "max-h-[calc(100dvh-9.5rem)] sm:max-h-[calc(100dvh-7.5rem)]" : "max-h-[calc(100dvh-5rem)]"} overflow-y-auto border-t border-nx-line bg-white lg:hidden`}
           >
             <div className="flex flex-col gap-0.5 px-5 py-4">
               {NAV_LINKS.map((link, i) => (
@@ -493,7 +497,7 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
                     setMenuOpen(false)
                     onLogin?.()
                   }}
-                  className="w-full rounded-full border border-nx-ink/30 py-2.5 text-sm font-medium text-black transition-colors hover:bg-white"
+                  className="w-full rounded-lg border border-nx-ink/30 py-2.5 text-sm font-medium text-black transition-colors hover:bg-white"
                 >
                   Login
                 </button>
@@ -503,7 +507,7 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
                     setMenuOpen(false)
                     navigate("/register")
                   }}
-                  className="w-full rounded-full bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-transform hover:bg-teal-700 active:scale-[0.99]"
+                  className="w-full rounded-lg bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-md shadow-teal-500/25 transition-transform hover:bg-teal-700 active:scale-[0.99]"
                 >
                   Start Free Trial
                 </button>
@@ -513,11 +517,26 @@ const Navbar = ({ onLogin, onSectionNav } = {}) => {
         )}
       </AnimatePresence>
     </header>
+    <button
+      type="button"
+      onClick={() => {
+        setMenuOpen(false)
+        setOpenDropdown(null)
+        if (onRequestDemo) onRequestDemo()
+        else navigate("/contact")
+      }}
+      className="fixed right-0 top-1/3 z-40 flex items-center justify-center rounded-l-lg border border-r-0 border-white/20 bg-gradient-to-b from-nx-teal to-nx-teal-ink px-1.5 py-5 text-sm font-semibold tracking-wide text-white shadow-[-4px_4px_18px_rgba(8,163,147,0.25)] transition-colors hover:from-nx-teal-deep hover:to-nx-teal-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-nx-teal"
+      aria-label="Schedule a demo"
+    >
+      <span style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}>Schedule a demo</span>
+    </button>
+    </>
   )
 }
 
 Navbar.propTypes = {
   onRequestDemo: PropTypes.func,
+  onPromoVisibilityChange: PropTypes.func,
   onLogin: PropTypes.func,
   onSectionNav: PropTypes.func,
   solid: PropTypes.bool,

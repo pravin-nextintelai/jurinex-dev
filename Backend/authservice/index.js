@@ -8,6 +8,8 @@ const dotenv = require("dotenv");
 dotenv.config();
 const authRoutes = require("./src/routes/authRoutes");
 const internalRoutes = require("./src/routes/internalRoutes");
+const contactEnquiryRoutes = require("./src/routes/contactEnquiryRoutes");
+const newsletterRoutes = require("./src/routes/newsletterRoutes");
 const pool = require("./src/config/db.js");
 
 const app = express();
@@ -57,7 +59,12 @@ const { initializeRbacSchema } = require("./src/Rbac_service/rbacDb");
 const { initializeUserActivitySchema } = require("./src/utils/userActivityDb");
 const { ensureFirmActiveColumn } = require("./src/utils/ensureFirmActiveColumn");
 const { initializeDeviceSessionSchema } = require("./src/utils/deviceSessionDb");
+const { initializeContactEnquirySchema } = require("./src/utils/contactEnquiryDb");
+const { initializeNewsletterSubscriberSchema } = require("./src/utils/newsletterSubscriberDb");
 
+app.use("/api/auth/contact-enquiries", contactEnquiryRoutes); // Public: landing page "Contact us" form
+app.use("/api/auth/newsletter-subscribers", newsletterRoutes); // Public: landing page newsletter form
+app.use("/api/auth/marketing-promos", require("./src/routes/marketingPromoRoutes"));
 app.use("/api/auth", authRoutes);
 app.use("/api/auth/internal", internalRoutes); // Internal service-to-service routes
 app.use("/api/rbac", rbacRoutes);
@@ -77,4 +84,6 @@ app.listen(PORT, async () => {
   await initializeUserActivitySchema();
   await initializeRbacSchema();
   await initializeDeviceSessionSchema();
+  await initializeContactEnquirySchema();
+  await initializeNewsletterSubscriberSchema();
 });

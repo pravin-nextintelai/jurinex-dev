@@ -971,7 +971,7 @@ const ChatbotWidget = () => {
                       style={
                         isUser
                           ? {
-                              background: "linear-gradient(135deg, #0d9488 0%, #0f766e 100%)",
+                              background: "linear-gradient(135deg, var(--color-nx-teal) 0%, var(--color-nx-teal-ink) 100%)",
                               color: "#ffffff",
                               borderRadius: "18px 18px 4px 18px",
                               boxShadow: "0 4px 16px rgba(13,148,136,0.30)",
@@ -1297,7 +1297,7 @@ const ChatbotWidget = () => {
                   style={
                     canSend
                       ? {
-                          background: "linear-gradient(135deg, #0d9488 0%, #0f766e 100%)",
+                          background: "linear-gradient(135deg, var(--color-nx-teal) 0%, var(--color-nx-teal-ink) 100%)",
                           boxShadow: "0 3px 10px rgba(13,148,136,0.40)",
                         }
                       : { background: "#e8edf2" }
@@ -1334,17 +1334,18 @@ const ChatbotWidget = () => {
         initial="rest"
         whileHover="hover"
         whileTap="tap"
-        className="relative w-14 h-14 rounded-full flex items-center justify-center text-white overflow-visible"
+        className="relative w-16 h-16 rounded-full flex items-center justify-center text-white overflow-visible focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-nx-teal"
         style={{
           background: open
             ? "linear-gradient(135deg, #0f172a 0%, #134e4a 100%)"
-            : "linear-gradient(135deg, #0d9488 0%, #0f766e 100%)",
+            : "linear-gradient(135deg, var(--color-nx-teal) 0%, var(--color-nx-teal-ink) 100%)",
           boxShadow: open
             ? "0 4px 20px rgba(15,23,42,0.45)"
             : "0 4px 24px rgba(13,148,136,0.50)",
           transition: "background 0.3s, box-shadow 0.3s",
         }}
-        aria-label="Open JuriNex support chat"
+        aria-label={open ? "Close Jurinex support chat" : "Open Jurinex support chat"}
+        aria-expanded={open}
       >
         {/* Pulse ring (only when closed) */}
         {!open && (
@@ -1376,25 +1377,11 @@ const ChatbotWidget = () => {
               transition={{ duration: 0.2 }}
               className="flex items-center justify-center"
             >
-              {/* AI Chatbot icon */}
-              <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                {/* Antenna */}
-                <line x1="16" y1="2" x2="16" y2="6" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
-                <circle cx="16" cy="2" r="1.5" fill="white"/>
-                {/* Head */}
-                <rect x="5" y="6" width="22" height="16" rx="4" fill="white"/>
-                {/* Left ear */}
-                <rect x="2" y="11" width="3" height="6" rx="1.5" fill="white"/>
-                {/* Right ear */}
-                <rect x="27" y="11" width="3" height="6" rx="1.5" fill="white"/>
-                {/* Left eye */}
-                <circle cx="11.5" cy="13" r="2.5" fill="#0d9488"/>
-                <circle cx="11.5" cy="13" r="1" fill="white"/>
-                {/* Right eye */}
-                <circle cx="20.5" cy="13" r="2.5" fill="#0d9488"/>
-                <circle cx="20.5" cy="13" r="1" fill="white"/>
-                {/* Smile */}
-                <path d="M11 19.5 Q16 22.5 21 19.5" stroke="#0d9488" strokeWidth="1.8" strokeLinecap="round" fill="none"/>
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" />
+                <circle cx="8.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+                <circle cx="12.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+                <circle cx="16.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
               </svg>
             </Motion.span>
           )}

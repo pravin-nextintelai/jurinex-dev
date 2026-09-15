@@ -45,8 +45,8 @@ const WhyChooseSection = () => (
         </div>
 
         {/* Photo on a mint backdrop, caption overlapping the bottom edge */}
-        <Reveal className="relative mx-auto w-full max-w-md lg:max-w-none lg:mt-6" y={30}>
-          <div className="rounded-[2rem] bg-nx-teal/10 p-4 pb-16 sm:p-6 sm:pb-20">
+        <Reveal className="relative mx-auto w-full max-w-md lg:max-w-none lg:mt-16" y={30}>
+          <div className="px-4 sm:px-6">
             <div className="overflow-hidden rounded-3xl border border-white shadow-[0_30px_70px_-30px_rgba(6,52,44,0.45)]">
               <img
                 src={meetingPhoto}
