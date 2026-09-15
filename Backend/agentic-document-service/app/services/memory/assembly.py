@@ -45,8 +45,13 @@ SKIP_MODES = frozenset({"learning", "deep_research"})
 
 @dataclass(frozen=True)
 class MemoryBudget:
-    """Character caps per block. Characters, not tokens: the existing Gemma
-    clamps in the chat route measure characters too, so the two agree."""
+    """Caps per block, in estimated tokens (app/services/token_budget.py).
+
+    Blocks are still measured in characters as they are built; `chars()` converts a
+    cap with the measured characters-per-token ratio, so no provider call is needed
+    per chat. Saved instructions are never cut: `rules_chars()` always leaves room for
+    everything the instruction limits let the advocate store.
+    """
 
     prefs: int = 2_000
     instructions: int = 3_000
@@ -64,17 +69,44 @@ class MemoryBudget:
     @classmethod
     def gemma(cls) -> "MemoryBudget":
         """A free-tier Gemma chat has ~16K input tokens per minute for the whole
-        request, so memory takes a small, fixed slice of it."""
+        request, so memory takes a small, fixed slice of it: the same size it had
+        when these caps were counted in characters."""
         return cls(
-            prefs=800,
-            instructions=1_200,
-            summary=900,
-            index=250,
-            per_section=1_000,
+            prefs=270,
+            instructions=400,
+            summary=300,
+            index=85,
+            per_section=335,
             max_sections=1,
-            recall=1_200,
-            total_suffix=3_500,
+            recall=400,
+            total_suffix=1_170,
         )
+
+    def chars(self, name: str) -> int:
+        """One of the token caps, as characters."""
+        from app.services.token_budget import chars_for_tokens
+
+        return chars_for_tokens(int(getattr(self, name)))
+
+    def rules_chars(self, scope_type: str) -> int:
+        """Room for a saved instruction set ("user" or "case").
+
+        Its token cap, but never less than the most the instruction limits let the
+        advocate store. Case instructions can hold 4,000 characters, while the old cap
+        sent only 3,000, so the last rules could silently fall off.
+        """
+        from app.services.memory.schemas import (
+            MAX_INSTRUCTION_ITEMS,
+            MAX_INSTRUCTIONS_CHARS,
+            MAX_PREFERENCES_CHARS,
+        )
+
+        if scope_type == "user":
+            name, stored_cap = "prefs", MAX_PREFERENCES_CHARS
+        else:
+            name, stored_cap = "instructions", MAX_INSTRUCTIONS_CHARS
+        # Each rendered item adds "- " and a newline to the stored text.
+        return max(self.chars(name), stored_cap + 3 * MAX_INSTRUCTION_ITEMS)
 
     @classmethod
     def for_model(cls, model_name: str | None) -> "MemoryBudget":
@@ -97,6 +129,7 @@ class MemoryBudget:
             "max_sections": self.max_sections,
             "recall": self.recall,
             "total_suffix": self.total_suffix,
+            "unit": "estimated_tokens",
         }
 
 
@@ -467,10 +500,30 @@ def _recall(
             question_raw=question_raw,
             current_session_id=session_id,
         )
-        return recall.format_recall_block(hits, budget.recall)
+        return recall.format_recall_block(hits, budget.chars("recall"))
     except Exception as exc:  # noqa: BLE001 — recall must never cost the other layers
         logger.warning("[Memory] recall skipped for case_key=%s: %s", scope.case_key, exc)
         return "", []
+
+
+def _render_rules(items: Sequence[dict[str, Any]], limit: int) -> str:
+    """Instruction items one per line, in order, leaving out whole items that do not fit.
+
+    A rule is never cut in half: a partial rule can say something the advocate never
+    wrote. `MemoryBudget.rules_chars` leaves room for every set the limits allow, so
+    this only leaves out an item that is oversized on its own (old or imported data).
+    """
+    lines: list[str] = []
+    used = 0
+    for line in render_items(items).splitlines():
+        if not line.strip():
+            continue
+        cost = len(line) + (1 if lines else 0)
+        if used + cost > limit:
+            continue
+        lines.append(line)
+        used += cost
+    return "\n".join(lines)
 
 
 def _collect(
@@ -485,14 +538,19 @@ def _collect(
     """Read the layers and render them, newest-priority-first within the budget."""
     out = _Collected()
     spent = 0
+    total_chars = budget.chars("total_suffix")
 
-    def add(block: str) -> bool:
-        """Append a block if the total budget still has room for it."""
+    def add(block: str, *, required: bool = False) -> bool:
+        """Append a block if the total budget still has room for it.
+
+        Required blocks (the advocate's saved instructions) always go in. They still
+        count against the total, so case memory gets whatever room is left.
+        """
         nonlocal spent
         if not block:
             return False
         cost = len(block) + 2
-        if spent + cost > budget.total_suffix:
+        if not required and spent + cost > total_chars:
             return False
         out.blocks.append(block)
         spent += cost
@@ -510,17 +568,13 @@ def _collect(
     out.instructions_muted = list(context.muted_ids)
 
     if context.user_items:
-        add(
-            UNIVERSAL_HEADER.format(version=context.user_version or 1)
-            + "\n"
-            + _clip(render_items(context.user_items), budget.prefs)
-        )
+        rules = _render_rules(context.user_items, budget.rules_chars("user"))
+        if rules:
+            add(UNIVERSAL_HEADER.format(version=context.user_version or 1) + "\n" + rules, required=True)
     if settings.instructions_enabled and context.case_items:
-        add(
-            INSTRUCTIONS_HEADER.format(version=context.case_version or 1)
-            + "\n"
-            + _clip(render_items(context.case_items), budget.instructions)
-        )
+        rules = _render_rules(context.case_items, budget.rules_chars("case"))
+        if rules:
+            add(INSTRUCTIONS_HEADER.format(version=context.case_version or 1) + "\n" + rules, required=True)
 
     # Layer 3 — case memory: summary always, other sections only when the
     # question points at them.
@@ -544,7 +598,7 @@ def _collect(
 
     summary = loaded.get("summary")
     if summary and summary.get("lines"):
-        body = _render_lines(summary["lines"], budget.summary)
+        body = _render_lines(summary["lines"], budget.chars("summary"))
         if body:
             memory_parts.append(f"SUMMARY (v{summary.get('version')}):\n{body}")
             sections_loaded.append(
@@ -555,7 +609,7 @@ def _collect(
                 }
             )
 
-    index_block = _render_index(index, wanted, budget.index)
+    index_block = _render_index(index, wanted, budget.chars("index"))
     if index_block:
         memory_parts.append(index_block)
 
@@ -563,7 +617,7 @@ def _collect(
         data = loaded.get(section)
         if not data or not data.get("lines"):
             continue
-        body = _render_lines(data["lines"], budget.per_section)
+        body = _render_lines(data["lines"], budget.chars("per_section"))
         if not body:
             continue
         memory_parts.append(f"LOADED — {section.upper()} (v{data.get('version')}):\n{body}")

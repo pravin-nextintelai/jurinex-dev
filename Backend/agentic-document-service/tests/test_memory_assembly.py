@@ -46,21 +46,25 @@ def fake_store(
         for name, data in sections.items()
     ]
 
+    def items(value, prefix):
+        """A string is one item; a list is one item per entry."""
+        texts = value if isinstance(value, list) else ([value] if value else [])
+        return [
+            {"id": f"{prefix}{n}", "text": text, "enabled": True, "effective": True}
+            for n, text in enumerate(texts, 1)
+        ]
+
     def resolve(user_id, case_key, session_id=None, *, include_case=True):
-        """One universal item and one case item, as the instructions module would return them."""
-        user_items = [{"id": "u1", "text": prefs, "enabled": True, "effective": True}] if prefs else []
-        case_items = (
-            [{"id": "c1", "text": instructions, "enabled": True, "effective": True}]
-            if instructions and include_case
-            else []
-        )
+        """Universal and case items, as the instructions module would return them."""
+        user_items = items(prefs, "u")
+        case_items = items(instructions, "c") if include_case else []
         return InstructionContext(
-            user_version=3 if prefs else None,
-            case_version=2 if instructions and include_case else None,
+            user_version=3 if user_items else None,
+            case_version=2 if case_items else None,
             user_items=user_items,
             case_items=case_items,
             applied_ids=[item["id"] for item in [*user_items, *case_items]],
-            muted_ids=["u9"] if prefs else [],
+            muted_ids=["u9"] if user_items else [],
         )
 
     return (
@@ -156,32 +160,67 @@ class LazyLoadingTests(unittest.TestCase):
         self.assertNotIn("summary", index_line)
 
 
+BIG_SECTIONS = {
+    "summary": {"version": 1, "lines": [{"tag": "stated", "text": "y" * 250} for _ in range(12)]},
+    "facts": {"version": 1, "lines": [{"tag": "stated", "text": "z" * 250} for _ in range(40)]},
+}
+
+
 class BudgetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Caps are estimated tokens; pin the characters-per-token ratio they convert with.
+        ratio = patch("app.services.token_budget.chars_per_token", return_value=3.0)
+        ratio.start()
+        self.addCleanup(ratio.stop)
+
+    def test_budgets_are_in_estimated_tokens(self) -> None:
+        budget = MemoryBudget.default()
+        self.assertEqual(budget.prefs, 2_000)
+        self.assertEqual(budget.chars("prefs"), 6_000)
+        self.assertEqual(budget.chars("total_suffix"), 30_000)
+
     def test_gemma_budget_is_much_smaller(self) -> None:
         self.assertLess(MemoryBudget.gemma().total_suffix, MemoryBudget.default().total_suffix)
         self.assertEqual(MemoryBudget.gemma().max_sections, 1)
 
-    def test_suffix_stays_within_the_total_budget(self) -> None:
-        big = "x" * 5_000
-        sections = {
-            "summary": {"version": 1, "lines": [{"tag": "stated", "text": "y" * 250} for _ in range(12)]},
-            "facts": {"version": 1, "lines": [{"tag": "stated", "text": "z" * 250} for _ in range(40)]},
-        }
+    def test_gemma_keeps_the_size_it_had_in_characters(self) -> None:
+        self.assertAlmostEqual(MemoryBudget.gemma().chars("total_suffix"), 3_500, delta=100)
+
+    def test_memory_stays_within_the_total_budget(self) -> None:
         budget = MemoryBudget.gemma()
+        bundle = build("What are the facts?", prefs=None, instructions=None, sections=BIG_SECTIONS, budget=budget)
+        self.assertIn("CASE MEMORY", bundle.system_suffix)
+        self.assertLessEqual(len(bundle.system_suffix), budget.chars("total_suffix") + 4)
+
+    def test_every_saved_instruction_fits_even_on_gemma(self) -> None:
+        from app.services.memory.schemas import MAX_INSTRUCTIONS_CHARS, MAX_PREFERENCES_CHARS
+
+        budget = MemoryBudget.gemma()
+        self.assertGreaterEqual(budget.rules_chars("case"), MAX_INSTRUCTIONS_CHARS)
+        self.assertGreaterEqual(budget.rules_chars("user"), MAX_PREFERENCES_CHARS)
+
+    def test_saved_instructions_are_never_cut_or_crowded_out(self) -> None:
+        # Ten rules, 3,880 characters: within what a case may store, beyond the old 3,000 cap.
+        rules = [f"Rule {n}: " + "r" * 380 for n in range(10)]
         bundle = build(
             "What are the facts?",
-            prefs=big,
-            instructions=big,
-            sections=sections,
-            budget=budget,
+            prefs=None,
+            instructions=rules,
+            sections=BIG_SECTIONS,
+            budget=MemoryBudget.gemma(),
         )
-        self.assertLessEqual(len(bundle.system_suffix), budget.total_suffix + 4)
+        for rule in rules:
+            self.assertIn(f"- {rule}", bundle.system_suffix)
+        self.assertNotIn("truncated", bundle.system_suffix)
 
-    def test_each_block_is_clipped_to_its_own_cap(self) -> None:
-        bundle = build("hello", prefs="p" * 9_000, budget=MemoryBudget.gemma())
-        prefs_block = bundle.system_suffix.split("===")[2]
-        self.assertLessEqual(len(prefs_block), MemoryBudget.gemma().prefs + 40)
-        self.assertIn("truncated", bundle.system_suffix)
+    def test_an_oversized_rule_is_left_out_whole_not_cut(self) -> None:
+        bundle = build("hello", prefs=["p" * 9_000, "Answer in English."], budget=MemoryBudget.gemma())
+        self.assertIn("- Answer in English.", bundle.system_suffix)
+        self.assertNotIn("ppp", bundle.system_suffix)
+        self.assertNotIn("truncated", bundle.system_suffix)
+
+    def test_log_records_the_unit(self) -> None:
+        self.assertEqual(MemoryBudget.default().as_dict()["unit"], "estimated_tokens")
 
     def test_clip_cuts_on_a_word_boundary(self) -> None:
         clipped = _clip("the quick brown fox jumps over the lazy dog", 25)
@@ -392,7 +431,7 @@ class RecallAssemblyTests(unittest.TestCase):
         with patch.object(recall_mod, "search_past_sessions", return_value=[long_hit, long_hit, long_hit]):
             bundle = build("Add the ground we discussed", budget=budget)
         self.assertTrue(bundle.recall_block)
-        self.assertLessEqual(len(bundle.recall_block), budget.recall)
+        self.assertLessEqual(len(bundle.recall_block), budget.chars("recall"))
 
 
 if __name__ == "__main__":

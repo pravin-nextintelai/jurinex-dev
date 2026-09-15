@@ -1794,26 +1794,71 @@ def add_proposal(
     return str(row["id"]) if row else None
 
 
+_VISIBLE_PROPOSALS_SQL = " AND NOT (status = 'pending' AND COALESCE(source_ref->>'hidden', 'false') = 'true')"
+
+
 def list_proposals(
     case_key: str,
     status: str | None = "pending",
     *,
+    include_hidden: bool = False,
     conn: Any = None,
 ) -> list[dict[str, Any]]:
+    """Suggestions under one key, newest first.
+
+    A rule the writer is still counting (pending, with source_ref.hidden) is left out
+    unless `include_hidden`: the advocate sees it only once it has been asked for often
+    enough, so a one-off request never shows up as a suggestion.
+    """
     key = _require_case_key(case_key)
+    visible = "" if include_hidden else _VISIBLE_PROPOSALS_SQL
     with _conn(conn) as connection, connection.cursor() as cur:
         if status:
             cur.execute(
-                "SELECT * FROM memory_proposals WHERE case_key = %s AND status = %s "
-                "ORDER BY created_at DESC LIMIT 100",
+                "SELECT * FROM memory_proposals WHERE case_key = %s AND status = %s"
+                + visible
+                + " ORDER BY created_at DESC LIMIT 100",
                 (key, str(status)),
             )
         else:
             cur.execute(
-                "SELECT * FROM memory_proposals WHERE case_key = %s ORDER BY created_at DESC LIMIT 100",
+                "SELECT * FROM memory_proposals WHERE case_key = %s"
+                + visible
+                + " ORDER BY created_at DESC LIMIT 100",
                 (key,),
             )
         return [_out(row) or {} for row in cur.fetchall()]
+
+
+def update_proposal(
+    case_key: str,
+    proposal_id: str,
+    *,
+    source_ref: dict[str, Any],
+    status: str | None = None,
+    conn: Any = None,
+) -> bool:
+    """Replace a suggestion's source_ref (its request count), and optionally its status."""
+    key = _require_case_key(case_key)
+    if status is not None and str(status) not in _PROPOSAL_STATUSES:
+        raise ValueError(f"Unknown proposal status '{status}'.")
+    with _conn(conn) as connection, connection.cursor() as cur:
+        if status is None:
+            cur.execute(
+                "UPDATE memory_proposals SET source_ref = %s::jsonb "
+                "WHERE id = %s::uuid AND case_key = %s RETURNING id",
+                (_json(source_ref), str(proposal_id), key),
+            )
+        else:
+            cur.execute(
+                "UPDATE memory_proposals SET source_ref = %s::jsonb, status = %s, "
+                "resolved_at = CASE WHEN %s = 'pending' THEN NULL ELSE NOW() END "
+                "WHERE id = %s::uuid AND case_key = %s RETURNING id",
+                (_json(source_ref), str(status), str(status), str(proposal_id), key),
+            )
+        row = cur.fetchone()
+        connection.commit()
+    return row is not None
 
 
 def list_user_proposals(

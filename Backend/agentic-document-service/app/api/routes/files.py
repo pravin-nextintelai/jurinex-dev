@@ -356,9 +356,12 @@ def _doc_context_char_budget(
     else:
         # Room for the passage budget (CHAT_PASSAGE_BUDGET_TOKENS) plus document headers, so the
         # retrieved passages are never cut again here when the budget is raised.
+        # Imported under its own name: this function imports get_settings again further down,
+        # which makes a bare `get_settings` local to the whole function (UnboundLocalError here).
+        from app.core.config import get_settings as _passage_settings
         from app.services.token_budget import chars_for_tokens
 
-        passage_tokens = int(getattr(get_settings(), "chat_passage_budget_tokens", 24000) or 24000)
+        passage_tokens = int(getattr(_passage_settings(), "chat_passage_budget_tokens", 24000) or 24000)
         budget = max(90000, chars_for_tokens(passage_tokens) + 8000)
     try:
         from app.services.adapters.document_ai import _is_gemma_model
@@ -6312,6 +6315,26 @@ async def intelligent_chat_stream(
                         "[Route:intelligent_chat_stream] memory writer not started folder=%s: %s",
                         folder_name,
                         _mem_writer_exc,
+                    )
+
+            # Rolling chat summary: turns that left the recent window are folded into this
+            # chat's summary on their own thread, so later questions carry them compactly.
+            if not learning_mode:
+                try:
+                    from app.services.chat_summary import submit_summary_update
+
+                    submit_summary_update(
+                        user_id=user_id,
+                        folder_name=folder_name,
+                        session_id=session_id,
+                        max_history=int((llm_config or {}).get("max_conversation_history") or 0),
+                        case_key=(memory_scope.case_key if memory_scope is not None else None),
+                    )
+                except Exception as _summary_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[Route:intelligent_chat_stream] chat summary not started folder=%s: %s",
+                        folder_name,
+                        _summary_exc,
                     )
 
         except Exception as exc:

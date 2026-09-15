@@ -29,6 +29,9 @@ These migrations align the new Python `agentic-document-service` with the shared
 8. stores instructions as switchable items (migration `173`): universal and
    per-case instruction sets, one row per instruction, with per-case and
    per-chat overrides. Old free-text instructions are moved across on first use.
+9. keeps a rolling summary of each case chat (migration `174`): older turns of a
+   chat are folded into `chat_session_summaries` after each answer, and the chat
+   prompt sends that summary plus the latest turns. See `app/services/chat_summary.py`.
 
 ## Suggested Run Order
 

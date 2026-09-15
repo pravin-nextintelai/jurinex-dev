@@ -192,7 +192,8 @@ RULES
    something like "central to the defence".
 3. Update, do not duplicate. If a line in CURRENT CASE MEMORY already covers the
    fact, use "replace_line" with that line's id in "line_id". Set "changed": true
-   when the fact itself changed, so its earlier value is kept.
+   when the fact itself changed, so its earlier value is kept. A fact the memory
+   already holds unchanged is not recorded again.
 4. Use only "append_line" and "replace_line". Never rewrite, create or delete a
    section.
 5. Keep the advocate's own wording where you can. One fact per line, plain text,
@@ -208,18 +209,30 @@ RULES
 STANDING RULES
 A rule for how to work, rather than a fact about the case, is never a memory
 line. Put it in "proposals", written as a short instruction in the advocate's
-own words:
+own words from THIS message:
 - kind "instruction" for this case, such as "Refer to my client as the
   Applicant" or "From now on, answer in a table";
 - kind "preference" only when the advocate says the rule is for all their
   cases ("in all my matters", "in every case", "not just this case"), such as
   "In all my matters, cite SCC first". Keep those words in the proposal.
-Propose a rule when the advocate states one ("always", "never", "from now on",
-"going forward", "every time", "remember to"), and keep that word in the
-proposal. Also propose one when the latest message repeats a formatting or style
-request that appears in EARLIER REQUESTS, such as asking for a table again; word
-it the way the advocate asked, without adding "always". A one-off request about
-this answer alone is not a rule.
+Propose a rule when the advocate:
+- states one ("always", "never", "from now on", "going forward", "every time",
+  "remember to"), keeping that word in the proposal; or
+- asks for a way of writing or presenting answers that could apply beyond this
+  one answer (a table, a language, a citation style, a form of address), worded
+  the way the advocate asked, without adding "always".
+A request about what this one answer should contain ("summarise page 5", "list
+the dates") is not a rule.
+
+COUNTING REPEATED REQUESTS
+JuriNex saves a rule only after the advocate has asked for it more than once, so
+it counts how often each rule is asked for:
+- When this message asks again for a rule in RULES ALREADY NOTICED, set
+  "repeats" to that rule's id. Still write "text" in this message's words.
+- Never propose a rule that is already in SAVED INSTRUCTIONS.
+- EARLIER REQUESTS and the CONVERSATION SUMMARY show what the advocate asked
+  before. Use them only to recognise a repeat. They are never a source of facts,
+  and never a reason to propose a rule this message does not ask for.
 
 LIMITS
 At most 8 ops and 3 proposals. If nothing qualifies, return
@@ -230,6 +243,8 @@ Each op looks like:
  "reason": "short reason", "lines": [],
  "line": {"tag": "stated", "text": "...", "source": "user", "document": null,
           "changed": false, "sensitive": false}}
+Each proposal looks like:
+{"kind": "instruction", "text": "...", "repeats": null}
 """
 
 
@@ -263,6 +278,12 @@ class TurnContext:
     # The advocate's own earlier messages in this case, newest first, so a
     # request they keep making can be suggested as a standing instruction.
     earlier_requests: list[str] = field(default_factory=list)
+    # Instruction texts already saved for this case and advocate: never proposed again.
+    saved_rules: list[str] = field(default_factory=list)
+    # Rules asked for before and still being counted: {"id", "text", "count", "scope"}.
+    noticed_rules: list[dict[str, Any]] = field(default_factory=list)
+    # This chat's rolling summary, for recognising a repeated request.
+    conversation_summary: str = ""
 
 
 @dataclass
@@ -435,6 +456,17 @@ def render_snapshot(existing: dict[str, list[dict[str, Any]]], max_chars: int = 
     return text
 
 
+RULE_CONTEXT_CHARS = 400
+SUMMARY_CONTEXT_CHARS = 3_000
+
+
+def _render_noticed_rule(rule: dict[str, Any]) -> str:
+    count = int(rule.get("count") or 1)
+    where = "every case" if rule.get("scope") == "user" else "this case"
+    times = "time" if count == 1 else "times"
+    return f"- id={rule.get('id')} (asked {count} {times}; {where}) {_clip(rule.get('text'), RULE_CONTEXT_CHARS)}"
+
+
 def build_extractor_input(
     turn: TurnInput,
     existing: dict[str, list[dict[str, Any]]],
@@ -452,6 +484,22 @@ def build_extractor_input(
         f"TODAY: {stamp}",
         "CURRENT CASE MEMORY (already recorded; use a line's id to update it):\n" + render_snapshot(existing),
     ]
+    if context is not None and context.saved_rules:
+        parts.append(
+            "SAVED INSTRUCTIONS (already applied in every answer; never propose these again):\n"
+            + "\n".join(f"- {_clip(rule, RULE_CONTEXT_CHARS)}" for rule in context.saved_rules)
+        )
+    if context is not None and context.noticed_rules:
+        parts.append(
+            'RULES ALREADY NOTICED (asked for before, not saved yet; when this message asks for one again, '
+            'set "repeats" to its id):\n'
+            + "\n".join(_render_noticed_rule(rule) for rule in context.noticed_rules)
+        )
+    if context is not None and context.conversation_summary.strip():
+        parts.append(
+            "CONVERSATION SUMMARY (earlier in this chat; only for recognising a repeated request, never a "
+            "source of facts):\n<<<\n" + context.conversation_summary.strip()[:SUMMARY_CONTEXT_CHARS] + "\n>>>"
+        )
     if context is not None and context.earlier_requests:
         parts.append(
             "EARLIER REQUESTS FROM THE ADVOCATE IN THIS CASE (newest first; only for noticing a request "
@@ -768,9 +816,12 @@ def _is_auto(row: dict[str, Any]) -> bool:
 
 
 def _proposal_history(key: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """(pending, dismissed by the advocate, saved-then-deleted) suggestions under one key."""
+    """(pending, dismissed by the advocate, saved-then-deleted) suggestions under one key.
+
+    Pending includes rules still being counted out of sight.
+    """
     try:
-        history = list(repository.list_proposals(key, None) or [])
+        history = list(repository.list_proposals(key, None, include_hidden=True) or [])
     except Exception as exc:  # noqa: BLE001
         logger.debug("[Memory] could not read earlier proposals for %s: %s", key, exc)
         history = []
@@ -804,8 +855,52 @@ def _seen_in_other_cases(scope: CaseScope, text: str) -> list[str]:
     return keys
 
 
+MAX_CONTEXT_RULES = 40
+MAX_TRACKED_REQUESTS = 20
+
+
+def conversation_summary(scope: CaseScope, session_id: str | None) -> str:
+    """This chat's rolling summary, so the extractor can recognise a repeated request. Never raises."""
+    if not session_id:
+        return ""
+    try:
+        from app.services.chat_summary import read_summary_text
+
+        return read_summary_text(scope.folder_name, scope.user_id, session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] conversation summary unavailable case_key=%s: %s", scope.case_key, exc)
+        return ""
+
+
+def _threshold(name: str, default: int) -> int:
+    """One of the rule-counting thresholds from settings; 0 switches that step off."""
+    try:
+        value = int(getattr(get_settings(), name, default))
+    except (TypeError, ValueError):
+        return default
+    return max(0, value)
+
+
+def _request_count(row: dict[str, Any] | None) -> int:
+    """How many separate messages asked for a noticed rule. Rows from before counting count once."""
+    if not row:
+        return 0
+    ref = row.get("source_ref")
+    if not isinstance(ref, dict):
+        return 1
+    try:
+        return max(1, int(ref.get("request_count") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _is_hidden(row: dict[str, Any]) -> bool:
+    ref = row.get("source_ref")
+    return isinstance(ref, dict) and bool(ref.get("hidden"))
+
+
 class _Rulebook:
-    """What this turn's proposals are checked against, read once per turn."""
+    """What this turn's rules are checked against, read once per turn."""
 
     def __init__(self, scope: CaseScope) -> None:
         self.scope = scope
@@ -816,11 +911,18 @@ class _Rulebook:
         self.pending, self.dismissed, self.undone = {}, {}, {}
         for scope_type, key in (("case", scope.case_key), ("user", user_proposal_key(scope.user_id))):
             self.pending[scope_type], self.dismissed[scope_type], self.undone[scope_type] = _proposal_history(key)
-        try:
-            self.party_names = party_names_for_user(scope.user_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[Memory] party names unavailable: %s", exc)
-            self.party_names = ()
+        self._party_names: tuple[str, ...] | None = None
+
+    @property
+    def party_names(self) -> tuple[str, ...]:
+        # Only universal rules are checked against party names, so they are read on first use.
+        if self._party_names is None:
+            try:
+                self._party_names = tuple(party_names_for_user(self.scope.user_id))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[Memory] party names unavailable: %s", exc)
+                self._party_names = ()
+        return self._party_names
 
     def key(self, scope_type: str) -> str:
         return self.scope.case_key if scope_type == "case" else user_proposal_key(self.scope.user_id)
@@ -833,6 +935,97 @@ class _Rulebook:
             text, scope_type=scope_type, party_names=self.party_names if scope_type == "user" else ()
         )
 
+    def saved_rules(self) -> list[str]:
+        """Instruction texts already saved for this case and this advocate."""
+        texts = [
+            str(item.get("text") or "").strip()
+            for scope_type in ("case", "user")
+            for item in self.items[scope_type]
+        ]
+        return [text for text in texts if text][:MAX_CONTEXT_RULES]
+
+    def noticed_rules(self) -> list[dict[str, Any]]:
+        """Rules asked for before and not saved yet, with their ids and request counts."""
+        rows = [
+            {
+                "id": str(row.get("id")),
+                "text": str(row.get("text") or "").strip(),
+                "count": _request_count(row),
+                "scope": scope_type,
+            }
+            for scope_type in ("case", "user")
+            for row in self.pending[scope_type]
+            if row.get("id") and str(row.get("text") or "").strip()
+        ]
+        return rows[:MAX_CONTEXT_RULES]
+
+    def find_pending(self, text: str, scope_type: str, repeats: str | None) -> dict[str, Any] | None:
+        """The noticed rule a request repeats: by the id the extractor gave, else by its wording."""
+        rows = self.pending[scope_type]
+        wanted = str(repeats or "").strip()
+        if wanted:
+            for row in rows:
+                if str(row.get("id") or "") == wanted:
+                    return row
+        for row in rows:
+            if find_duplicate(text, [row]) is not None:
+                return row
+        return None
+
+
+@dataclass
+class _Request:
+    """One message asking for a rule, counted against the noticed rule it repeats."""
+
+    row: dict[str, Any] | None  # the noticed rule it was added to; None for a new rule
+    source_ref: dict[str, Any]
+    count: int
+    counted: bool  # False when this message had already been counted for the rule
+    was_hidden: bool
+
+
+def _count_request(
+    book: _Rulebook,
+    text: str,
+    scope_type: str,
+    repeats: str | None,
+    *,
+    explicit: bool,
+    source_extra: dict[str, Any],
+) -> _Request:
+    from datetime import datetime, timezone
+
+    row = book.find_pending(text, scope_type, repeats)
+    chat_id = str(source_extra.get("chat_id") or "")
+    stamp = {
+        key: value
+        for key, value in {
+            "chat_id": chat_id,
+            "session_id": source_extra.get("session_id"),
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }.items()
+        if value
+    }
+    if row is None:
+        ref = {**source_extra, "requests": [stamp], "request_count": 1, "explicit": explicit, "hidden": True}
+        return _Request(row=None, source_ref=ref, count=1, counted=True, was_hidden=True)
+
+    ref = dict(row.get("source_ref") or {}) if isinstance(row.get("source_ref"), dict) else {}
+    requests = [item for item in ref.get("requests") or [] if isinstance(item, dict)]
+    count = _request_count(row)
+    already = bool(chat_id) and any(str(item.get("chat_id") or "") == chat_id for item in requests)
+    if not already:
+        requests.append(stamp)
+        count += 1
+    ref.update(
+        {
+            "requests": requests[-MAX_TRACKED_REQUESTS:],
+            "request_count": count,
+            "explicit": bool(ref.get("explicit")) or explicit,
+        }
+    )
+    return _Request(row=row, source_ref=ref, count=count, counted=not already, was_hidden=_is_hidden(row))
+
 
 def _save_instruction(
     book: _Rulebook,
@@ -840,8 +1033,10 @@ def _save_instruction(
     scope_type: str,
     source_extra: dict[str, Any],
     report: WriteReport,
+    *,
+    request: _Request | None = None,
 ) -> str:
-    """Add an explicit standing instruction to the case's, or the advocate's, set.
+    """Add a standing instruction to the case's, or the advocate's, set.
 
     Returns "saved", "already_saved", "full" (no room in the set) or "failed".
     """
@@ -850,6 +1045,7 @@ def _save_instruction(
         return "already_saved"
     if instruction_set_room(items, text, scope_type=scope_type) is not None:
         return "full"
+    count = request.count if request is not None else 1
     try:
         result = repository.add_instruction(
             scope_type,
@@ -857,7 +1053,7 @@ def _save_instruction(
             text,
             None,
             origin="chat",
-            source_ref={**source_extra, "auto": True},
+            source_ref={**source_extra, "auto": True, "request_count": count},
             actor=WRITER_ACTOR,
         )
     except Exception as exc:  # noqa: BLE001
@@ -867,55 +1063,113 @@ def _save_instruction(
 
     item = dict(result.get("item") or {})
     items.append(item)
+    # Kept as an accepted suggestion, so deleting the instruction later tells the
+    # writer not to save it again.
+    record = {
+        **(request.source_ref if request is not None else source_extra),
+        "hidden": False,
+        "auto": True,
+        "instruction_id": item.get("id"),
+    }
     try:
-        # Recorded as an accepted suggestion, so deleting the instruction later
-        # tells the writer not to save it again.
-        repository.add_proposal(
-            book.key(scope_type),
-            book.scope.user_id,
-            "instruction" if scope_type == "case" else "preference",
-            text,
-            {**source_extra, "auto": True, "instruction_id": item.get("id")},
-            status="accepted",
-        )
+        if request is not None and request.row is not None and request.row.get("id"):
+            repository.update_proposal(
+                book.key(scope_type), str(request.row["id"]), source_ref=record, status="accepted"
+            )
+            book.pending[scope_type] = [row for row in book.pending[scope_type] if row is not request.row]
+        else:
+            repository.add_proposal(
+                book.key(scope_type),
+                book.scope.user_id,
+                "instruction" if scope_type == "case" else "preference",
+                text,
+                record,
+                status="accepted",
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Memory] saved instruction not recorded scope=%s: %s", scope_type, exc)
     report.writes += 1
     report.instructions_saved += 1
     report.note(
         "instructions",
-        {"id": item.get("id"), "text": text, "scope": scope_type, "version": result.get("version")},
+        {"id": item.get("id"), "text": text, "scope": scope_type, "version": result.get("version"), "requests": count},
     )
     return "saved"
 
 
-def _suggest(
+def _store_request(
     book: _Rulebook,
     text: str,
     scope_type: str,
-    source_extra: dict[str, Any],
+    request: _Request,
+    *,
+    visible: bool,
     report: WriteReport,
-) -> bool:
-    """Record a suggestion the advocate can accept, unless one like it is already waiting."""
-    if find_duplicate(text, book.pending[scope_type]) is not None:
-        return False
+) -> None:
+    """Keep a counted request, on a new noticed rule or on the one it repeats.
+
+    `visible` decides whether the advocate sees it under Suggestions.
+    """
+    ref = {**request.source_ref, "hidden": not visible}
+    newly_shown = visible and (request.row is None or request.was_hidden)
     try:
-        proposal_id = repository.add_proposal(
-            book.key(scope_type),
-            book.scope.user_id,
-            "instruction" if scope_type == "case" else "preference",
-            text,
-            dict(source_extra),
-        )
+        if request.row is None:
+            proposal_id = repository.add_proposal(
+                book.key(scope_type),
+                book.scope.user_id,
+                "instruction" if scope_type == "case" else "preference",
+                text,
+                ref,
+            )
+            if proposal_id:
+                book.pending[scope_type].append(
+                    {"id": proposal_id, "text": text, "status": "pending", "source_ref": ref}
+                )
+        else:
+            proposal_id = str(request.row.get("id") or "")
+            if proposal_id:
+                repository.update_proposal(book.key(scope_type), proposal_id, source_ref=ref)
+            request.row["source_ref"] = ref
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[Memory] proposal write failed scope=%s: %s", scope_type, exc)
+        logger.warning("[Memory] rule request not recorded scope=%s: %s", scope_type, exc)
+        report.reject("proposal_write_failed")
+        return
+    if not proposal_id:
+        return
+    report.note("requests", {"id": proposal_id, "scope": scope_type, "text": text, "count": request.count, "shown": visible})
+    if newly_shown:
+        report.proposals += 1
+        report.note(
+            "suggestions",
+            {"id": proposal_id, "kind": "instruction", "scope": scope_type, "text": text, "count": request.count},
+        )
+
+
+def _suggest_universal(book: _Rulebook, text: str, source_extra: dict[str, Any], report: WriteReport) -> bool:
+    """Suggest for every case a rule asked for in more than one case, unless one is already shown."""
+    match = next((row for row in book.pending["user"] if find_duplicate(text, [row]) is not None), None)
+    try:
+        if match is not None:
+            if not _is_hidden(match):
+                return False
+            ref = {**(match.get("source_ref") or {}), "hidden": False, "learned_from": source_extra.get("learned_from")}
+            proposal_id = str(match.get("id") or "")
+            if not proposal_id:
+                return False
+            repository.update_proposal(book.key("user"), proposal_id, source_ref=ref)
+            match["source_ref"] = ref
+        else:
+            ref = {**source_extra, "hidden": False}
+            proposal_id = repository.add_proposal(book.key("user"), book.scope.user_id, "preference", text, ref)
+            if not proposal_id:
+                return False
+            book.pending["user"].append({"id": proposal_id, "text": text, "status": "pending", "source_ref": ref})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] universal suggestion not recorded: %s", exc)
         report.reject("proposal_write_failed")
         return False
-    if not proposal_id:
-        return False
     report.proposals += 1
-    report.note("suggestions", {"id": proposal_id, "kind": "instruction", "scope": scope_type, "text": text})
-    book.pending[scope_type].append({"text": text})
+    report.note("suggestions", {"id": proposal_id, "kind": "instruction", "scope": "user", "text": text})
     return True
 
 
@@ -927,18 +1181,25 @@ def _handle_proposals(
     report: WriteReport,
     *,
     settings: MemorySettings | None = None,
+    book: _Rulebook | None = None,
 ) -> None:
-    """Route each rule the extractor found: save it, suggest it, or drop it.
+    """Count each rule the extractor found; suggest or save it once it has been asked for enough.
 
-    A rule stated in so many words is saved, to the case's instructions, or to
-    the advocate's universal ones when the message says it is for all their
-    cases. Anything else becomes a suggestion, and a suggestion that keeps
-    coming up in different cases is also suggested as universal.
+    Nothing is saved the first time. A rule the advocate words as one ("always", "from now
+    on") is suggested at once and saved after MEMORY_RULE_SAVE_AFTER requests. A way of
+    working asked for without such words stays out of sight until MEMORY_RULE_SUGGEST_AFTER
+    requests and is saved after MEMORY_PATTERN_SAVE_AFTER (0 = never on its own). Each
+    message counts once. A rule already saved, dismissed, or saved and then deleted by the
+    advocate is not saved again, and a rule asked for in more than one case is suggested
+    for every case.
     """
     if not proposals:
         return
     settings = settings or MemorySettings()
-    book = _Rulebook(scope)
+    book = book or _Rulebook(scope)
+    save_after = _threshold("memory_rule_save_after", 2)
+    suggest_after = max(1, _threshold("memory_rule_suggest_after", 2))
+    pattern_save_after = _threshold("memory_pattern_save_after", 3)
     message_rule = has_standing_rule(turn.question_raw)
     message_universal = has_universal_cue(turn.question_raw)
 
@@ -963,16 +1224,34 @@ def _handle_proposals(
             continue
 
         explicit = message_rule and has_standing_rule(text)
-        if explicit and settings.instructions_enabled and find_duplicate(text, book.undone[scope_type]) is None:
-            outcome = _save_instruction(book, text, scope_type, source_extra, report)
-            if outcome in ("saved", "already_saved"):
-                continue
-            # No room in the set, or the write failed: ask instead.
-        elif not explicit and find_duplicate(text, book.dismissed[scope_type]) is not None:
+        if not explicit and find_duplicate(text, book.dismissed[scope_type]) is not None:
             report.reject("proposal_dismissed_before")
             continue
 
-        _suggest(book, text, scope_type, source_extra, report)
+        request = _count_request(
+            book, text, scope_type, getattr(proposal, "repeats", None), explicit=explicit, source_extra=source_extra
+        )
+        if not request.counted:
+            # This message was already counted for the rule (a retry, or two proposals
+            # for the same rule): it changes nothing.
+            continue
+
+        stated_rule = bool(request.source_ref.get("explicit"))
+        threshold = save_after if stated_rule else pattern_save_after
+        if (
+            settings.instructions_enabled
+            and threshold > 0
+            and request.count >= threshold
+            and find_duplicate(text, book.undone[scope_type]) is None
+        ):
+            outcome = _save_instruction(book, text, scope_type, source_extra, report, request=request)
+            if outcome in ("saved", "already_saved"):
+                continue
+            # No room in the set, or the write failed: show it as a suggestion instead.
+            visible = True
+        else:
+            visible = stated_rule or request.count >= suggest_after
+        _store_request(book, text, scope_type, request, visible=visible, report=report)
 
         # The same request in another case too: worth suggesting for all cases,
         # if it is fit to be universal and the advocate has not turned it down.
@@ -985,7 +1264,7 @@ def _handle_proposals(
         ):
             elsewhere = _seen_in_other_cases(scope, text)
             if elsewhere:
-                _suggest(book, text, "user", {**source_extra, "learned_from": elsewhere[:5]}, report)
+                _suggest_universal(book, text, {**source_extra, "learned_from": elsewhere[:5]}, report)
 
 
 # Upload paths prefix the original file name with an id ("<uuid>_Bail.pdf",
@@ -1115,6 +1394,13 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
     existing = {name: list((data or {}).get("lines") or []) for name, data in stored.items()}
     versions: dict[str, int | None] = {name: (data or {}).get("version") for name, data in stored.items()}
     context = _load_context(scope, turn)
+    # What is already saved or still being counted, read once. The extractor sees it, so
+    # it neither proposes a saved rule again nor loses count of one asked for before,
+    # and the proposals below are checked against the same snapshot.
+    book = _Rulebook(scope)
+    context.saved_rules = book.saved_rules()
+    context.noticed_rules = book.noticed_rules()
+    context.conversation_summary = conversation_summary(scope, turn.session_id)
 
     try:
         extraction = extract_ops(turn, existing, today=today, context=context)
@@ -1130,7 +1416,7 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
 
     accepted = screen_ops(extraction.ops, turn.question_raw, report)
     _apply_ops(scope, accepted, existing, versions, settings, source_extra, report, today=today)
-    _handle_proposals(scope, turn, extraction.proposals, source_extra, report, settings=settings)
+    _handle_proposals(scope, turn, extraction.proposals, source_extra, report, settings=settings, book=book)
 
 
 def _write_log(turn: TurnInput, report: WriteReport) -> str | None:

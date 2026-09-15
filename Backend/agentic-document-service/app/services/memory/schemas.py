@@ -103,10 +103,16 @@ class MemoryOp(BaseModel):
 
 
 class MemoryProposal(BaseModel):
-    """A standing instruction or preference the model suggests. Never auto-saved."""
+    """A standing instruction or preference the model noticed.
+
+    The writer counts how often the advocate asks for it and saves it only after
+    repeated requests (see writer._handle_proposals).
+    """
 
     kind: Literal["instruction", "preference"]
     text: str = Field(max_length=MAX_LINE_CHARS)
+    # The id of a rule already noticed that this message asks for again, if any.
+    repeats: str | None = Field(default=None, max_length=64)
 
 
 class MemoryOps(BaseModel):

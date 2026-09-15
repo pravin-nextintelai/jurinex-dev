@@ -1499,6 +1499,9 @@ class FolderWorkflowService:
                         db_counts["file_chunks"] = 0
                         db_counts["files"] = 0
 
+                    from app.services.chat_summary import delete_summaries
+
+                    db_counts["chat_summaries"] = delete_summaries(cur, folder_name=folder_name)
                     cur.execute("DELETE FROM folder_chats WHERE folder_name = %s", [folder_name])
                     db_counts["folder_chats"] = cur.rowcount or 0
 
@@ -2235,6 +2238,19 @@ class FolderWorkflowService:
                 logger.warning(
                     "[FolderService] task=answer_folder_chat memory writer not started: %s", memory_writer_exc
                 )
+        # Rolling chat summary, as on the streaming route.
+        try:
+            from app.services.chat_summary import submit_summary_update
+
+            submit_summary_update(
+                user_id=user_id,
+                folder_name=folder_name,
+                session_id=session.id,
+                max_history=int(llm_config.get("max_conversation_history") or 0),
+                case_key=(writer_scope.case_key if writer_scope is not None else None),
+            )
+        except Exception as summary_exc:  # noqa: BLE001
+            logger.warning("[FolderService] task=answer_folder_chat chat summary not started: %s", summary_exc)
         return FolderChatResponse(
             success=True,
             folderName=folder_name,
@@ -2337,32 +2353,23 @@ class FolderWorkflowService:
         query_text: str,
         max_history: int,
     ) -> str:
-        history_limit = max(0, int(max_history or 0))
-        if history_limit <= 0:
-            return query_text
-        history = self._get_recent_chat_history(
+        """The question with this chat's history: a rolling summary of older turns, then the
+        latest turns with long answers shortened (app/services/chat_summary.py). Falls back to
+        the in-memory session when the database has no rows for it yet."""
+        from app.services.chat_summary import build_history_block
+
+        return build_history_block(
             user_id=user_id,
             folder_name=folder_name,
             session_id=session_id,
-            max_history=history_limit,
-        )
-        if not history:
-            return query_text
-        history_lines: list[str] = []
-        for item in history:
-            question = str(item.get("question") or "").strip()
-            answer = str(item.get("answer") or "").strip()
-            if question:
-                history_lines.append(f"User: {question}")
-            if answer:
-                history_lines.append(f"Assistant: {answer}")
-        if not history_lines:
-            return query_text
-        return (
-            "Use the prior conversation only as supporting context. If the latest question narrows or changes the issue, "
-            "prioritize the latest question.\n\n"
-            f"Conversation history:\n{chr(10).join(history_lines)}\n\n"
-            f"Current question:\n{query_text}"
+            query_text=query_text,
+            max_history=max_history,
+            fallback_turns=lambda limit: self._get_recent_chat_history(
+                user_id=user_id,
+                folder_name=folder_name,
+                session_id=session_id,
+                max_history=limit,
+            ),
         )
 
     def _get_recent_chat_history(
@@ -2544,6 +2551,11 @@ class FolderWorkflowService:
                     # The UI may pass either a session_id OR a folder_chats row id
                     # (older rows / some surfaces). Accept both: a row id deletes
                     # its whole session; a sessionless row is deleted directly.
+                    # The chat's summary goes first, while its rows still map a row id
+                    # to its session.
+                    from app.services.chat_summary import delete_summaries
+
+                    delete_summaries(cur, folder_name=folder_name, session_or_chat_id=norm)
                     cur.execute(
                         """
                         DELETE FROM folder_chats
@@ -2582,6 +2594,9 @@ class FolderWorkflowService:
         if is_db_available():
             try:
                 with get_db_connection() as conn, conn.cursor() as cur:
+                    from app.services.chat_summary import delete_summaries
+
+                    delete_summaries(cur, folder_name=folder_name)
                     cur.execute("DELETE FROM folder_chats WHERE folder_name = %s", [folder_name])
                     db_deleted = cur.rowcount or 0
                     conn.commit()

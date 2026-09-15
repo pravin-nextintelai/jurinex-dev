@@ -732,6 +732,59 @@ class Settings(BaseSettings):
         default=36,
         validation_alias=AliasChoices("CHAT_PASSAGE_TOP_K"),
     )
+    # Case-chat history (app/services/chat_summary.py): the latest turns, with answers
+    # shortened, plus a rolling summary of older turns kept per chat. The plan's
+    # max_conversation_history still caps the recent turns; 0 there switches history off.
+    chat_history_recent_turns: int = Field(
+        default=3,
+        validation_alias=AliasChoices("CHAT_HISTORY_RECENT_TURNS"),
+    )
+    chat_history_latest_answer_tokens: int = Field(
+        default=3000,
+        validation_alias=AliasChoices("CHAT_HISTORY_LATEST_ANSWER_TOKENS"),
+    )
+    chat_history_older_answer_tokens: int = Field(
+        default=700,
+        validation_alias=AliasChoices("CHAT_HISTORY_OLDER_ANSWER_TOKENS"),
+    )
+    chat_summary_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("CHAT_SUMMARY_ENABLED"),
+    )
+    chat_summary_model: str = Field(
+        default="gemini-3.8-flash",
+        validation_alias=AliasChoices("CHAT_SUMMARY_MODEL"),
+    )
+    # minimal | low | medium | high (Gemini 3 models)
+    chat_summary_thinking_level: str = Field(
+        default="low",
+        validation_alias=AliasChoices("CHAT_SUMMARY_THINKING_LEVEL"),
+    )
+    chat_summary_max_tokens: int = Field(
+        default=1000,
+        validation_alias=AliasChoices("CHAT_SUMMARY_MAX_TOKENS"),
+    )
+    chat_summary_timeout_s: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("CHAT_SUMMARY_TIMEOUT_S"),
+    )
+    # Instructions from chat (app/services/memory/writer.py) are counted, not saved on sight.
+    # A rule the advocate words as one ("always", "from now on") is shown as a suggestion at
+    # once and saved after MEMORY_RULE_SAVE_AFTER separate requests. A way of working asked
+    # for without such words stays out of sight until MEMORY_RULE_SUGGEST_AFTER requests and
+    # is saved after MEMORY_PATTERN_SAVE_AFTER (0 = never saved without the advocate accepting).
+    memory_rule_save_after: int = Field(
+        default=2,
+        validation_alias=AliasChoices("MEMORY_RULE_SAVE_AFTER"),
+    )
+    memory_rule_suggest_after: int = Field(
+        default=2,
+        validation_alias=AliasChoices("MEMORY_RULE_SUGGEST_AFTER"),
+    )
+    memory_pattern_save_after: int = Field(
+        default=3,
+        validation_alias=AliasChoices("MEMORY_PATTERN_SAVE_AFTER"),
+    )
     # Reading memory sits in the chat's critical path, so it is time-boxed; on
     # timeout the turn proceeds with no memory rather than stalling.
     memory_context_timeout_s: float = Field(
