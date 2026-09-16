@@ -169,6 +169,23 @@ class AssemblyTests(unittest.TestCase):
         self.assertLess(MemoryBudget.gemma().advocate, MemoryBudget.default().advocate)
         self.assertIn("advocate", MemoryBudget.default().as_dict())
 
+    def test_more_facts_travel_when_the_case_left_room(self) -> None:
+        """The block is measured after the case has taken what it needs, so a thin
+        case lets it carry facts a fixed cap would have cut."""
+        many = [
+            {"id": f"a{n}", "category": "background", "text": f"Fact {n}: " + "detail " * 40}
+            for n in range(20)
+        ]
+        bundle, _ = build(lines=many)
+        fixed_cap = MemoryBudget.default().chars("advocate")
+        _, at_cap = assembly_mod.select_advocate(many, fixed_cap, question="Summarise the case")
+        self.assertGreater(bundle.advocate_lines, len(at_cap.kept))
+        self.assertGreater(bundle.log_entry["details"]["advocate_room"], fixed_cap)
+
+    def test_it_still_reads_first_however_late_it_was_measured(self) -> None:
+        bundle, _ = build()
+        self.assertTrue(bundle.system_suffix.lstrip().startswith("=== ABOUT THE ADVOCATE"))
+
 
 def client() -> TestClient:
     app = FastAPI()

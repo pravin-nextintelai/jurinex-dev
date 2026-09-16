@@ -768,6 +768,37 @@ class Settings(BaseSettings):
         default=60.0,
         validation_alias=AliasChoices("CHAT_SUMMARY_TIMEOUT_S"),
     )
+    # What memory may send with one question (app/services/memory/assembly.py), in
+    # estimated tokens. These are the caps each block always gets; a block that has
+    # more to say may stretch into room the others left free, up to MEMORY_BLOCK_STRETCH
+    # times its cap, and MEMORY_SUFFIX_TOKENS bounds the lot. Saved instructions are
+    # never cut, whatever these say.
+    memory_suffix_tokens: int = Field(
+        default=10_000,
+        validation_alias=AliasChoices("MEMORY_SUFFIX_TOKENS"),
+    )
+    memory_advocate_tokens: int = Field(
+        default=800,
+        validation_alias=AliasChoices("MEMORY_ADVOCATE_TOKENS"),
+    )
+    memory_summary_tokens: int = Field(
+        default=1_500,
+        validation_alias=AliasChoices("MEMORY_SUMMARY_TOKENS"),
+    )
+    memory_section_tokens: int = Field(
+        default=2_500,
+        validation_alias=AliasChoices("MEMORY_SECTION_TOKENS"),
+    )
+    memory_recall_tokens: int = Field(
+        default=3_000,
+        validation_alias=AliasChoices("MEMORY_RECALL_TOKENS"),
+    )
+    # How far a block may stretch beyond its cap into room nobody else is using.
+    # 1.0 switches stretching off and restores fixed per-block caps.
+    memory_block_stretch: float = Field(
+        default=3.0,
+        validation_alias=AliasChoices("MEMORY_BLOCK_STRETCH"),
+    )
     # Consolidation (app/services/memory/consolidate.py): near its ceiling, what JuriNex
     # remembers about the advocate is rewritten once as fewer, sharper lines, so memory
     # keeps growing instead of stopping at "full". The merge is grounded in the stored

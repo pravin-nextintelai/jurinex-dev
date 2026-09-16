@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Sequence
 
 from app.core.config import get_settings
@@ -62,10 +62,56 @@ class MemoryBudget:
     recall: int = 3_000
     total_suffix: int = 10_000
     advocate: int = 800
+    # How far one block may stretch into room the others are not using. 1.0 keeps the
+    # old fixed caps. Gemma stays at 1.0: its limit is a per-minute rate, not free room.
+    stretch: float = 3.0
+    # A block's share of what is still free when it stretches. What is left over is
+    # mostly the case's own material, so the general layer takes the smaller share.
+    _SHARES = {"advocate": 0.3, "summary": 0.5, "per_section": 0.6, "recall": 0.5}
 
     @classmethod
     def default(cls) -> "MemoryBudget":
         return cls()
+
+    @classmethod
+    def from_settings(cls) -> "MemoryBudget":
+        """The caps this deployment configured (MEMORY_* in .env), with the defaults behind them."""
+        base = cls()
+
+        def whole(name: str, fallback: int) -> int:
+            try:
+                value = int(getattr(get_settings(), name, fallback) or fallback)
+            except (TypeError, ValueError):
+                return fallback
+            return max(0, value)
+
+        try:
+            stretch = float(getattr(get_settings(), "memory_block_stretch", base.stretch) or base.stretch)
+        except (TypeError, ValueError):
+            stretch = base.stretch
+        return replace(
+            base,
+            total_suffix=whole("memory_suffix_tokens", base.total_suffix),
+            advocate=whole("memory_advocate_tokens", base.advocate),
+            summary=whole("memory_summary_tokens", base.summary),
+            per_section=whole("memory_section_tokens", base.per_section),
+            recall=whole("memory_recall_tokens", base.recall),
+            stretch=min(10.0, max(1.0, stretch)),
+        )
+
+    def room_for(self, name: str, *, free_chars: int) -> int:
+        """How many characters this block may use, given what nobody else has taken.
+
+        Its own cap is the floor: a block never gets less than it always had. Above
+        that it may take a share of whatever is still free, so a thin advocate set
+        leaves more for the case and a thin case leaves more for the advocate — but
+        never more than `stretch` times its cap, so one block cannot eat the rest.
+        """
+        base = self.chars(name)
+        if self.stretch <= 1.0 or free_chars <= base:
+            return base
+        share = int(max(0, free_chars) * self._SHARES.get(name, 0.5))
+        return max(base, min(int(base * self.stretch), share))
 
     @classmethod
     def gemma(cls) -> "MemoryBudget":
@@ -82,6 +128,7 @@ class MemoryBudget:
             recall=400,
             total_suffix=1_170,
             advocate=150,
+            stretch=1.0,
         )
 
     def chars(self, name: str) -> int:
@@ -119,7 +166,10 @@ class MemoryBudget:
                 return cls.gemma()
         except Exception:  # noqa: BLE001 — budget choice must never break a chat
             pass
-        return cls.default()
+        try:
+            return cls.from_settings()
+        except Exception:  # noqa: BLE001
+            return cls.default()
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -132,6 +182,7 @@ class MemoryBudget:
             "recall": self.recall,
             "total_suffix": self.total_suffix,
             "advocate": self.advocate,
+            "stretch": self.stretch,
             "unit": "estimated_tokens",
         }
 
@@ -196,9 +247,11 @@ class _Collected:
     instructions_muted: list[str] = field(default_factory=list)
     advocate_version: int | None = None
     advocate_lines: int = 0
-    # Which facts this question chose, and how many were left out for room.
+    # Which facts this question chose, how many were left out for room, and the room
+    # they were chosen against once the case had taken what it needed.
     advocate_selected: list[str] = field(default_factory=list)
     advocate_skipped: int = 0
+    advocate_room: int = 0
 
 
 def _empty(reason: str, scope: CaseScope | None = None, **log_extra: Any) -> ContextBundle:
@@ -543,6 +596,7 @@ def build_context_layers(
                 "advocate_lines": collected.advocate_lines,
                 "advocate_selected": list(collected.advocate_selected),
                 "advocate_skipped": collected.advocate_skipped,
+                "advocate_room": collected.advocate_room,
             }.items()
             if value
         },
@@ -622,11 +676,14 @@ def _collect(
     spent = 0
     total_chars = budget.chars("total_suffix")
 
-    def add(block: str, *, required: bool = False) -> bool:
+    def add(block: str, *, required: bool = False, first: bool = False) -> bool:
         """Append a block if the total budget still has room for it.
 
         Required blocks (the advocate's saved instructions) always go in. They still
-        count against the total, so case memory gets whatever room is left.
+        count against the total, so case memory gets whatever room is left. `first`
+        puts the block at the head of the prompt whenever it was measured: what goes
+        in is decided last, where the free room is known, but the model still reads
+        the layers general-to-specific.
         """
         nonlocal spent
         if not block:
@@ -634,30 +691,37 @@ def _collect(
         cost = len(block) + 2
         if not required and spent + cost > total_chars:
             return False
-        out.blocks.append(block)
+        out.blocks.insert(0, block) if first else out.blocks.append(block)
         spent += cost
         return True
 
-    # What JuriNex remembers about the advocate, from any of their cases. It comes
-    # first because it is the most general layer; a failure only loses this block.
-    if settings.advocate_enabled:
+    def add_advocate() -> None:
+        """What JuriNex remembers about the advocate, from any of their cases.
+
+        Measured last and placed first. Measuring it last is what lets it stretch: a
+        case with little stored leaves room this block can use, and a case with a lot
+        leaves it the cap it always had. A failure here loses only this block.
+        """
+        if not settings.advocate_enabled:
+            return
         try:
             advocate = repository.get_advocate_memory(scope.user_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Memory] advocate memory unavailable for user_id=%s: %s", scope.user_id, exc)
             advocate = {}
-        body, selection = select_advocate(
-            advocate.get("lines") or [], budget.chars("advocate"), question=question_raw
-        )
-        if body and add(ADVOCATE_HEADER.format(version=advocate.get("version") or 1) + "\n" + body):
+        room = budget.room_for("advocate", free_chars=total_chars - spent)
+        body, selection = select_advocate(advocate.get("lines") or [], room, question=question_raw)
+        if body and add(ADVOCATE_HEADER.format(version=advocate.get("version") or 1) + "\n" + body, first=True):
             out.advocate_version = advocate.get("version")
             out.advocate_lines = len(selection.kept)
             out.advocate_selected = selection.kept_ids
             out.advocate_skipped = len(selection.dropped)
+            out.advocate_room = room
             if selection.dropped:
                 logger.info(
-                    "[Memory] advocate facts chosen for this question user_id=%s %s",
+                    "[Memory] advocate facts chosen for this question user_id=%s room=%s %s",
                     scope.user_id,
+                    room,
                     relevance.describe(selection, question_raw),
                 )
 
@@ -685,6 +749,7 @@ def _collect(
     # question points at them.
     index = repository.get_section_index(scope.case_key)
     if not index:
+        add_advocate()
         return out
     sections_loaded = out.sections_loaded
 
@@ -740,4 +805,5 @@ def _collect(
             if sections_loaded and len(sections_loaded) > 1:
                 sections_loaded.pop()
 
+    add_advocate()
     return out

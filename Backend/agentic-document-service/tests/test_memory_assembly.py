@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import unittest
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services.memory import assembly as assembly_mod
@@ -190,6 +191,62 @@ class BudgetTests(unittest.TestCase):
 
     def test_gemma_keeps_the_size_it_had_in_characters(self) -> None:
         self.assertAlmostEqual(MemoryBudget.gemma().chars("total_suffix"), 3_500, delta=100)
+
+    def test_a_block_takes_its_cap_when_nothing_is_free(self) -> None:
+        budget = MemoryBudget.default()
+        self.assertEqual(budget.room_for("advocate", free_chars=0), budget.chars("advocate"))
+        self.assertEqual(budget.room_for("advocate", free_chars=-500), budget.chars("advocate"))
+
+    def test_a_block_stretches_into_room_the_others_left(self) -> None:
+        budget = MemoryBudget.default()
+        cap = budget.chars("advocate")
+        roomy = budget.room_for("advocate", free_chars=budget.chars("total_suffix"))
+        self.assertGreater(roomy, cap)
+        self.assertLessEqual(roomy, int(cap * budget.stretch))
+
+    def test_no_block_can_eat_the_rest(self) -> None:
+        budget = MemoryBudget.default()
+        self.assertEqual(
+            budget.room_for("advocate", free_chars=10_000_000), int(budget.chars("advocate") * budget.stretch)
+        )
+
+    def test_stretching_off_restores_fixed_caps(self) -> None:
+        budget = MemoryBudget.default().__class__(stretch=1.0)
+        self.assertEqual(budget.room_for("advocate", free_chars=1_000_000), budget.chars("advocate"))
+
+    def test_gemma_never_stretches(self) -> None:
+        """Its limit is a per-minute rate, not free room in the window."""
+        budget = MemoryBudget.gemma()
+        self.assertEqual(budget.stretch, 1.0)
+        self.assertEqual(budget.room_for("advocate", free_chars=1_000_000), budget.chars("advocate"))
+
+    def test_the_caps_come_from_the_environment(self) -> None:
+        settings = SimpleNamespace(
+            memory_suffix_tokens=4_000,
+            memory_advocate_tokens=250,
+            memory_summary_tokens=500,
+            memory_section_tokens=900,
+            memory_recall_tokens=1_000,
+            memory_block_stretch=1.5,
+        )
+        with patch.object(assembly_mod, "get_settings", return_value=settings):
+            budget = MemoryBudget.from_settings()
+        self.assertEqual((budget.total_suffix, budget.advocate, budget.stretch), (4_000, 250, 1.5))
+        self.assertEqual(budget.summary, 500)
+
+    def test_a_nonsense_setting_falls_back_to_the_default(self) -> None:
+        settings = SimpleNamespace(memory_advocate_tokens="lots", memory_block_stretch="a bit")
+        with patch.object(assembly_mod, "get_settings", return_value=settings):
+            budget = MemoryBudget.from_settings()
+        self.assertEqual(budget.advocate, MemoryBudget.default().advocate)
+        self.assertEqual(budget.stretch, MemoryBudget.default().stretch)
+
+    def test_stretch_is_clamped_to_something_sane(self) -> None:
+        for given, expected in ((0.1, 1.0), (99.0, 10.0)):
+            with patch.object(
+                assembly_mod, "get_settings", return_value=SimpleNamespace(memory_block_stretch=given)
+            ):
+                self.assertEqual(MemoryBudget.from_settings().stretch, expected)
 
     def test_memory_stays_within_the_total_budget(self) -> None:
         budget = MemoryBudget.gemma()

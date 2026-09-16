@@ -71,6 +71,22 @@ general first, specific last - where two lines disagree, the later one wins
 
 The more specific a layer is, the later it appears, so it wins where two layers disagree. Documents always outrank memory: memory is context, never a source to cite.
 
+**Layer 1 is chosen, not just stored.** What JuriNex knows about you can outgrow what one question can carry, so each question takes the facts that suit it rather than the newest that fit:
+
+```text
+   STORED (up to 40 facts)          THIS QUESTION: "Draft the rejoinder"
+   ------------------------         ------------------------------------
+   Appears at the Aurangabad Bench    score 0.5
+   Acts for borrowers, not banks      score 0.5
+   Wants the prayer clause last       score 1.9   -->  sent
+   Twelve years at the bar            score 0.5
+
+   words in common x2.0  +  what the question is about x1.5  +  recency x0.5
+   no model call - term matching, so it costs nothing per turn
+```
+
+Which facts a turn carried is counted (`used_count`). A fact that has never been carried is the first to go when room runs out; a fact you typed is never dropped by JuriNex. Near the ceiling the set is merged into fewer, sharper lines instead of stopping at "full" — see §7.
+
 **Two different "summaries".** They are easy to confuse, so:
 
 | | Case memory → **Summary** section | The chat's **running summary** |
@@ -239,6 +255,24 @@ Budgets are set in **estimated tokens** and converted to characters with a measu
 | Earlier sessions, on cue only | 3,000 | 400 |
 | **Whole memory block** | **10,000 cap** | **1,170 cap** |
 
+Those are **floors, not fixed slices**. A block always gets its budget; above that it may stretch into room the other blocks did not use, up to `MEMORY_BLOCK_STRETCH` (default 3×) times its budget, with the whole-block cap still bounding the lot. So a case with little stored lets what JuriNex knows about you travel further, and a case with a lot leaves it exactly the budget it always had:
+
+```text
+ADVOCATE MEMORY: WHAT ONE QUESTION MAY CARRY
+
+  room the case left free   advocate may use
+  -----------------------   ----------------
+                        0            2,400     <- its budget, always
+                    5,000            2,400
+                   10,000            3,000
+                   20,000            6,000
+                   30,000            7,200     <- ceiling, 3x its budget
+
+  Gemma never stretches: its limit is a per-minute rate, not free room.
+```
+
+The advocate block is **measured last and printed first**: what goes in is decided once the case has taken what it needs, but the model still reads the layers general-to-specific.
+
 Saved instructions are never cut: if they would not fit, case memory gives up room instead. Within a block the oldest lines drop first.
 
 Typical real usage is **0.5–3K tokens**, well under the cap: the cap is what protects a pathological case, not what a normal turn costs.
@@ -289,8 +323,11 @@ Each turn appears in exactly one of those rows. Folding holds back `CHAT_HISTORY
 | Memory extraction | `gemini-2.5-flash` | Every substantive turn | A few thousand input tokens, at most 4,096 output, 20 s timeout |
 | Rolling summary | `gemini-3.8-flash`, thinking low | When a chat has turns older than the recent ones | Input is up to 12 turns with answers capped at 2,500 tokens; output at most 1,000 |
 | Polish an instruction | `gemini-3.1-flash-lite` | Only when you press Polish | One sentence |
+| Merge facts about you | `gemini-3.8-flash` | Only at 80% of the ceiling, at most once an hour | The stored facts in, a shorter set out; at most 2,048 output |
 
-Both background calls run after the answer, so they add nothing to the wait. **Net effect:** memory adds a bounded amount per turn and removes the need to re-explain the case or re-read long histories, so in a long-running matter total usage falls.
+Choosing which facts a question carries costs **nothing**: it is term matching, no model call and no embedding service, so it adds neither tokens nor latency to a turn.
+
+The background calls all run after the answer, so they add nothing to the wait. **Net effect:** memory adds a bounded amount per turn and removes the need to re-explain the case or re-read long histories, so in a long-running matter total usage falls.
 
 ---
 
@@ -352,6 +389,29 @@ Migrations `170`–`175` in `db/migrations/`. Most tables are also created on fi
 
 "Forget everything about this case" also stops automatic refilling, so the case does not quietly repopulate from its details on the next chat. Deleting a case removes its memory, instructions, suggestions and log. Facts about the advocate are untouched.
 
+### 7.1 When "about you" fills up
+
+It never stops at "full". At 80% of the ceiling (`ADVOCATE_CONSOLIDATE_AT`), with at least 4 facts and at most once an hour, the set is rewritten once as fewer, sharper lines:
+
+```text
+  Mostly appears before the Aurangabad Bench     \
+  Files land acquisition matters at Aurangabad    >--> Appears before the Aurangabad
+  Practises mainly in land acquisition           /     Bench, mainly in land acquisition
+  Usually acts for borrowers, not banks          ----> Usually acts for borrowers, not banks
+
+  4 facts, 158 chars                                   2 facts, 106 chars
+```
+
+Three rules make that safe to do without asking:
+
+| Rule | What it stops |
+|---|---|
+| Every merged line must be traceable to words already stored | The model inventing a fact you never stated |
+| Every merged line faces the rules a typed one faces | A case number, date or party name appearing in an every-case layer |
+| The set as it stood is kept | A merge you dislike being permanent — one press puts it back |
+
+If any rule fails, or the model is unavailable, **nothing changes** and you are told the set is full instead. Merging is tried before anything is dropped; only if it cannot help does a fact JuriNex learned but never used make way — never one you typed, and never more than two per turn.
+
 ---
 
 ## 8. Controls
@@ -385,6 +445,7 @@ Base `/api/memory`, all routes behind a verified token. A case you cannot see re
 | `GET/PUT /settings?scope=user\|case\|firm` | The switches |
 | `GET /cases/{folder}/turns/{chat_id}` | What memory did after one answer |
 | `GET /cases/{folder}/chat-summary?session_id=` | One chat's running summary, read only |
+| `POST /advocate/consolidate`, `POST .../undo` | Merge overlapping facts about you, and put them back |
 | `GET /cases/{folder}/export`, `POST .../import`, `POST .../seed` | Lifecycle |
 
 Conflicts return **409** with the current content; a rejected write returns **422** with the rule it broke.
@@ -406,6 +467,16 @@ All read from `.env`.
 | `MEMORY_PATTERN_SAVE_AFTER` | `3` | Requests before a habit is saved; `0` never |
 | `MEMORY_CONTEXT_TIMEOUT_S` | `2.5` | Read budget, in the critical path |
 | `MEMORY_WRITER_TIMEOUT_S` | `12` | Write budget, after the answer |
+| `MEMORY_SUFFIX_TOKENS` | `10000` | Cap on the whole memory block |
+| `MEMORY_ADVOCATE_TOKENS` | `800` | About-you budget |
+| `MEMORY_SUMMARY_TOKENS` | `1500` | Case summary budget |
+| `MEMORY_SECTION_TOKENS` | `2500` | Each loaded section |
+| `MEMORY_RECALL_TOKENS` | `3000` | Earlier sessions, on cue |
+| `MEMORY_BLOCK_STRETCH` | `3.0` | How far a block may stretch into free room; `1.0` fixes the budgets |
+| `ADVOCATE_CONSOLIDATE_ENABLED` | `true` | Merging overlapping facts near the ceiling |
+| `ADVOCATE_CONSOLIDATE_AT` | `0.8` | How full before a merge is worth its call |
+| `ADVOCATE_CONSOLIDATE_MODEL` | `gemini-3.8-flash` | The merge model |
+| `ADVOCATE_CONSOLIDATE_MIN_INTERVAL_S` | `3600` | Quiet time between merges, per advocate |
 | `CHARS_PER_TOKEN_ESTIMATE` | `3.0` | Characters per token for budgets |
 | `CHAT_PASSAGE_BUDGET_TOKENS` | `24000` | Passages for a specific question |
 | `CHAT_PASSAGE_TOP_K` | `36` | Passages retrieved |

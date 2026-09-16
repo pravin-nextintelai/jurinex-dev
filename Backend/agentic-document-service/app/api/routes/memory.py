@@ -586,6 +586,33 @@ def _advocate_payload(user_id: str) -> dict[str, Any]:
         "used_chars": sum(len(str(line.get("text") or "")) for line in lines),
         "can_consolidate": consolidation.should_consolidate(lines) and repository.consolidation_supported(),
         "consolidation": _consolidation_summary(user_id),
+        **_advocate_reach(lines),
+    }
+
+
+def _advocate_reach(lines: list[dict[str, Any]]) -> dict[str, Any]:
+    """How much of what is stored actually reaches an answer.
+
+    What a set holds and what one question carries are two different numbers, and the
+    gap between them is invisible otherwise: a fact can sit there looking saved while
+    never once shaping an answer. This is the guaranteed floor — a question may carry
+    more when the case has left room — measured with no question in mind, so it is the
+    same for every advocate rather than a figure that moves as they type.
+    """
+    from app.services.memory.assembly import MemoryBudget, select_advocate
+
+    try:
+        budget = MemoryBudget.for_model(None)
+        room = budget.chars("advocate")
+        body, selection = select_advocate(lines, room, question=None)
+    except Exception as exc:  # noqa: BLE001 — the panel opens with or without this
+        logger.debug("[Memory] advocate reach not measured: %s", exc)
+        return {}
+    return {
+        "send_budget_chars": room,
+        "send_chars": len(body),
+        "sent_lines": len(selection.kept),
+        "unsent_lines": len(selection.dropped),
     }
 
 
