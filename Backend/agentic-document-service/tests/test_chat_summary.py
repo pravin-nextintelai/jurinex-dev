@@ -72,6 +72,12 @@ class TextTests(SettingsCase):
         self.assertEqual(cs.recent_turn_count(0), 0)
         self.assertEqual(cs.recent_turn_count(None), 0)
 
+    def test_folding_holds_back_the_widest_verbatim_window(self):
+        """Whatever the plan allows, the summary never covers a turn still sent in full."""
+        for plan in (1, 2, 3, 25):
+            self.assertGreaterEqual(cs.fold_offset(), cs.recent_turn_count(plan))
+        self.assertEqual(cs.fold_offset(), 3)
+
 
 class RenderHistoryTests(SettingsCase):
     def test_summary_then_uncovered_turns_then_latest_turns(self):
@@ -154,7 +160,9 @@ class UpdateTests(SettingsCase):
         previous = cs.SummaryRow(summary="- earlier", covered_turns=1, covered_until=T0 + timedelta(minutes=1))
         outcome = self._run(previous=previous, pending=[_turn(2), _turn(3)])
         self.assertEqual(outcome, "updated")
-        self.pending.assert_called_with("F", "65", SESSION, offset=2, covered_until=previous.covered_until)
+        # Folded from the configured window (3), not the plan's narrower one (2), so a turn
+        # is never both summarised and sent in full.
+        self.pending.assert_called_with("F", "65", SESSION, offset=3, covered_until=previous.covered_until)
         self.assertEqual(self.ask.call_args[0][0], "- earlier")
         self.assertEqual(self.ask.call_args[0][2], ["Answer in English."])
         kwargs = self.store.call_args.kwargs
@@ -202,6 +210,42 @@ class RequestAndParseTests(SettingsCase):
         for bad in ("", '{"summary": ""}', "not json"):
             with self.assertRaises(ValueError):
                 cs.parse_summary(bad)
+
+
+class ReadRecordTests(SettingsCase):
+    """What the memory panel shows for a chat. Reading never creates the table."""
+
+    def _read(self, rows):
+        cur = MagicMock()
+        cur.fetchone.side_effect = list(rows)
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        with patch.object(cs, "is_db_available", return_value=True), \
+                patch.object(cs, "get_db_connection", return_value=conn):
+            conn.__enter__.return_value = conn
+            return cs.read_summary_record("F", "65", SESSION), cur
+
+    def test_a_stored_summary_comes_back_with_its_details(self):
+        row = {"summary": "- The advocate asked for the FIR date.", "covered_turns": 8,
+               "model": "gemini-3.8-flash", "updated_at": T0}
+        record, cur = self._read([{"present": True}, row])
+        self.assertEqual(record["covered_turns"], 8)
+        self.assertEqual(record["model"], "gemini-3.8-flash")
+        self.assertEqual(record["session_id"], SESSION)
+        self.assertEqual(record["chars"], len(row["summary"]))
+        self.assertTrue(record["updated_at"].startswith("2026-09-15"))
+        self.assertFalse(any("CREATE TABLE" in c[0][0] for c in cur.execute.call_args_list))
+
+    def test_no_table_no_row_and_no_session_all_read_as_nothing(self):
+        self.assertIsNone(self._read([{"present": False}])[0])
+        self.assertIsNone(self._read([{"present": True}, None])[0])
+        self.assertIsNone(cs.read_summary_record("F", "65", ""))
+        self.assertEqual(cs.read_summary_text("F", "65", ""), "")
+
+    def test_a_database_error_reads_as_nothing(self):
+        with patch.object(cs, "is_db_available", return_value=True), \
+                patch.object(cs, "get_db_connection", side_effect=RuntimeError("down")):
+            self.assertIsNone(cs.read_summary_record("F", "65", SESSION))
 
 
 class DeleteTests(unittest.TestCase):

@@ -166,6 +166,29 @@ def has_universal_cue(text: str | None) -> bool:
     return bool(UNIVERSAL_CUE_RE.search(str(text or "")))
 
 
+# A repeated request becomes a standing instruction only when it says HOW to answer:
+# a layout, a language, a citation style, a form of address, a length. Asking for the
+# same CONTENT again ("give me a detailed summary") is a request, however often it is
+# repeated, and must never turn into a rule the advocate did not write.
+MANNER_RE = re.compile(
+    r"\b(?:tabular|table|tables|column|columns|chart|matrix|timeline|chronolog\w*|"
+    r"bullet\w*|point[\s-]?wise|numbered|heading\w*|section[\s-]?wise|paragraph\w*|"
+    r"format|formatted|layout|structure[d]?|template|style|tone|wording|"
+    r"ascii|diagram\w*|markdown|plain\s+text|"
+    r"english|marathi|hindi|gujarati|kannada|tamil|telugu|urdu|bengali|punjabi|"
+    r"cite|cites|citation\w*|footnote\w*|authorit(?:y|ies)|"
+    r"brief|briefly|concise\w*|short(?:er)?|crisp|one[\s-]?page|word\s+limit)\b"
+    # How to name someone: "refer to my client as the Applicant", "call Pawar the Applicant".
+    r"|\b(?:refer\s+to|address|call)\s+[^,.]{0,40}?\b(?:as|the)\b",
+    re.IGNORECASE,
+)
+
+
+def describes_manner(text: str | None) -> bool:
+    """True when a request says how an answer should be written, not what it should contain."""
+    return bool(MANNER_RE.search(str(text or "")))
+
+
 # ── The extractor's instructions ─────────────────────────────────────────────
 
 EXTRACTOR_PROMPT = """\
@@ -1080,6 +1103,29 @@ def _count_request(
     return _Request(row=row, source_ref=ref, count=count, counted=not already, was_hidden=_is_hidden(row))
 
 
+def polished_rule(book: _Rulebook, text: str, scope_type: str) -> str | None:
+    """A tidy wording of a rule, for the advocate to read and accept, or None.
+
+    The advocate's message is often a half-sentence ("at each time give me simple
+    answer to understand with proper"), which should never become a standing
+    instruction as typed. Best-effort: on any failure their own wording stands.
+    """
+    try:
+        from app.services.memory.polish import polish_instruction
+
+        result = polish_instruction(
+            text,
+            scope_type=scope_type,
+            party_names=book.party_names if scope_type == "user" else (),
+        )
+    except Exception as exc:  # noqa: BLE001 — a rule is still worth keeping unpolished
+        logger.debug("[Memory] polish unavailable for a noticed rule: %s", exc)
+        return None
+    if result.problems or result.error or not result.changed:
+        return None
+    return result.polished or None
+
+
 def _save_instruction(
     book: _Rulebook,
     text: str,
@@ -1088,25 +1134,35 @@ def _save_instruction(
     report: WriteReport,
     *,
     request: _Request | None = None,
+    display_text: str | None = None,
 ) -> str:
     """Add a standing instruction to the case's, or the advocate's, set.
+
+    `display_text` is the tidied wording; the advocate's own words are kept in the
+    record so a later repeat still matches what was saved.
 
     Returns "saved", "already_saved", "full" (no room in the set) or "failed".
     """
     items = book.items[scope_type]
-    if _already_saved(text, items):
+    body = display_text or text
+    if _already_saved(text, items) or _already_saved(body, items):
         return "already_saved"
-    if instruction_set_room(items, text, scope_type=scope_type) is not None:
+    if instruction_set_room(items, body, scope_type=scope_type) is not None:
         return "full"
     count = request.count if request is not None else 1
     try:
         result = repository.add_instruction(
             scope_type,
             book.scope_id(scope_type),
-            text,
+            body,
             None,
             origin="chat",
-            source_ref={**source_extra, "auto": True, "request_count": count},
+            source_ref={
+                **source_extra,
+                "auto": True,
+                "request_count": count,
+                **({"polished": True, "original": text} if body != text else {}),
+            },
             actor=WRITER_ACTOR,
         )
     except Exception as exc:  # noqa: BLE001
@@ -1145,7 +1201,7 @@ def _save_instruction(
     report.instructions_saved += 1
     report.note(
         "instructions",
-        {"id": item.get("id"), "text": text, "scope": scope_type, "version": result.get("version"), "requests": count},
+        {"id": item.get("id"), "text": body, "scope": scope_type, "version": result.get("version"), "requests": count},
     )
     return "saved"
 
@@ -1158,12 +1214,17 @@ def _store_request(
     *,
     visible: bool,
     report: WriteReport,
+    polished: str | None = None,
 ) -> None:
     """Keep a counted request, on a new noticed rule or on the one it repeats.
 
-    `visible` decides whether the advocate sees it under Suggestions.
+    `visible` decides whether the advocate sees it under Suggestions. The stored
+    text stays the advocate's own words, so a later repeat still matches it;
+    `polished` carries the tidy wording the panel offers them to accept.
     """
     ref = {**request.source_ref, "hidden": not visible}
+    if polished:
+        ref["polished"] = polished
     newly_shown = visible and (request.row is None or request.was_hidden)
     try:
         if request.row is None:
@@ -1194,7 +1255,13 @@ def _store_request(
         report.proposals += 1
         report.note(
             "suggestions",
-            {"id": proposal_id, "kind": "instruction", "scope": scope_type, "text": text, "count": request.count},
+            {
+                "id": proposal_id,
+                "kind": "instruction",
+                "scope": scope_type,
+                "text": polished or text,
+                "count": request.count,
+            },
         )
 
 
@@ -1277,6 +1344,11 @@ def _handle_proposals(
             continue
 
         explicit = message_rule and has_standing_rule(text)
+        # Asking for the same content again is not a way of working. Only a rule the
+        # advocate actually worded as one, or a request about HOW to answer, is counted.
+        if not explicit and not describes_manner(text):
+            report.reject("proposal_not_a_way_of_working")
+            continue
         if not explicit and find_duplicate(text, book.dismissed[scope_type]) is not None:
             report.reject("proposal_dismissed_before")
             continue
@@ -1291,20 +1363,28 @@ def _handle_proposals(
 
         stated_rule = bool(request.source_ref.get("explicit"))
         threshold = save_after if stated_rule else pattern_save_after
-        if (
+        will_save = (
             settings.instructions_enabled
             and threshold > 0
             and request.count >= threshold
             and find_duplicate(text, book.undone[scope_type]) is None
-        ):
-            outcome = _save_instruction(book, text, scope_type, source_extra, report, request=request)
+        )
+        will_show = stated_rule or request.count >= suggest_after
+        # Tidy the wording once, only when the advocate is about to see it or it is
+        # about to be saved. A rule still being counted out of sight costs nothing.
+        polished = polished_rule(book, text, scope_type) if (will_save or will_show) else None
+
+        if will_save:
+            outcome = _save_instruction(
+                book, text, scope_type, source_extra, report, request=request, display_text=polished
+            )
             if outcome in ("saved", "already_saved"):
                 continue
             # No room in the set, or the write failed: show it as a suggestion instead.
             visible = True
         else:
-            visible = stated_rule or request.count >= suggest_after
-        _store_request(book, text, scope_type, request, visible=visible, report=report)
+            visible = will_show
+        _store_request(book, text, scope_type, request, visible=visible, report=report, polished=polished)
 
         # The same request in another case too: worth suggesting for all cases,
         # if it is fit to be universal and the advocate has not turned it down.

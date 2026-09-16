@@ -171,6 +171,12 @@ class PolishRequest(BaseModel):
     scope: InstructionScope = "case"
 
 
+class SuggestionAccept(BaseModel):
+    """The wording the advocate approved: the tidied version, or their own edit of it."""
+
+    text: str | None = Field(default=None, max_length=MAX_INSTRUCTION_ITEM_CHARS * 2)
+
+
 class AdvocateLineCreate(BaseModel):
     category: AdvocateCategory
     text: str = Field(max_length=MAX_LINE_CHARS * 2)
@@ -1024,6 +1030,40 @@ def get_turn(
     }
 
 
+@router.get("/cases/{folder_name}/chat-summary")
+def get_chat_summary(
+    folder_name: str,
+    session_id: str | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The running summary of one chat, for reading only.
+
+    Kept per chat in `chat_session_summaries`, not in case memory: it condenses the turns
+    that left the verbatim window so later questions carry them compactly. It already goes
+    into the prompt with the history, so nothing here is added to the memory blocks.
+    """
+    scope = _scope_or_404(folder_name, user)
+    from app.services import chat_summary as chat_summary_service
+
+    enabled = chat_summary_service.summary_enabled()
+    payload: dict[str, Any] = {
+        "case_key": scope.case_key,
+        "enabled": enabled,
+        "session_id": chat_summary_service.normalize_session_id(session_id) or None,
+        "recent_turns": chat_summary_service.configured_recent_turns(),
+        "max_tokens": chat_summary_service.summary_max_tokens(),
+        "summary": None,
+    }
+    if not enabled or not payload["session_id"]:
+        return payload
+    record = chat_summary_service.read_summary_record(
+        scope.folder_name or folder_name, scope.user_id, payload["session_id"]
+    )
+    if record is not None:
+        payload["summary"] = record
+    return payload
+
+
 # ── Suggestions (the model may suggest; only the advocate saves) ─────────────
 
 def _accept_suggestion(
@@ -1031,9 +1071,21 @@ def _accept_suggestion(
     *,
     case_scope: CaseScope | None,
     user: dict[str, Any],
+    approved_text: str | None = None,
 ) -> dict[str, Any]:
-    """Turn an accepted suggestion into an instruction item in the right set."""
-    text = " ".join(str(proposal.get("text") or "").split())
+    """Turn an accepted suggestion into an instruction item in the right set.
+
+    What gets saved is the wording the advocate approved: their own edit if they
+    made one, else the tidied version shown in the panel, else what they typed in
+    chat. Their chat wording is never saved unread.
+    """
+    source = proposal.get("source_ref") if isinstance(proposal.get("source_ref"), dict) else {}
+    spoken = " ".join(str(proposal.get("text") or "").split())
+    text = (
+        " ".join(str(approved_text or "").split())
+        or " ".join(str((source or {}).get("polished") or "").split())
+        or spoken
+    )
     scope_type = "case" if str(proposal.get("kind") or "instruction") == "instruction" and case_scope else "user"
     if scope_type == "case":
         scope_id = case_scope.case_key  # type: ignore[union-attr]
@@ -1044,10 +1096,12 @@ def _accept_suggestion(
     room = instruction_set_room(current.get("items") or [], text, scope_type=scope_type)
     if room is not None:
         raise _unprocessable([room])
-    source = proposal.get("source_ref") if isinstance(proposal.get("source_ref"), dict) else {}
     ref: dict[str, Any] = {"kind": "learned", "proposal_id": str(proposal.get("id") or "")}
-    if source.get("learned_from"):
-        ref["learned_from"] = source.get("learned_from")
+    if (source or {}).get("learned_from"):
+        ref["learned_from"] = (source or {}).get("learned_from")
+    if text != spoken:
+        ref["polished"] = True
+        ref["original"] = spoken
     result = repository.add_instruction(
         scope_type, scope_id, text, None, origin="learned", source_ref=ref, actor=_actor(user)
     )
@@ -1072,9 +1126,10 @@ def resolve_proposal(
     folder_name: str,
     proposal_id: str,
     decision: Literal["accept", "reject"],
+    body: SuggestionAccept | None = None,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Accepting adds the suggestion to the set it belongs to, validated."""
+    """Accepting saves the wording the advocate approved, validated."""
     scope = _scope_or_404(folder_name, user)
     proposal = repository.get_proposal(scope.case_key, proposal_id)
     if proposal is None:
@@ -1087,7 +1142,9 @@ def resolve_proposal(
         repository.set_proposal_status(scope.case_key, proposal_id, "rejected")
         return {"id": proposal_id, "status": "rejected"}
 
-    added = _accept_suggestion(proposal, case_scope=scope, user=user)
+    added = _accept_suggestion(
+        proposal, case_scope=scope, user=user, approved_text=body.text if body else None
+    )
     repository.set_proposal_status(scope.case_key, proposal_id, "accepted")
     return {"id": proposal_id, "status": "accepted", "kind": proposal.get("kind"), **added}
 
@@ -1105,6 +1162,7 @@ def list_user_suggestions(
 def resolve_user_suggestion(
     proposal_id: str,
     decision: Literal["accept", "reject"],
+    body: SuggestionAccept | None = None,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     key = user_proposal_key(_actor(user))
@@ -1116,7 +1174,7 @@ def resolve_user_suggestion(
     if decision == "reject":
         repository.set_proposal_status(key, proposal_id, "rejected")
         return {"id": proposal_id, "status": "rejected"}
-    added = _accept_suggestion(proposal, case_scope=None, user=user)
+    added = _accept_suggestion(proposal, case_scope=None, user=user, approved_text=body.text if body else None)
     repository.set_proposal_status(key, proposal_id, "accepted")
     return {"id": proposal_id, "status": "accepted", **added}
 

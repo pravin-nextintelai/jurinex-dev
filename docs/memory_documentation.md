@@ -71,6 +71,19 @@ general first, specific last - where two lines disagree, the later one wins
 
 The more specific a layer is, the later it appears, so it wins where two layers disagree. Documents always outrank memory: memory is context, never a source to cite.
 
+**Two different "summaries".** They are easy to confuse, so:
+
+| | Case memory → **Summary** section | The chat's **running summary** |
+|---|---|---|
+| Holds | Parties, stage, last action, open items | What this one conversation asked, answered and decided |
+| Scope | The case, across every chat | One chat session |
+| Written by | Case details at intake, then the chat writer when you state a durable fact | Rewritten after each answer, from the turns that left the recent window |
+| Lives in | `case_memory_lines` (section `summary`) | `chat_session_summaries` |
+| Lasts | Until you forget it | Goes when the chat goes |
+| You can edit it | Yes | No — read only |
+
+The running summary is shown in the Memory panel under the Summary section, for reading. It reaches the model with the conversation, not with the memory layers, so showing it there does not send it twice.
+
 ---
 
 ## 2. What happens on one message
@@ -184,6 +197,7 @@ Nothing is saved the first time you ask.
      otherwise                                         ->  this case
 ```
 
+- **The wording is tidied before you see it.** What you type in chat is often a half sentence ("at each time give me simple answer to understand with proper"), so a small model rewrites it as one clear directive. You read it, edit it or re-polish it, and only then add it; what gets saved is what you approved, with your original kept in the record. A rule saved automatically is tidied the same way.
 - Each message counts once, even if the extractor repeats itself.
 - A rule you dismissed, or saved and then deleted, is never saved again.
 - A rule is saved **for every case** only when your words say so ("in all my matters"). Ask for the same thing in a second case and it is offered for all cases, never saved silently.
@@ -253,6 +267,8 @@ Read that as: memory is a small slice. What drives the bill is how much of the c
 | Recent turns kept | 3 (`CHAT_HISTORY_RECENT_TURNS`), capped by the plan's `max_conversation_history` — Basic allows 2 |
 | Rolling summary of everything before | 1,000 tokens (`CHAT_SUMMARY_MAX_TOKENS`) |
 | Turns between the summary and the recent ones | up to 6, answers shortened |
+
+Each turn appears in exactly one of those rows. Folding holds back `CHAT_HISTORY_RECENT_TURNS` turns whatever the plan allows, so a turn the plan still sends in full can never also be inside the summary; a turn between the two windows is sent shortened as the gap.
 
 **Measured on this deployment:** a 22-turn chat that would have sent 8,730 tokens of history now sends **4,718**, of which the summary is 993. The saving grows with the length of the chat.
 
@@ -368,6 +384,7 @@ Base `/api/memory`, all routes behind a verified token. A case you cannot see re
 | `GET /suggestions`, `POST /suggestions/{id}/accept\|reject` | Cross-case suggestions |
 | `GET/PUT /settings?scope=user\|case\|firm` | The switches |
 | `GET /cases/{folder}/turns/{chat_id}` | What memory did after one answer |
+| `GET /cases/{folder}/chat-summary?session_id=` | One chat's running summary, read only |
 | `GET /cases/{folder}/export`, `POST .../import`, `POST .../seed` | Lifecycle |
 
 Conflicts return **409** with the current content; a rejected write returns **422** with the rule it broke.

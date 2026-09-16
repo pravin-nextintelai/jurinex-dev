@@ -27,6 +27,7 @@ from app.services.memory.writer import (
     TurnInput,
     WriteReport,
     build_extractor_input,
+    describes_manner,
     draft_status_line,
     extract_ops,
     has_standing_rule,
@@ -148,6 +149,7 @@ def harness(
     pattern_save_after=3,
     advocate_lines=None,
     advocate_forgotten=None,
+    polished=None,
 ):
     mocks = {}
     with ExitStack() as stack:
@@ -168,6 +170,7 @@ def harness(
             ),
         )
         module("conversation_summary", return_value=summary)
+        module("polished_rule", return_value=polished)
         repo("update_proposal", return_value=True)
         repo("available", return_value=available)
         repo("effective_settings", return_value=settings or MemorySettings())
@@ -671,8 +674,10 @@ class InstructionFromChatTests(unittest.TestCase):
         message = "The bank never disbursed the loan, draft the reply to the notice."
         report, mocks = run(message, extraction=proposal("Draft the reply to the notice"))
         mocks["add_instruction"].assert_not_called()
-        self.assertTrue(mocks["add_proposal"].call_args.args[4]["hidden"])
+        # Asking for a document is a request, not a way of working: it is not even counted.
+        mocks["add_proposal"].assert_not_called()
         self.assertEqual(report.proposals, 0)
+        self.assertIn("proposal_not_a_way_of_working", report.rejection_codes)
 
     def test_with_instructions_switched_off_a_rule_is_only_counted_and_suggested(self) -> None:
         history = {"512": [noticed(self.RULE, explicit=True, hidden=False)]}
@@ -1064,6 +1069,108 @@ class SubmitTests(unittest.TestCase):
             future = submit_post_turn(turn(HEART))
             self.assertIsNotNone(future)
             self.assertEqual(future.result(timeout=5).writes, 2)
+
+
+class RequestVersusRuleTests(unittest.TestCase):
+    """Asking for the same content again is a request; only HOW to answer can become a rule."""
+
+    def test_wording_about_how_to_answer_is_recognised(self) -> None:
+        for text in (
+            "in tabular format",
+            "give the dates in a table",
+            "answer in Marathi",
+            "cite SCC first",
+            "refer to my client as the Applicant",
+            "keep answers brief",
+            "use bullet points",
+            "give me ascii diagrams",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(describes_manner(text))
+
+    def test_asking_for_content_is_not(self) -> None:
+        for text in (
+            "give me detailed summary for this case",
+            "tell me about the petitioner and respondent",
+            "what are the grounds of the writ petition",
+            "explain the compensation order",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(describes_manner(text))
+
+    def test_a_repeated_content_request_never_becomes_an_instruction(self) -> None:
+        report, mocks = run(
+            "give me detailed summary for this case",
+            extraction=proposal("give me detailed summary for this case"),
+        )
+        mocks["add_instruction"].assert_not_called()
+        mocks["add_proposal"].assert_not_called()
+        self.assertIn("proposal_not_a_way_of_working", report.rejection_codes)
+
+    def test_a_formatting_request_is_still_counted(self) -> None:
+        _report, mocks = run("give me the dates in tabular format", extraction=proposal("give the dates in tabular format"))
+        mocks["add_proposal"].assert_called_once()
+
+    def test_a_rule_the_advocate_states_is_kept_even_without_those_words(self) -> None:
+        _report, mocks = run(
+            "From now on, start every answer with the case number.",
+            extraction=proposal("From now on, start every answer with the case number"),
+        )
+        mocks["add_proposal"].assert_called_once()
+
+
+class PolishedRuleTests(unittest.TestCase):
+    """A rule the advocate sees, or one saved for them, is tidied first — never their raw half-sentence."""
+
+    SPOKEN = "at each time give me simple answer to understand with proper"
+    TIDY = "Answer in simple language that is easy to understand."
+
+    def test_a_rule_shown_to_the_advocate_carries_the_tidy_wording(self) -> None:
+        _report, mocks = run(
+            f"From now on, {self.SPOKEN}",
+            extraction=proposal(f"From now on, {self.SPOKEN}"),
+            polished=self.TIDY,
+        )
+        mocks["polished_rule"].assert_called_once()
+        text, ref = mocks["add_proposal"].call_args.args[3], mocks["add_proposal"].call_args.args[4]
+        # The advocate's own words stay on the row, so a later repeat still matches it.
+        self.assertEqual(text, f"From now on, {self.SPOKEN}")
+        self.assertEqual(ref["polished"], self.TIDY)
+        self.assertFalse(ref["hidden"])
+
+    def test_a_rule_still_counted_out_of_sight_is_not_polished(self) -> None:
+        _report, mocks = run(
+            "give the dates in a table",
+            extraction=proposal("give the dates in a table"),
+            polished=self.TIDY,
+        )
+        mocks["polished_rule"].assert_not_called()
+        self.assertNotIn("polished", mocks["add_proposal"].call_args.args[4])
+
+    def test_a_saved_instruction_uses_the_tidy_wording_and_keeps_the_original(self) -> None:
+        rule = f"From now on, {self.SPOKEN}"
+        _report, mocks = run(
+            rule,
+            history={"512": [noticed(rule, explicit=True, hidden=False)]},
+            extraction=proposal(rule),
+            polished=self.TIDY,
+        )
+        add = mocks["add_instruction"]
+        add.assert_called_once()
+        self.assertEqual(add.call_args.args[2], self.TIDY)
+        ref = add.call_args.kwargs["source_ref"]
+        self.assertEqual((ref["polished"], ref["original"]), (True, rule))
+
+    def test_without_polishing_the_advocates_own_words_stand(self) -> None:
+        rule = "From now on, answer in a table"
+        _report, mocks = run(
+            rule,
+            history={"512": [noticed(rule, explicit=True, hidden=False)]},
+            extraction=proposal(rule),
+            polished=None,
+        )
+        self.assertEqual(mocks["add_instruction"].call_args.args[2], rule)
+        self.assertNotIn("original", mocks["add_instruction"].call_args.kwargs["source_ref"])
 
 
 class AdvocateMemoryTests(unittest.TestCase):

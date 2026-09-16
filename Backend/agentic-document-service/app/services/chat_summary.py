@@ -102,6 +102,12 @@ _SUMMARY_SQL = """
     WHERE folder_name = %s AND user_id = %s AND session_id = %s
 """
 
+_SUMMARY_RECORD_SQL = """
+    SELECT summary, covered_turns, model, updated_at
+    FROM chat_session_summaries
+    WHERE folder_name = %s AND user_id = %s AND session_id = %s
+"""
+
 # The WHERE on the update is an optimistic lock: a summary is replaced only if nobody
 # folded other turns into it since it was read.
 _UPSERT_SQL = """
@@ -179,6 +185,10 @@ def summary_enabled() -> bool:
     return bool(getattr(get_settings(), "chat_summary_enabled", True))
 
 
+def configured_recent_turns() -> int:
+    return max(1, int(getattr(get_settings(), "chat_history_recent_turns", 3) or 3))
+
+
 def recent_turn_count(max_history: int | None) -> int:
     """Turns sent verbatim: the configured number, never more than the plan allows."""
     try:
@@ -187,8 +197,19 @@ def recent_turn_count(max_history: int | None) -> int:
         plan = 0
     if plan <= 0:
         return 0
-    configured = int(getattr(get_settings(), "chat_history_recent_turns", 3) or 3)
-    return max(1, min(plan, configured))
+    return max(1, min(plan, configured_recent_turns()))
+
+
+def fold_offset() -> int:
+    """Newest turns held back from the summary, whatever the plan allows.
+
+    The verbatim window is `recent_turn_count`, which the plan's max_conversation_history
+    can narrow for one model and widen for the next. Folding from the *configured* window
+    instead keeps coverage strictly older than any verbatim window, so a turn is never both
+    summarised and sent in full. Turns between the two windows are still sent, shortened,
+    as the gap.
+    """
+    return configured_recent_turns()
 
 
 def answer_chars(*, latest: bool) -> int:
@@ -438,30 +459,52 @@ def ensure_table(conn: Any) -> None:
         _ensured = True
 
 
-def read_summary_text(folder_name: str, user_id: Any, session_id: Any) -> str:
-    """The stored summary of one chat, or "" when there is none.
+def read_summary_record(folder_name: str, user_id: Any, session_id: Any) -> dict[str, Any] | None:
+    """The stored summary of one chat with when and how it was written, or None.
 
-    For readers outside this module (the memory writer). Never raises and never creates
-    the table.
+    For readers outside this module (the memory writer, the memory panel). Never raises
+    and never creates the table.
     """
     folder = str(folder_name or "").strip()
     user = str(user_id or "").strip()
     session = normalize_session_id(session_id)
     if not (folder and user and session) or not is_db_available():
-        return ""
+        return None
     try:
         with get_db_connection() as conn, conn.cursor() as cur:
             cur.execute("SELECT to_regclass('public.chat_session_summaries') IS NOT NULL AS present")
             row = cur.fetchone()
             present = (row.get("present") if hasattr(row, "get") else row[0]) if row else False
             if not present:
-                return ""
-            cur.execute(_SUMMARY_SQL, (folder, user, session))
-            found = _summary_row(cur.fetchone())
-        return found.summary if found is not None else ""
+                return None
+            cur.execute(_SUMMARY_RECORD_SQL, (folder, user, session))
+            found = cur.fetchone()
+        if not found:
+            return None
+        data = dict(found) if hasattr(found, "keys") else {
+            "summary": found[0], "covered_turns": found[1], "model": found[2], "updated_at": found[3]
+        }
+        text = str(data.get("summary") or "").strip()
+        if not text:
+            return None
+        updated = data.get("updated_at")
+        return {
+            "session_id": session,
+            "summary": text,
+            "covered_turns": int(data.get("covered_turns") or 0),
+            "model": str(data.get("model") or "") or None,
+            "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else None,
+            "chars": len(text),
+        }
     except Exception as exc:  # noqa: BLE001
-        logger.debug("[ChatSummary] summary text unavailable session=%s: %s", session, exc)
-        return ""
+        logger.debug("[ChatSummary] summary unavailable session=%s: %s", session, exc)
+        return None
+
+
+def read_summary_text(folder_name: str, user_id: Any, session_id: Any) -> str:
+    """The stored summary of one chat, or "" when there is none. Never raises."""
+    record = read_summary_record(folder_name, user_id, session_id)
+    return str(record.get("summary") or "") if record else ""
 
 
 def _read_summary(folder_name: str, user_id: str, session_id: str) -> SummaryRow | None:
@@ -668,7 +711,7 @@ def update_session_summary(
         for _round in range(MAX_UPDATE_ROUNDS):
             previous = _read_summary(folder, user, session)
             covered = previous.covered_until if previous is not None else None
-            pending = _pending_turns(folder, user, session, offset=recent_count, covered_until=covered)
+            pending = _pending_turns(folder, user, session, offset=fold_offset(), covered_until=covered)
             if not pending:
                 break
             batch = pending[:MAX_TURNS_PER_UPDATE]
