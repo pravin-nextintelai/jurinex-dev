@@ -241,6 +241,7 @@ CREATE TABLE IF NOT EXISTS advocate_memory_sets (
     user_id     TEXT PRIMARY KEY,
     version     INTEGER     NOT NULL DEFAULT 1,
     forgotten   JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    last_consolidation JSONB,
     updated_by  TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -308,6 +309,9 @@ _advocate_column = True
 # it does, facts are read without their use and nothing is counted; the panel then
 # shows no use and eviction falls back to the oldest auto-learned fact.
 _advocate_use_columns = True
+# Whether advocate_memory_sets has `last_consolidation` (migration 177). Without it a
+# merge cannot be undone, so consolidation stays switched off rather than run blind.
+_advocate_consolidation_column = True
 
 _PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected"})
 
@@ -339,30 +343,47 @@ def ensure_tables(conn: Any) -> None:
     _tables_ready = True
 
 
-def _ensure_advocate_use_columns(conn: Any) -> None:
-    """Give an advocate table created before migration 176 its use counters."""
-    global _advocate_use_columns
+def _add_column(conn: Any, table: str, column: str, ddl: str) -> bool:
+    """Add one column if this database has not had its migration yet. True when present."""
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM information_schema.columns "
-                "WHERE table_name = 'advocate_memory_lines' AND column_name = 'used_count' LIMIT 1"
+                "WHERE table_name = %s AND column_name = %s LIMIT 1",
+                (table, column),
             )
             if cur.fetchone() is None:
                 cur.execute("SET LOCAL lock_timeout = '2s'")
-                cur.execute(
-                    "ALTER TABLE advocate_memory_lines "
-                    "ADD COLUMN IF NOT EXISTS used_count INTEGER NOT NULL DEFAULT 0, "
-                    "ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ"
-                )
+                cur.execute(ddl)
         conn.commit()
-        _advocate_use_columns = True
+        return True
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
-        _advocate_use_columns = False
-        logger.warning(
-            "[Memory] which remembered facts get used is not counted until migration 176 is applied: %s", exc
-        )
+        logger.warning("[Memory] %s.%s is unavailable until its migration is applied: %s", table, column, exc)
+        return False
+
+
+def _ensure_advocate_use_columns(conn: Any) -> None:
+    """Give an advocate table created before migrations 176 and 177 its newer columns.
+
+    Each is settled on its own, so a database that has one and not the other keeps the
+    half it has.
+    """
+    global _advocate_use_columns, _advocate_consolidation_column
+    _advocate_use_columns = _add_column(
+        conn,
+        "advocate_memory_lines",
+        "used_count",
+        "ALTER TABLE advocate_memory_lines "
+        "ADD COLUMN IF NOT EXISTS used_count INTEGER NOT NULL DEFAULT 0, "
+        "ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ",
+    )
+    _advocate_consolidation_column = _add_column(
+        conn,
+        "advocate_memory_sets",
+        "last_consolidation",
+        "ALTER TABLE advocate_memory_sets ADD COLUMN IF NOT EXISTS last_consolidation JSONB",
+    )
 
 
 def _ensure_advocate_column(conn: Any) -> None:
@@ -1923,6 +1944,145 @@ def delete_advocate_memory(user_id: str, *, conn: Any = None) -> int:
             connection.rollback()
             raise
     return count
+
+
+def consolidation_supported() -> bool:
+    """Whether this database can keep the set before a merge, so a merge can be undone."""
+    return _advocate_consolidation_column
+
+
+def _snapshot_rows(lines: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The parts of a fact worth putting back: what it says, and where it came from."""
+    return [
+        {
+            "category": str(line.get("category") or ""),
+            "text": str(line.get("text") or ""),
+            "source_ref": line.get("source_ref") if isinstance(line.get("source_ref"), dict) else {},
+            "created_by": line.get("created_by"),
+            "used_count": int(line.get("used_count") or 0),
+        }
+        for line in lines
+        if str(line.get("text") or "").strip()
+    ]
+
+
+def replace_advocate_lines(
+    user_id: str,
+    lines: Sequence[dict[str, Any]],
+    expected_version: int | None = None,
+    *,
+    snapshot: Sequence[dict[str, Any]] | None = None,
+    snapshot_meta: dict[str, Any] | None = None,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Swap the whole set for a new one in a single transaction.
+
+    Consolidation uses this. `snapshot` is the set as it stood beforehand, kept on the
+    set row so one press puts it back; passing None clears any snapshot, which is what
+    undo itself does. Returns {version, lines}.
+    """
+    uid = _require_user(user_id)
+    rows = [
+        (str(line.get("category") or ""), " ".join(str(line.get("text") or "").split()))
+        for line in lines
+    ]
+    rows = [(category, text) for category, text in rows if text and category in ADVOCATE_CATEGORIES]
+    if not rows:
+        raise ValueError("A replacement set needs at least one fact.")
+
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            _ensure_advocate_set(cur, uid, actor)
+            version = _bump_advocate_set(cur, uid, expected_version)
+            cur.execute("DELETE FROM advocate_memory_lines WHERE user_id = %s", (uid,))
+            for position, (category, text) in enumerate(rows, 1):
+                cur.execute(
+                    "INSERT INTO advocate_memory_lines (user_id, category, ord, text, source_ref, created_by) "
+                    "VALUES (%s, %s, %s, %s, %s::jsonb, %s)",
+                    (uid, category, position, text[:MAX_LINE_CHARS], json.dumps({"kind": "consolidated"}), actor),
+                )
+            if _advocate_consolidation_column:
+                record = (
+                    json.dumps({**(snapshot_meta or {}), "before": _snapshot_rows(snapshot)})
+                    if snapshot is not None
+                    else None
+                )
+                cur.execute(
+                    "UPDATE advocate_memory_sets SET last_consolidation = %s::jsonb WHERE user_id = %s",
+                    (record, uid),
+                )
+            fresh = _fetch_advocate_lines(cur, uid)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "lines": fresh}
+
+
+def get_advocate_consolidation(user_id: str, *, conn: Any = None) -> dict[str, Any] | None:
+    """The record of the last merge, or None when there is nothing to undo."""
+    uid = _require_user(user_id)
+    if not _advocate_consolidation_column:
+        return None
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute("SELECT last_consolidation FROM advocate_memory_sets WHERE user_id = %s", (uid,))
+        row = cur.fetchone()
+    value = (row or {}).get("last_consolidation") if row else None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) and value.get("before") else None
+
+
+def undo_advocate_consolidation(
+    user_id: str,
+    expected_version: int | None = None,
+    *,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Put the set back as it was before the last merge. Returns {version, lines, restored}."""
+    uid = _require_user(user_id)
+    record = get_advocate_consolidation(uid, conn=conn)
+    before = list((record or {}).get("before") or [])
+    if not before:
+        current = get_advocate_memory(uid, conn=conn)
+        return {"version": current.get("version"), "lines": current.get("lines") or [], "restored": 0}
+
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            version = _bump_advocate_set(cur, uid, expected_version)
+            cur.execute("DELETE FROM advocate_memory_lines WHERE user_id = %s", (uid,))
+            for position, line in enumerate(before, 1):
+                category = str(line.get("category") or "")
+                text = " ".join(str(line.get("text") or "").split())
+                if not text or category not in ADVOCATE_CATEGORIES:
+                    continue
+                ref = line.get("source_ref") if isinstance(line.get("source_ref"), dict) else {}
+                values = [uid, category, position, text[:MAX_LINE_CHARS], json.dumps(ref), line.get("created_by")]
+                columns = "user_id, category, ord, text, source_ref, created_by"
+                placeholders = "%s, %s, %s, %s, %s::jsonb, %s"
+                if _advocate_use_columns:
+                    # A restored fact keeps the work it had already done.
+                    columns += ", used_count"
+                    placeholders += ", %s"
+                    values.append(int(line.get("used_count") or 0))
+                cur.execute(
+                    f"INSERT INTO advocate_memory_lines ({columns}) VALUES ({placeholders})", tuple(values)
+                )
+            if _advocate_consolidation_column:
+                cur.execute(
+                    "UPDATE advocate_memory_sets SET last_consolidation = NULL WHERE user_id = %s", (uid,)
+                )
+            fresh = _fetch_advocate_lines(cur, uid)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "lines": fresh, "restored": len(fresh)}
 
 
 def record_advocate_use(user_id: str, line_ids: Sequence[str], *, conn: Any = None) -> int:

@@ -15,6 +15,7 @@ merge and retry instead of overwriting an edit it never saw.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -551,15 +552,40 @@ def _replace_from_text(
 
 # ── About the advocate: facts remembered across every case ───────────────────
 
+def _consolidation_summary(user_id: str) -> dict[str, Any] | None:
+    """What the last merge did, without the set it kept for undo. None when there is none."""
+    try:
+        record = repository.get_advocate_consolidation(user_id)
+    except Exception as exc:  # noqa: BLE001 — the panel opens with or without this
+        logger.debug("[Memory] last consolidation unreadable user_id=%s: %s", user_id, exc)
+        return None
+    if not record:
+        return None
+    return {
+        "at": record.get("at"),
+        "model": record.get("model"),
+        "lines_before": record.get("lines_before"),
+        "lines_after": record.get("lines_after"),
+        "can_undo": True,
+    }
+
+
 def _advocate_payload(user_id: str) -> dict[str, Any]:
+    from app.services.memory import consolidate as consolidation
+
     data = repository.get_advocate_memory(user_id)
+    lines = data.get("lines") or []
     return {
         "version": data.get("version"),
-        "lines": data.get("lines") or [],
+        "lines": lines,
         "categories": list(ADVOCATE_CATEGORIES),
         "max_lines": MAX_ADVOCATE_LINES,
         "max_line_chars": MAX_LINE_CHARS,
         "max_chars": MAX_ADVOCATE_CHARS,
+        # How full the set is, and what tidying it would take.
+        "used_chars": sum(len(str(line.get("text") or "")) for line in lines),
+        "can_consolidate": consolidation.should_consolidate(lines) and repository.consolidation_supported(),
+        "consolidation": _consolidation_summary(user_id),
     }
 
 
@@ -672,6 +698,64 @@ def forget_advocate(user: dict[str, Any] = Depends(get_current_user)) -> dict[st
     count = repository.delete_advocate_memory(_actor(user))
     logger.info("[Memory] user_id=%s forgot everything about themselves (%s facts)", _actor(user), count)
     return {"deleted": count}
+
+
+@router.post("/advocate/consolidate")
+def consolidate_advocate(
+    version: int | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Rewrite what JuriNex remembers about the advocate as fewer, sharper lines.
+
+    Runs on its own near the ceiling; this is the same pass on request. It may add
+    nothing that is not already stored, every merged line faces the rules a typed one
+    faces, and the set as it stood is kept so it can be undone.
+    """
+    from app.services.memory import consolidate as consolidation
+
+    actor = _actor(user)
+    if not repository.consolidation_supported():
+        raise _unprocessable([Rejection("unavailable", "Tidying is not available on this database yet.")])
+    current = repository.get_advocate_memory(actor)
+    result = consolidation.plan(current.get("lines") or [], party_names=_party_names(user))
+    if not result.changed:
+        return {**result.as_dict(), **_advocate_payload(actor)}
+    try:
+        repository.replace_advocate_lines(
+            actor,
+            result.after,
+            version,
+            snapshot=result.before,
+            snapshot_meta={
+                "at": datetime.now(timezone.utc).isoformat(),
+                "model": result.model,
+                "lines_before": len(result.before),
+                "lines_after": len(result.after),
+            },
+            actor=actor,
+        )
+    except VersionConflict as exc:
+        raise _advocate_conflict(exc) from exc
+    result.applied = True
+    logger.info(
+        "[Memory] user_id=%s tidied their memory: %s facts -> %s", actor, len(result.before), len(result.after)
+    )
+    return {**result.as_dict(), **_advocate_payload(actor)}
+
+
+@router.post("/advocate/consolidate/undo")
+def undo_advocate_consolidation(
+    version: int | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Put the set back as it was before the last tidy."""
+    actor = _actor(user)
+    try:
+        result = repository.undo_advocate_consolidation(actor, version, actor=actor)
+    except VersionConflict as exc:
+        raise _advocate_conflict(exc) from exc
+    logger.info("[Memory] user_id=%s undid the last tidy (%s facts restored)", actor, result.get("restored"))
+    return {"restored": result.get("restored"), **_advocate_payload(actor)}
 
 
 # ── Layer 1: the advocate's universal instructions (older "preferences" routes) ──
@@ -1027,6 +1111,8 @@ def get_turn(
         "advocate": list(details.get("advocate") or []),
         # Facts JuriNex had learned but never used, dropped to make room for a new one.
         "advocate_evicted": list(details.get("advocate_evicted") or []),
+        # Overlapping facts folded together so memory could keep growing.
+        "advocate_consolidated": list(details.get("advocate_consolidated") or []),
         "instructions_applied": len(details.get("instructions_applied") or []),
         "seeded": seeded if isinstance(seeded, dict) else None,
     }

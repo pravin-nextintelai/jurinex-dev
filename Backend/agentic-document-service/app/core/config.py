@@ -768,6 +768,28 @@ class Settings(BaseSettings):
         default=60.0,
         validation_alias=AliasChoices("CHAT_SUMMARY_TIMEOUT_S"),
     )
+    # Consolidation (app/services/memory/consolidate.py): near its ceiling, what JuriNex
+    # remembers about the advocate is rewritten once as fewer, sharper lines, so memory
+    # keeps growing instead of stopping at "full". The merge is grounded in the stored
+    # words, re-validated line by line, and reversible.
+    advocate_consolidate_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ADVOCATE_CONSOLIDATE_ENABLED"),
+    )
+    # How full the set must be (0.5–1.0) before a merge is worth its model call.
+    advocate_consolidate_at: float = Field(
+        default=0.8,
+        validation_alias=AliasChoices("ADVOCATE_CONSOLIDATE_AT"),
+    )
+    advocate_consolidate_model: str = Field(
+        default="gemini-3.8-flash",
+        validation_alias=AliasChoices("ADVOCATE_CONSOLIDATE_MODEL"),
+    )
+    # The quietest a merge may run again for one advocate, in seconds.
+    advocate_consolidate_min_interval_s: float = Field(
+        default=3600.0,
+        validation_alias=AliasChoices("ADVOCATE_CONSOLIDATE_MIN_INTERVAL_S"),
+    )
     # Instructions from chat (app/services/memory/writer.py) are counted, not saved on sight.
     # A rule the advocate words as one ("always", "from now on") is shown as a suggestion at
     # once and saved after MEMORY_RULE_SAVE_AFTER separate requests. A way of working asked

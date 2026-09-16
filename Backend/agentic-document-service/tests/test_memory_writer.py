@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import unittest
 from contextlib import ExitStack, contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app.services.memory import consolidate as consolidate_mod
 from app.services.memory import writer as writer_mod
+from app.services.memory.consolidate import ConsolidationResult
 from app.services.memory.recall import RecallHit
 from app.services.memory.repository import VersionConflict
 from app.services.memory.schemas import (
@@ -150,6 +152,8 @@ def harness(
     advocate_lines=None,
     advocate_forgotten=None,
     advocate_evictable=None,
+    consolidation=None,
+    last_consolidation=None,
     polished=None,
 ):
     mocks = {}
@@ -217,6 +221,22 @@ def harness(
             side_effect=lambda uid, line_id, expected=None, *, text=None, category=None, source_ref_extra=None, actor=None: {
                 "version": 2, "line": {"id": line_id, "category": category, "text": text}
             },
+        )
+        repo("consolidation_supported", return_value=True)
+        repo("get_advocate_consolidation", return_value=last_consolidation)
+        repo(
+            "replace_advocate_lines",
+            side_effect=lambda uid, lines, expected=None, **kw: {
+                "version": 2,
+                "lines": [{"id": f"merged-{i}", **dict(line)} for i, line in enumerate(lines)],
+            },
+        )
+        mocks["consolidate_plan"] = stack.enter_context(
+            patch.object(
+                consolidate_mod,
+                "plan",
+                return_value=consolidation if consolidation is not None else ConsolidationResult(error="too_few"),
+            )
         )
         repo("record_advocate_use", return_value=len(advocate_lines or []))
         repo("least_useful_advocate_lines", return_value=[dict(line) for line in advocate_evictable or []])
@@ -1314,6 +1334,90 @@ class AdvocateUseTests(unittest.TestCase):
         with harness() as mocks:
             mocks["record_advocate_use"].side_effect = RuntimeError("db down")
             report = run_post_turn(turn("Tell me about it", log_entry=self.SELECTED), today=TODAY)
+        self.assertNotEqual(report.skipped_reason, "writer_error")
+
+
+class AdvocateConsolidationTests(unittest.TestCase):
+    """Near the ceiling the set is tidied, so memory keeps growing instead of stopping."""
+
+    FACT = "Mostly appears before the Aurangabad Bench of the Bombay High Court in land matters"
+    MESSAGE = "I mostly appear before the Aurangabad Bench of the Bombay High Court in land matters."
+
+    @staticmethod
+    def merge(before=6, after=3):
+        return ConsolidationResult(
+            before=[{"category": "background", "text": f"Old fact {n}"} for n in range(before)],
+            after=[{"category": "background", "text": f"Merged fact {n}"} for n in range(after)],
+            model="gemini-3.8-flash",
+        )
+
+    # Four facts at the character cap: full, and enough of them to be worth merging.
+    FULL = [{"id": f"old-{n}", "category": "background", "text": "x" * 745} for n in range(4)]
+
+    def run_full(self, **kwargs):
+        return run(
+            self.MESSAGE,
+            extraction=Extraction(advocate=[AdvocateFact(category="practice", text=self.FACT)]),
+            advocate_lines=[dict(line) for line in self.FULL],
+            **kwargs,
+        )
+
+    def test_tidying_makes_room_and_the_new_fact_is_saved(self) -> None:
+        report, mocks = self.run_full(consolidation=self.merge())
+        mocks["replace_advocate_lines"].assert_called_once()
+        mocks["add_advocate_line"].assert_called_once()
+        mocks["delete_advocate_line"].assert_not_called()
+        self.assertEqual(report.details["advocate_consolidated"][0]["lines_after"], 3)
+        self.assertNotIn("advocate_full", report.rejection_codes)
+
+    def test_the_set_before_the_merge_is_kept_for_undo(self) -> None:
+        _, mocks = self.run_full(consolidation=self.merge())
+        kwargs = mocks["replace_advocate_lines"].call_args.kwargs
+        self.assertEqual(len(kwargs["snapshot"]), 6)
+        self.assertEqual(kwargs["snapshot_meta"]["lines_before"], 6)
+        self.assertEqual(kwargs["snapshot_meta"]["model"], "gemini-3.8-flash")
+
+    def test_tidying_is_tried_before_anything_is_dropped(self) -> None:
+        """Only when the merge cannot help does a never-used fact make way."""
+        report, mocks = self.run_full(
+            consolidation=ConsolidationResult(error="unavailable"),
+            advocate_evictable=[{"id": "old-1", "category": "background", "text": "Stale", "used_count": 0}],
+        )
+        mocks["replace_advocate_lines"].assert_not_called()
+        mocks["delete_advocate_line"].assert_called_once()
+        self.assertNotIn("advocate_full", report.rejection_codes)
+
+    def test_a_recent_tidy_is_not_repeated(self) -> None:
+        recent = {"at": datetime.now(timezone.utc).isoformat(), "before": [{"text": "x"}]}
+        _, mocks = self.run_full(consolidation=self.merge(), last_consolidation=recent)
+        mocks["consolidate_plan"].assert_not_called()
+        mocks["replace_advocate_lines"].assert_not_called()
+
+    def test_an_old_tidy_does_not_block_a_new_one(self) -> None:
+        old = {"at": "2020-01-01T00:00:00+00:00", "before": [{"text": "x"}]}
+        _, mocks = self.run_full(consolidation=self.merge(), last_consolidation=old)
+        mocks["replace_advocate_lines"].assert_called_once()
+
+    def test_a_database_without_undo_never_tidies(self) -> None:
+        with harness(
+            extraction=Extraction(advocate=[AdvocateFact(category="practice", text=self.FACT)]),
+            advocate_lines=[dict(line) for line in self.FULL],
+            consolidation=self.merge(),
+        ) as mocks:
+            mocks["consolidation_supported"].return_value = False
+            report = run_post_turn(turn(self.MESSAGE), today=TODAY)
+        mocks["replace_advocate_lines"].assert_not_called()
+        self.assertIn("advocate_full", report.rejection_codes)
+
+    def test_a_failed_write_leaves_the_set_alone(self) -> None:
+        with harness(
+            extraction=Extraction(advocate=[AdvocateFact(category="practice", text=self.FACT)]),
+            advocate_lines=[dict(line) for line in self.FULL],
+            consolidation=self.merge(),
+        ) as mocks:
+            mocks["replace_advocate_lines"].side_effect = RuntimeError("db down")
+            report = run_post_turn(turn(self.MESSAGE), today=TODAY)
+        self.assertIn("advocate_full", report.rejection_codes)
         self.assertNotEqual(report.skipped_reason, "writer_error")
 
 

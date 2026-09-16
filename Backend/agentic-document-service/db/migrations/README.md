@@ -41,6 +41,12 @@ These migrations align the new Python `agentic-document-service` with the shared
     the question (`app/services/memory/relevance.py`) and the writer counts what it
     chose, so a full set makes room by dropping a fact JuriNex learned but never used —
     never one the advocate typed. Added on first use too.
+12. keeps the set before a consolidation (migration `177`): `last_consolidation` on
+    `advocate_memory_sets`. Near its ceiling, what JuriNex remembers about the advocate
+    is rewritten as fewer, sharper lines (`app/services/memory/consolidate.py`) instead
+    of stopping at "full"; the merge adds nothing that is not already stored, every
+    merged line faces the rules a typed one faces, and this column is what makes it
+    undoable. Added on first use too.
 
 ## Suggested Run Order
 

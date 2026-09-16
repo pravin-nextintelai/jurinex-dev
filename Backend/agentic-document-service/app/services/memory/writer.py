@@ -59,7 +59,7 @@ import re
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Sequence
 
 from pydantic import ValidationError
@@ -1480,9 +1480,14 @@ def _handle_advocate(
                 updated = True
             else:
                 room = advocate_set_room(state.lines, text)
-                if room is not None and not _make_room(scope, state, text, report):
-                    report.reject("advocate_full")
-                    continue
+                if room is not None:
+                    # Tidy what is there first; only drop something if that was not enough.
+                    consolidate_if_full(scope, state, report, party_names=book.party_names)
+                    if advocate_set_room(state.lines, text) is not None and not _make_room(
+                        scope, state, text, report
+                    ):
+                        report.reject("advocate_full")
+                        continue
                 result = repository.add_advocate_line(
                     scope.user_id,
                     fact.category,
@@ -1508,6 +1513,85 @@ def _handle_advocate(
 # At most this many facts make way for one new one, so a single turn can never
 # empty the set.
 MAX_ADVOCATE_EVICTIONS = 2
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _consolidated_recently(user_id: str) -> bool:
+    """Whether a merge already ran for this advocate inside the quiet interval.
+
+    One merge frees room for many turns, so re-running it on every turn of a busy
+    session would spend model calls for nothing.
+    """
+    try:
+        interval = float(getattr(get_settings(), "advocate_consolidate_min_interval_s", 3600.0) or 0.0)
+        if interval <= 0:
+            return False
+        record = repository.get_advocate_consolidation(user_id) or {}
+        stamp = str(record.get("at") or "")
+        if not stamp:
+            return False
+        when = datetime.fromisoformat(stamp)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - when).total_seconds() < interval
+    except Exception as exc:  # noqa: BLE001 — an unreadable record must not block a merge
+        logger.debug("[Memory] last consolidation time unknown user_id=%s: %s", user_id, exc)
+        return False
+
+
+def consolidate_if_full(
+    scope: CaseScope,
+    state: AdvocateState,
+    report: WriteReport,
+    *,
+    party_names: Sequence[str] = (),
+) -> bool:
+    """Near the ceiling, rewrite the set as fewer, sharper lines. True when it changed.
+
+    This is what keeps memory growing instead of stopping at "full": five facts learned
+    over five chats usually say three things. The merge may add nothing that is not
+    already stored, every merged line faces the same rules as a typed one, and the set
+    as it stood is kept so the advocate can put it back. Never raises.
+    """
+    from app.services.memory import consolidate as consolidation
+
+    if not consolidation.should_consolidate(state.lines) or not repository.consolidation_supported():
+        return False
+    if _consolidated_recently(scope.user_id):
+        return False
+    result = consolidation.plan(state.lines, party_names=tuple(party_names))
+    if not result.changed:
+        return False
+    try:
+        written = repository.replace_advocate_lines(
+            scope.user_id,
+            result.after,
+            None,
+            snapshot=result.before,
+            snapshot_meta={
+                "at": _now_iso(),
+                "model": result.model,
+                "lines_before": len(result.before),
+                "lines_after": len(result.after),
+            },
+            actor=WRITER_ACTOR,
+        )
+    except Exception as exc:  # noqa: BLE001 — a failed merge leaves the set untouched
+        logger.warning("[Memory] consolidation not written user_id=%s: %s", scope.user_id, exc)
+        return False
+    state.lines = list(written.get("lines") or [])
+    result.applied = True
+    report.note("advocate_consolidated", result.as_dict())
+    logger.info(
+        "[Memory] tidied what is remembered about user_id=%s: %s facts -> %s",
+        scope.user_id,
+        len(result.before),
+        len(result.after),
+    )
+    return True
 
 
 def _make_room(
