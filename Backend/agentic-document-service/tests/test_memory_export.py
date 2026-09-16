@@ -173,7 +173,14 @@ class ParseImportTests(unittest.TestCase):
         parsed = parse_import(payload(settings={"enabled": 0, "write_enabled": "yes", "rogue_flag": True}))
         self.assertEqual(
             parsed.settings,
-            {"enabled": False, "write_enabled": True, "recall_enabled": True, "instructions_enabled": True, "sensitive_enabled": True},
+            {
+                "enabled": False,
+                "write_enabled": True,
+                "recall_enabled": True,
+                "instructions_enabled": True,
+                "sensitive_enabled": True,
+                "advocate_enabled": True,
+            },
         )
 
 

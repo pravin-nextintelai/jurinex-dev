@@ -10,7 +10,15 @@ from unittest.mock import patch
 from app.services.memory import writer as writer_mod
 from app.services.memory.recall import RecallHit
 from app.services.memory.repository import VersionConflict
-from app.services.memory.schemas import MAX_INSTRUCTION_ITEMS, MemoryLine, MemoryOp, MemoryOps, MemoryProposal, MemorySettings
+from app.services.memory.schemas import (
+    MAX_INSTRUCTION_ITEMS,
+    AdvocateFact,
+    MemoryLine,
+    MemoryOp,
+    MemoryOps,
+    MemoryProposal,
+    MemorySettings,
+)
 from app.services.memory.scope import CaseScope
 from app.services.memory.writer import (
     SNAPSHOT_CHARS,
@@ -138,6 +146,8 @@ def harness(
     save_after=2,
     suggest_after=2,
     pattern_save_after=3,
+    advocate_lines=None,
+    advocate_forgotten=None,
 ):
     mocks = {}
     with ExitStack() as stack:
@@ -183,6 +193,27 @@ def harness(
         )
         repo("list_user_proposals", return_value=list(elsewhere or []))
         repo("write_assembly_log", return_value="log-1")
+        repo(
+            "get_advocate_memory",
+            return_value={
+                "user_id": "42",
+                "version": 1 if advocate_lines else None,
+                "lines": [dict(line) for line in advocate_lines or []],
+                "forgotten": list(advocate_forgotten or []),
+            },
+        )
+        repo(
+            "add_advocate_line",
+            side_effect=lambda uid, category, text, expected=None, *, source_ref=None, actor=None: {
+                "version": 2, "line": {"id": "adv-new", "category": category, "text": text, "source_ref": source_ref}
+            },
+        )
+        repo(
+            "update_advocate_line",
+            side_effect=lambda uid, line_id, expected=None, *, text=None, category=None, source_ref_extra=None, actor=None: {
+                "version": 2, "line": {"id": line_id, "category": category, "text": text}
+            },
+        )
         module("party_names_for_user", return_value=tuple(party_names))
         if turns_error is not None:
             module("recent_turns", side_effect=turns_error)
@@ -1033,6 +1064,126 @@ class SubmitTests(unittest.TestCase):
             future = submit_post_turn(turn(HEART))
             self.assertIsNotNone(future)
             self.assertEqual(future.result(timeout=5).writes, 2)
+
+
+class AdvocateMemoryTests(unittest.TestCase):
+    """What the advocate says about themselves is remembered for every case, and nothing else is."""
+
+    AURANGABAD = "I mostly appear before the Aurangabad Bench of the Bombay High Court in land matters."
+    AURANGABAD_FACT = "Mostly appears before the Aurangabad Bench of the Bombay High Court in land matters"
+
+    @staticmethod
+    def facts(*items) -> Extraction:
+        return Extraction(advocate=[AdvocateFact(category=category, text=text, **extra) for category, text, extra in items])
+
+    def test_a_fact_the_advocate_states_about_themselves_is_remembered(self) -> None:
+        report, mocks = run(self.AURANGABAD, extraction=self.facts(("practice", self.AURANGABAD_FACT, {})))
+        add = mocks["add_advocate_line"]
+        add.assert_called_once()
+        self.assertEqual(add.call_args.args[:3], ("42", "practice", self.AURANGABAD_FACT))
+        ref = add.call_args.kwargs["source_ref"]
+        self.assertEqual((ref["kind"], ref["chat_id"], ref["folder_name"]), ("chat", CHAT, "State_v_Pawar"))
+        self.assertEqual(report.writes, 1)
+        self.assertEqual(report.details["advocate"][0]["updated"], False)
+        self.assertEqual(logged(mocks)["details"]["advocate"][0]["category"], "practice")
+
+    def test_case_details_are_never_remembered_about_the_advocate(self) -> None:
+        report, mocks = run(
+            "I appear for Sunil Pawar in WP 1234/2024",
+            extraction=self.facts(("clients", "Appears for Sunil Pawar in WP 1234/2024", {})),
+        )
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertIn("advocate_case_data_case_number", report.rejection_codes)
+
+    def test_a_party_from_any_of_their_cases_is_refused(self) -> None:
+        report, mocks = run(
+            "I usually act for Pawar family businesses",
+            extraction=self.facts(("clients", "Usually acts for Pawar family businesses", {})),
+            party_names=("Sunil Pawar",),
+        )
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertIn("advocate_universal_party_name", report.rejection_codes)
+
+    def test_a_fact_not_in_the_advocates_message_is_refused(self) -> None:
+        report, mocks = run(
+            "Draft the bail application with the medical ground.",
+            extraction=self.facts(("practice", "Practises criminal law in the Sessions Court", {})),
+        )
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertIn("advocate_not_in_advocate_message", report.rejection_codes)
+
+    def test_sensitive_details_about_the_advocate_are_not_remembered(self) -> None:
+        report, mocks = run(
+            "I have diabetes so keep answers short for me",
+            extraction=self.facts(("background", "Has diabetes", {"sensitive": True})),
+        )
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertIn("advocate_sensitive", report.rejection_codes)
+
+    def test_a_fact_already_remembered_is_not_written_again(self) -> None:
+        report, mocks = run(
+            self.AURANGABAD,
+            extraction=self.facts(("practice", self.AURANGABAD_FACT, {})),
+            advocate_lines=[{"id": "a1", "category": "practice", "text": self.AURANGABAD_FACT}],
+        )
+        mocks["add_advocate_line"].assert_not_called()
+        mocks["update_advocate_line"].assert_not_called()
+        self.assertEqual(report.writes, 0)
+
+    def test_a_changed_fact_updates_the_line_it_replaces(self) -> None:
+        report, mocks = run(
+            "I now mostly appear before the Nagpur Bench instead.",
+            extraction=self.facts(("practice", "Now mostly appears before the Nagpur Bench", {"replaces": "a1"})),
+            advocate_lines=[{"id": "a1", "category": "practice", "text": "Mostly appears before the Aurangabad Bench"}],
+        )
+        update = mocks["update_advocate_line"]
+        update.assert_called_once()
+        self.assertEqual(update.call_args.args[:2], ("42", "a1"))
+        self.assertEqual(update.call_args.kwargs["text"], "Now mostly appears before the Nagpur Bench")
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertTrue(report.details["advocate"][0]["updated"])
+
+    def test_a_fact_the_advocate_deleted_is_not_learned_again(self) -> None:
+        report, mocks = run(
+            self.AURANGABAD,
+            extraction=self.facts(("practice", self.AURANGABAD_FACT, {})),
+            advocate_forgotten=[self.AURANGABAD_FACT],
+        )
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertIn("advocate_forgotten_before", report.rejection_codes)
+
+    def test_nothing_is_read_or_written_when_the_switch_is_off(self) -> None:
+        report, mocks = run(
+            self.AURANGABAD,
+            extraction=self.facts(("practice", self.AURANGABAD_FACT, {})),
+            settings=MemorySettings(advocate_enabled=False),
+        )
+        mocks["get_advocate_memory"].assert_not_called()
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertEqual(report.writes, 0)
+
+    def test_the_extractor_sees_what_is_already_remembered(self) -> None:
+        context = TurnContext(advocate_lines=[{"id": "a1", "category": "practice", "text": "Criminal lawyer"}])
+        text = build_extractor_input(turn(HEART), {}, today=TODAY, context=context)
+        self.assertIn("WHAT JURINEX KNOWS ABOUT THE ADVOCATE", text)
+        self.assertIn("- id=a1 [practice] Criminal lawyer", text)
+
+    def test_the_extractor_output_is_read_fact_by_fact(self) -> None:
+        extraction = parse_extraction(
+            {
+                "ops": [],
+                "proposals": [],
+                "advocate": [
+                    {"category": "practice", "text": "Criminal lawyer"},
+                    {"category": "hobbies", "text": "Plays chess"},
+                    {"category": "clients", "text": "Acts for borrowers"},
+                    {"category": "background", "text": "Twelve years at the bar"},
+                    {"category": "work_style", "text": "Juniors draft first"},
+                ],
+            }
+        )
+        self.assertEqual([fact.category for fact in extraction.advocate], ["practice", "clients", "background"])
+        self.assertEqual(extraction.invalid, 1)
 
 
 if __name__ == "__main__":

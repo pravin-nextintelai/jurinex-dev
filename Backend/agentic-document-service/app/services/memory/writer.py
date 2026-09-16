@@ -12,6 +12,12 @@ What it may write
               a standing rule the advocate gave in so many words ("from now on,
               answer in a table"). It is appended to the case's instructions,
               recorded so it can be undone, and reported back to the chat.
+    a fact about the advocate
+              something the advocate says about themselves that holds in every
+              case ("I mostly appear before the Aurangabad Bench"). It is kept
+              with the advocate, not the case, and loads into all their cases.
+              Case details are refused, and a fact the advocate deleted is not
+              learned again.
 
 What it never writes
     [extracted]  a chat answer is AI output, not the document itself. Document
@@ -68,6 +74,7 @@ from app.services.memory.schemas import (
     MAX_LINE_CHARS,
     MAX_OPS_PER_TURN,
     SECTIONS,
+    AdvocateFact,
     MemoryOp,
     MemoryOps,
     MemoryProposal,
@@ -76,11 +83,14 @@ from app.services.memory.schemas import (
 from app.services.memory.scope import CaseScope, is_real_user
 from app.services.memory.seed import refresh_seed
 from app.services.memory.validator import (
+    DEDUPE_SAME,
     ResolvedOp,
+    advocate_set_room,
     case_over_cap,
     find_duplicate,
     instruction_set_room,
     redact_or_reject_pii,
+    validate_advocate_line,
     validate_instruction_item,
     validate_line,
     validate_ops,
@@ -98,6 +108,7 @@ MAX_EARLIER_REQUESTS = 8
 RECENT_TURNS = 12
 SNAPSHOT_CHARS = 6_000
 MAX_PROPOSALS_PER_TURN = 3
+MAX_ADVOCATE_FACTS_PER_TURN = 3
 EXTRACTOR_TIMEOUT_MS = 20_000
 EXTRACTOR_MAX_OUTPUT_TOKENS = 4_096
 GROUNDING_MIN_RATIO = 0.34
@@ -234,9 +245,27 @@ it counts how often each rule is asked for:
   before. Use them only to recognise a repeat. They are never a source of facts,
   and never a reason to propose a rule this message does not ask for.
 
+ABOUT THE ADVOCATE
+Separately from this case, JuriNex remembers a few things about the advocate
+that hold in every case they work on. Put one in "advocate" only when the
+advocate states it about THEMSELVES in their message:
+- category "practice": the courts they appear in, their areas of law, their role
+  ("I mostly appear before the Aurangabad Bench", "I am a criminal lawyer");
+- category "clients": the kind of clients they act for, never a client's name
+  ("I usually act for borrowers, not banks");
+- category "work_style": how they work ("my juniors prepare the first draft");
+- category "background": their languages, experience or team ("I have 12 years
+  at the bar").
+Never put here anything about this case (its parties, dates, numbers, documents
+or facts), a rule for how to answer (that is a proposal), anything the assistant
+said, or the advocate's health, family or money (mark those "sensitive": true).
+Write it in the third person, keeping the advocate's words: "Mostly appears before
+the Aurangabad Bench". If WHAT JURINEX KNOWS ABOUT THE ADVOCATE already says it,
+record nothing; if it changed, set "replaces" to that line's id.
+
 LIMITS
-At most 8 ops and 3 proposals. If nothing qualifies, return
-{"ops": [], "proposals": [], "nothing_durable": true}.
+At most 8 ops, 3 proposals and 3 advocate facts. If nothing qualifies, return
+{"ops": [], "proposals": [], "advocate": [], "nothing_durable": true}.
 
 Each op looks like:
 {"op": "append_line", "section": "facts", "line_id": null, "match_text": null,
@@ -245,6 +274,8 @@ Each op looks like:
           "changed": false, "sensitive": false}}
 Each proposal looks like:
 {"kind": "instruction", "text": "...", "repeats": null}
+Each advocate fact looks like:
+{"category": "practice", "text": "...", "replaces": null, "sensitive": false}
 """
 
 
@@ -284,6 +315,8 @@ class TurnContext:
     noticed_rules: list[dict[str, Any]] = field(default_factory=list)
     # This chat's rolling summary, for recognising a repeated request.
     conversation_summary: str = ""
+    # What JuriNex already remembers about the advocate: {"id", "category", "text"}.
+    advocate_lines: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -312,6 +345,7 @@ class WriteReport:
 class Extraction:
     ops: list[MemoryOp] = field(default_factory=list)
     proposals: list[MemoryProposal] = field(default_factory=list)
+    advocate: list[AdvocateFact] = field(default_factory=list)
     nothing_durable: bool = False
     invalid: int = 0
     model: str | None = None
@@ -495,6 +529,15 @@ def build_extractor_input(
             'set "repeats" to its id):\n'
             + "\n".join(_render_noticed_rule(rule) for rule in context.noticed_rules)
         )
+    if context is not None and context.advocate_lines:
+        parts.append(
+            'WHAT JURINEX KNOWS ABOUT THE ADVOCATE (every case; never propose these again; set "replaces" to a '
+            "line's id when the advocate changes one):\n"
+            + "\n".join(
+                f"- id={line.get('id')} [{line.get('category')}] {_clip(line.get('text'), MAX_LINE_CHARS)}"
+                for line in context.advocate_lines
+            )
+        )
     if context is not None and context.conversation_summary.strip():
         parts.append(
             "CONVERSATION SUMMARY (earlier in this chat; only for recognising a repeated request, never a "
@@ -574,6 +617,16 @@ def parse_extraction(payload: Any) -> Extraction:
             continue
         if len(result.proposals) < MAX_PROPOSALS_PER_TURN:
             result.proposals.append(proposal)
+
+    raw_facts = data.get("advocate") if isinstance(data.get("advocate"), list) else []
+    for raw in raw_facts:
+        try:
+            fact = AdvocateFact.model_validate(raw)
+        except (ValidationError, TypeError, ValueError):
+            result.invalid += 1
+            continue
+        if len(result.advocate) < MAX_ADVOCATE_FACTS_PER_TURN:
+            result.advocate.append(fact)
 
     return result
 
@@ -1267,6 +1320,111 @@ def _handle_proposals(
                 _suggest_universal(book, text, {**source_extra, "learned_from": elsewhere[:5]}, report)
 
 
+@dataclass
+class AdvocateState:
+    """What JuriNex remembers about the advocate, read once per turn and kept current as facts are written."""
+
+    lines: list[dict[str, Any]] = field(default_factory=list)
+    forgotten: list[str] = field(default_factory=list)
+
+
+def load_advocate_state(scope: CaseScope) -> AdvocateState | None:
+    """The advocate's remembered facts, or None when they cannot be read. Never raises."""
+    try:
+        data = repository.get_advocate_memory(scope.user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] advocate memory unavailable user_id=%s: %s", scope.user_id, exc)
+        return None
+    return AdvocateState(
+        lines=[dict(line) for line in data.get("lines") or []],
+        forgotten=[str(text) for text in data.get("forgotten") or [] if str(text or "").strip()],
+    )
+
+
+def _handle_advocate(
+    scope: CaseScope,
+    turn: TurnInput,
+    facts: Sequence[AdvocateFact],
+    source_extra: dict[str, Any],
+    report: WriteReport,
+    *,
+    state: AdvocateState | None,
+    book: _Rulebook,
+) -> None:
+    """Remember what the advocate said about themselves, for every case.
+
+    A fact is kept only when it is in the advocate's own message, carries no case
+    details, is not something they deleted before, and is not already known. A fact
+    that says the same thing differently updates the line it matches.
+    """
+    if not facts or state is None:
+        return
+    for fact in facts:
+        text = " ".join(str(fact.text or "").split())
+        if not text:
+            continue
+        if fact.sensitive:
+            report.reject("advocate_sensitive")
+            continue
+        if not is_grounded(text, turn.question_raw):
+            report.reject("advocate_not_in_advocate_message")
+            continue
+        problem = validate_advocate_line(text, category=fact.category, party_names=book.party_names)
+        if problem is not None:
+            report.reject(f"advocate_{problem.code}")
+            continue
+        if find_duplicate(text, [{"text": item} for item in state.forgotten]) is not None:
+            report.reject("advocate_forgotten_before")
+            continue
+
+        target: dict[str, Any] | None = None
+        if fact.replaces:
+            target = next((line for line in state.lines if str(line.get("id")) == str(fact.replaces)), None)
+        if target is None:
+            target = find_duplicate(text, state.lines)
+        try:
+            if target is not None:
+                close = find_duplicate(text, [target], threshold=0.0) or {}
+                if float(close.get("_ratio") or 0.0) >= DEDUPE_SAME and target.get("category") == fact.category:
+                    continue
+                result = repository.update_advocate_line(
+                    scope.user_id,
+                    str(target.get("id")),
+                    None,
+                    text=text,
+                    category=fact.category,
+                    source_ref_extra={"updated_in_chat": source_extra.get("chat_id")},
+                    actor=WRITER_ACTOR,
+                )
+                target.update({"text": text, "category": fact.category})
+                updated = True
+            else:
+                room = advocate_set_room(state.lines, text)
+                if room is not None:
+                    report.reject("advocate_full")
+                    continue
+                result = repository.add_advocate_line(
+                    scope.user_id,
+                    fact.category,
+                    text,
+                    None,
+                    source_ref={**source_extra, "folder_name": scope.folder_name},
+                    actor=WRITER_ACTOR,
+                )
+                state.lines.append(dict(result.get("line") or {"text": text, "category": fact.category}))
+                updated = False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] advocate fact not saved user_id=%s: %s", scope.user_id, exc)
+            report.reject("advocate_write_failed")
+            continue
+        line = result.get("line") or {}
+        report.writes += 1
+        report.note(
+            "advocate",
+            {"id": line.get("id"), "category": fact.category, "text": text, "updated": updated},
+        )
+
+
 # Upload paths prefix the original file name with an id ("<uuid>_Bail.pdf",
 # "1726123456_Bail.pdf"). The separator deliberately excludes ".", so a name that
 # is nothing but an id keeps its digits and the validator's identifier rules
@@ -1401,6 +1559,14 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
     context.saved_rules = book.saved_rules()
     context.noticed_rules = book.noticed_rules()
     context.conversation_summary = conversation_summary(scope, turn.session_id)
+    # Remembering the advocate across cases has its own switch; when it is off the
+    # extractor is not shown what is remembered, and nothing about the advocate is written.
+    advocate = load_advocate_state(scope) if settings.advocate_enabled else None
+    if advocate is not None:
+        context.advocate_lines = [
+            {"id": line.get("id"), "category": line.get("category"), "text": line.get("text")}
+            for line in advocate.lines
+        ]
 
     try:
         extraction = extract_ops(turn, existing, today=today, context=context)
@@ -1410,13 +1576,14 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
         return
 
     report.reject("invalid_op", extraction.invalid)
-    if extraction.nothing_durable and not extraction.ops and not extraction.proposals:
+    if extraction.nothing_durable and not extraction.ops and not extraction.proposals and not extraction.advocate:
         report.skipped_reason = "nothing_durable"
         return
 
     accepted = screen_ops(extraction.ops, turn.question_raw, report)
     _apply_ops(scope, accepted, existing, versions, settings, source_extra, report, today=today)
     _handle_proposals(scope, turn, extraction.proposals, source_extra, report, settings=settings, book=book)
+    _handle_advocate(scope, turn, extraction.advocate, source_extra, report, state=advocate, book=book)
 
 
 def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
@@ -1470,11 +1637,12 @@ def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
         report.skipped_reason = report.skipped_reason or "writer_error"
     report.assembly_log_id = _write_log(turn, report)
     logger.info(
-        "[Memory] post-turn case_key=%s writes=%s instructions_saved=%s proposals=%s rejected=%s "
+        "[Memory] post-turn case_key=%s writes=%s instructions_saved=%s advocate=%s proposals=%s rejected=%s "
         "skipped=%s codes=%s",
         getattr(turn.scope, "case_key", None),
         report.writes,
         report.instructions_saved,
+        len(report.details.get("advocate") or []),
         report.proposals,
         report.rejected,
         report.skipped_reason,

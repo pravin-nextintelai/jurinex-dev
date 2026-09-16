@@ -18,6 +18,9 @@ from datetime import date
 from typing import Any, Iterable, NamedTuple, Sequence
 
 from app.services.memory.schemas import (
+    ADVOCATE_CATEGORIES,
+    MAX_ADVOCATE_CHARS,
+    MAX_ADVOCATE_LINES,
     MAX_CASE_CHARS,
     MAX_INSTRUCTION_ITEM_CHARS,
     MAX_INSTRUCTION_ITEMS,
@@ -444,6 +447,71 @@ def instruction_set_room(
             "set_too_long",
             f"These instructions are capped at {cap} characters in total because they load into every chat; "
             "shorten or remove one first.",
+        )
+    return None
+
+
+# ── About the advocate (remembered across every case) ────────────────────────
+# A fact here loads into every case the advocate opens, so it may describe the
+# advocate only: their practice, the clients they act for, how they work, their
+# background. Anything that belongs to one matter is refused, however it is worded.
+
+# "Appears before the Bench" / "appears for borrowers" is how advocates describe their
+# practice, not a guess; only the hedging "it appears that" is inference.
+_APPEARANCE_RE = re.compile(r"\bappear(?:s|ed|ing)?\s+(?:before|for|in|at|on\s+behalf)\b", re.IGNORECASE)
+
+
+def validate_advocate_line(
+    text: str,
+    *,
+    category: str | None = None,
+    party_names: Iterable[str] = (),
+) -> Rejection | None:
+    """Whether one fact about the advocate may be remembered. None means it may."""
+    clean = strip_tag_prefix(" ".join(str(text or "").split()))
+    if category is not None and str(category) not in ADVOCATE_CATEGORIES:
+        return Rejection("bad_category", f"'{category}' is not one of: {', '.join(ADVOCATE_CATEGORIES)}.")
+    if not clean:
+        return Rejection("empty", "The line is empty.")
+    if len(clean) > MAX_LINE_CHARS:
+        return Rejection("too_long", f"A remembered fact must be {MAX_LINE_CHARS} characters or fewer.")
+    for rules in (PII_RULES, GUARDRAIL_RULES, SYSTEM_OUTPUT_RULES, TRANSIENT_RULES):
+        hit = _first_match(clean, rules)
+        if hit:
+            return hit
+    hit = _first_match(_APPEARANCE_RE.sub("attends", clean), INFERENCE_RULES)
+    if hit:
+        return hit
+    hit = _first_match(clean, CASE_DATA_RULES)
+    if hit:
+        return Rejection(
+            hit.code,
+            "This is remembered in every case, so it must carry no case details. "
+            "Facts about one matter belong in that case's memory.",
+        )
+    name = party_name_in(clean, party_names)
+    if name:
+        return Rejection(
+            "universal_party_name",
+            f"Names '{name}', a party in one of your cases. What JuriNex remembers about you "
+            "must not carry case details; that belongs in the case's memory.",
+        )
+    return None
+
+
+def advocate_set_room(lines: Sequence[dict[str, Any]], new_text: str) -> Rejection | None:
+    """Whether there is room for one more fact about the advocate."""
+    if len(lines) >= MAX_ADVOCATE_LINES:
+        return Rejection(
+            "set_full",
+            f"JuriNex already remembers {MAX_ADVOCATE_LINES} things about you; forget one before adding another.",
+        )
+    total = sum(len(str(line.get("text") or "")) for line in lines) + len(" ".join(str(new_text or "").split()))
+    if total > MAX_ADVOCATE_CHARS:
+        return Rejection(
+            "set_too_long",
+            f"What JuriNex remembers about you is capped at {MAX_ADVOCATE_CHARS} characters because it loads into "
+            "every chat; shorten or forget one first.",
         )
     return None
 

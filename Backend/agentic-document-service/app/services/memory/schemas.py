@@ -70,6 +70,15 @@ INSTRUCTION_ORIGINS: tuple[str, ...] = ("user", "chat", "learned", "import", "mi
 OVERRIDE_TYPES: tuple[str, ...] = ("case", "session")
 OverrideType = Literal["case", "session"]
 
+# What JuriNex remembers about the advocate across all their cases: facts they
+# stated about themselves, never facts about a matter. Order is the UI and prompt order.
+ADVOCATE_CATEGORIES: tuple[str, ...] = ("practice", "clients", "work_style", "background")
+AdvocateCategory = Literal["practice", "clients", "work_style", "background"]
+MAX_ADVOCATE_LINES = 40
+MAX_ADVOCATE_CHARS = 3_000
+# Facts the advocate deleted after JuriNex learned them from chat, kept so they are not learned again.
+MAX_ADVOCATE_FORGOTTEN = 50
+
 
 class MemoryLine(BaseModel):
     """One fact line."""
@@ -115,32 +124,40 @@ class MemoryProposal(BaseModel):
     repeats: str | None = Field(default=None, max_length=64)
 
 
+class AdvocateFact(BaseModel):
+    """A durable fact the advocate stated about themselves, true in every case they work on."""
+
+    category: AdvocateCategory
+    text: str = Field(max_length=MAX_LINE_CHARS)
+    # The id of a remembered fact this one updates, if any.
+    replaces: str | None = Field(default=None, max_length=64)
+    # Health, family or money matters of the advocate: never remembered across cases.
+    sensitive: bool = False
+
+
 class MemoryOps(BaseModel):
     """The extractor's whole output for one conversation turn."""
 
     ops: list[MemoryOp] = Field(default_factory=list)
     proposals: list[MemoryProposal] = Field(default_factory=list)
+    advocate: list[AdvocateFact] = Field(default_factory=list)
     nothing_durable: bool = False
 
 
 class MemorySettings(BaseModel):
-    """The five memory toggles, at one scope or resolved across scopes."""
+    """The memory toggles, at one scope or resolved across scopes."""
 
     enabled: bool = True
     write_enabled: bool = True
     recall_enabled: bool = True
     instructions_enabled: bool = True
     sensitive_enabled: bool = True
+    # Remember what the advocate says about themselves and use it in every case.
+    advocate_enabled: bool = True
 
     def merged_with(self, other: "MemorySettings") -> "MemorySettings":
         """AND every flag. Used to fold firm -> user -> case settings."""
-        return MemorySettings(
-            enabled=self.enabled and other.enabled,
-            write_enabled=self.write_enabled and other.write_enabled,
-            recall_enabled=self.recall_enabled and other.recall_enabled,
-            instructions_enabled=self.instructions_enabled and other.instructions_enabled,
-            sensitive_enabled=self.sensitive_enabled and other.sensitive_enabled,
-        )
+        return MemorySettings(**{flag: getattr(self, flag) and getattr(other, flag) for flag in SETTINGS_FLAGS})
 
 
 # Field names of MemorySettings, in UI order. Kept outside the model so it does
@@ -151,4 +168,5 @@ SETTINGS_FLAGS: tuple[str, ...] = (
     "recall_enabled",
     "instructions_enabled",
     "sensitive_enabled",
+    "advocate_enabled",
 )

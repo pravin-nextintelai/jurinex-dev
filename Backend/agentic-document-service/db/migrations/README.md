@@ -32,6 +32,10 @@ These migrations align the new Python `agentic-document-service` with the shared
 9. keeps a rolling summary of each case chat (migration `174`): older turns of a
    chat are folded into `chat_session_summaries` after each answer, and the chat
    prompt sends that summary plus the latest turns. See `app/services/chat_summary.py`.
+10. remembers the advocate across cases (migration `175`): facts the advocate states
+    about themselves (practice, clients, way of working, background) in
+    `advocate_memory_lines`, loaded into every case, and an `advocate_enabled`
+    switch on `memory_settings`. Created on first use too.
 
 ## Suggested Run Order
 

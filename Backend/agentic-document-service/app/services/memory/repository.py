@@ -25,10 +25,14 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from app.services.db import get_db_connection, is_db_available
 from app.services.memory.schemas import (
+    ADVOCATE_CATEGORIES,
     INSTRUCTION_ORIGINS,
     INSTRUCTION_SCOPES,
     MAX_INSTRUCTION_ITEM_CHARS,
+    MAX_ADVOCATE_FORGOTTEN,
+    MAX_ADVOCATE_LINES,
     MAX_INSTRUCTION_ITEMS,
+    MAX_LINE_CHARS,
     MAX_SECTION_LINES,
     MAX_SUMMARY_LINES,
     OVERRIDE_TYPES,
@@ -233,6 +237,32 @@ CREATE TABLE IF NOT EXISTS memory_instruction_overrides (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_instruction_overrides_target
     ON memory_instruction_overrides (override_type, override_id);
+CREATE TABLE IF NOT EXISTS advocate_memory_sets (
+    user_id     TEXT PRIMARY KEY,
+    version     INTEGER     NOT NULL DEFAULT 1,
+    forgotten   JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    updated_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS advocate_memory_lines (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     TEXT        NOT NULL,
+    category    TEXT        NOT NULL,
+    ord         INTEGER     NOT NULL DEFAULT 1,
+    text        TEXT        NOT NULL,
+    source_ref  JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    created_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT advocate_memory_lines_category_check
+        CHECK (category IN ('practice','clients','work_style','background')),
+    CONSTRAINT advocate_memory_lines_text_len_check CHECK (char_length(text) <= 300),
+    CONSTRAINT advocate_memory_lines_set_fk
+        FOREIGN KEY (user_id) REFERENCES advocate_memory_sets (user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_advocate_memory_lines_user
+    ON advocate_memory_lines (user_id, ord);
 """
 
 # Tables purged when a case is deleted, in FK-safe order.
@@ -268,6 +298,8 @@ _tables_ready = False
 # the first time the tables are ensured; assumed present for a caller's own
 # connection.
 _details_column = True
+# Whether memory_settings has `advocate_enabled` (migration 175). Settled like `_details_column`.
+_advocate_column = True
 
 _PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected"})
 
@@ -294,7 +326,43 @@ def ensure_tables(conn: Any) -> None:
         conn.rollback()
         logger.debug("[Memory] DDL skipped: %s", exc)
     _ensure_details_column(conn)
+    _ensure_advocate_column(conn)
     _tables_ready = True
+
+
+def _ensure_advocate_column(conn: Any) -> None:
+    """Give a settings table created before migration 175 its `advocate_enabled` switch.
+
+    Same approach as `_ensure_details_column`: looked up first, and the ALTER waits
+    at most two seconds for its lock. Until it can run, settings are read and written
+    without the switch, which then counts as on.
+    """
+    global _advocate_column
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'memory_settings' AND column_name = 'advocate_enabled' LIMIT 1"
+            )
+            if cur.fetchone() is None:
+                cur.execute("SET LOCAL lock_timeout = '2s'")
+                cur.execute(
+                    "ALTER TABLE memory_settings "
+                    "ADD COLUMN IF NOT EXISTS advocate_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+                )
+        conn.commit()
+        _advocate_column = True
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        _advocate_column = False
+        logger.warning("[Memory] the 'remember me across cases' switch is unsaved until migration 175 is applied: %s", exc)
+
+
+def _settings_flags() -> tuple[str, ...]:
+    """The settings columns this database has."""
+    if _advocate_column:
+        return SETTINGS_FLAGS
+    return tuple(flag for flag in SETTINGS_FLAGS if flag != "advocate_enabled")
 
 
 def _ensure_details_column(conn: Any) -> None:
@@ -1570,6 +1638,246 @@ def set_instruction_override(
         connection.commit()
 
 
+# ── About the advocate: facts remembered across all of their cases ───────────
+# One set per advocate. The set row holds the version token (like an instruction
+# set) and the facts the advocate deleted after JuriNex learned them from chat, so
+# the writer does not learn them again. Keyed by user id only: nothing here
+# belongs to a case, and deleting a case leaves it alone.
+
+_ADVOCATE_COLUMNS = "id, category, ord, text, source_ref, created_by, created_at, updated_at"
+
+
+def _require_user(user_id: str | None) -> str:
+    uid = str(user_id or "").strip()
+    if not uid:
+        raise ValueError("user_id is required for every advocate memory operation.")
+    return uid
+
+
+def _clean_advocate_text(text: str) -> str:
+    body = " ".join(str(text or "").split())
+    if not body:
+        raise ValueError("A remembered fact needs some text.")
+    return body[:MAX_LINE_CHARS]
+
+
+def _require_category(category: str | None) -> str:
+    value = str(category or "").strip()
+    if value not in ADVOCATE_CATEGORIES:
+        raise ValueError(f"Unknown category '{category}'.")
+    return value
+
+
+def _fetch_advocate_lines(cur: Any, uid: str) -> list[dict[str, Any]]:
+    cur.execute(
+        f"SELECT {_ADVOCATE_COLUMNS} FROM advocate_memory_lines WHERE user_id = %s ORDER BY ord ASC, created_at ASC",
+        (uid,),
+    )
+    return [_out(row) or {} for row in cur.fetchall()]
+
+
+def _advocate_set(cur: Any, uid: str) -> dict[str, Any] | None:
+    cur.execute("SELECT version, forgotten FROM advocate_memory_sets WHERE user_id = %s", (uid,))
+    return cur.fetchone()
+
+
+def _forgotten_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return []
+    return [str(item) for item in value if str(item or "").strip()] if isinstance(value, list) else []
+
+
+def _ensure_advocate_set(cur: Any, uid: str, actor: str | None) -> int:
+    cur.execute(
+        "INSERT INTO advocate_memory_sets (user_id, updated_by) VALUES (%s, %s) "
+        "ON CONFLICT (user_id) DO NOTHING RETURNING version",
+        (uid, actor),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        return int(row["version"])
+    existing = _advocate_set(cur, uid)
+    return int((existing or {}).get("version") or 1)
+
+
+def _bump_advocate_set(cur: Any, uid: str, expected_version: int | None) -> int:
+    """Optimistic lock on the advocate's set. Raises VersionConflict carrying the live lines."""
+    if expected_version is None:
+        cur.execute(
+            "UPDATE advocate_memory_sets SET version = version + 1, updated_at = NOW() "
+            "WHERE user_id = %s RETURNING version",
+            (uid,),
+        )
+    else:
+        cur.execute(
+            "UPDATE advocate_memory_sets SET version = version + 1, updated_at = NOW() "
+            "WHERE user_id = %s AND version = %s RETURNING version",
+            (uid, int(expected_version)),
+        )
+    row = cur.fetchone()
+    if row is None:
+        current = _advocate_set(cur, uid)
+        raise VersionConflict(
+            "advocate",
+            expected_version,
+            int(current["version"]) if current else None,
+            _fetch_advocate_lines(cur, uid),
+        )
+    return int(row["version"])
+
+
+def get_advocate_memory(user_id: str, *, conn: Any = None) -> dict[str, Any]:
+    """Everything remembered about one advocate; `version` is None when nothing is stored."""
+    uid = _require_user(user_id)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        head = _advocate_set(cur, uid)
+        if head is None:
+            return {"user_id": uid, "version": None, "lines": [], "forgotten": []}
+        lines = _fetch_advocate_lines(cur, uid)
+    return {
+        "user_id": uid,
+        "version": int(head.get("version") or 1),
+        "lines": lines,
+        "forgotten": _forgotten_list(head.get("forgotten")),
+    }
+
+
+def add_advocate_line(
+    user_id: str,
+    category: str,
+    text: str,
+    expected_version: int | None = None,
+    *,
+    source_ref: dict[str, Any] | None = None,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Remember one fact about the advocate under the set's version token. Returns {version, line}."""
+    uid = _require_user(user_id)
+    kind = _require_category(category)
+    body = _clean_advocate_text(text)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            existing = _ensure_advocate_set(cur, uid, actor)
+            effective = expected_version
+            if effective is not None and existing == 1 and expected_version == 0:
+                effective = 1
+            version = _bump_advocate_set(cur, uid, effective)
+            cur.execute("SELECT COUNT(*) AS n, COALESCE(MAX(ord), 0) + 1 AS next_ord FROM advocate_memory_lines WHERE user_id = %s", (uid,))
+            counts = cur.fetchone() or {}
+            if int(counts.get("n") or 0) >= MAX_ADVOCATE_LINES:
+                raise ValueError(f"At most {MAX_ADVOCATE_LINES} facts about the advocate are kept.")
+            cur.execute(
+                "INSERT INTO advocate_memory_lines (user_id, category, ord, text, source_ref, created_by) "
+                f"VALUES (%s, %s, %s, %s, %s::jsonb, %s) RETURNING {_ADVOCATE_COLUMNS}",
+                (uid, kind, int(counts.get("next_ord") or 1), body, _json(source_ref or {}), actor),
+            )
+            line = _out(cur.fetchone()) or {}
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "line": line}
+
+
+def update_advocate_line(
+    user_id: str,
+    line_id: str,
+    expected_version: int | None = None,
+    *,
+    text: str | None = None,
+    category: str | None = None,
+    source_ref_extra: dict[str, Any] | None = None,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Change one fact's text or category. Raises LookupError when it is not this advocate's."""
+    uid = _require_user(user_id)
+    body = _clean_advocate_text(text) if text is not None else None
+    kind = _require_category(category) if category is not None else None
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute(
+                "SELECT 1 FROM advocate_memory_lines WHERE id = %s::uuid AND user_id = %s",
+                (str(line_id), uid),
+            )
+            if cur.fetchone() is None:
+                connection.rollback()
+                raise LookupError("That fact is no longer remembered.")
+            version = _bump_advocate_set(cur, uid, expected_version)
+            cur.execute(
+                "UPDATE advocate_memory_lines SET text = COALESCE(%s, text), category = COALESCE(%s, category), "
+                "source_ref = source_ref || %s::jsonb, updated_at = NOW() "
+                f"WHERE id = %s::uuid AND user_id = %s RETURNING {_ADVOCATE_COLUMNS}",
+                (body, kind, _json(source_ref_extra or {}), str(line_id), uid),
+            )
+            line = _out(cur.fetchone()) or {}
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "line": line}
+
+
+def delete_advocate_line(
+    user_id: str,
+    line_id: str,
+    expected_version: int | None = None,
+    *,
+    actor: str | None = None,
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Forget one fact. One JuriNex learned from chat is kept on the forgotten list so it is not learned again.
+
+    Returns {version, deleted, line}.
+    """
+    uid = _require_user(user_id)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute(
+                f"SELECT {_ADVOCATE_COLUMNS} FROM advocate_memory_lines WHERE id = %s::uuid AND user_id = %s",
+                (str(line_id), uid),
+            )
+            row = cur.fetchone()
+            if row is None:
+                head = _advocate_set(cur, uid)
+                connection.rollback()
+                return {"version": int(head["version"]) if head else None, "deleted": False, "line": None}
+            version = _bump_advocate_set(cur, uid, expected_version)
+            cur.execute("DELETE FROM advocate_memory_lines WHERE id = %s::uuid AND user_id = %s", (str(line_id), uid))
+            ref = row.get("source_ref") if isinstance(row.get("source_ref"), dict) else {}
+            if str((ref or {}).get("kind") or "") == "chat":
+                head = _advocate_set(cur, uid) or {}
+                forgotten = [*_forgotten_list(head.get("forgotten")), str(row.get("text") or "")]
+                cur.execute(
+                    "UPDATE advocate_memory_sets SET forgotten = %s::jsonb WHERE user_id = %s",
+                    (json.dumps(forgotten[-MAX_ADVOCATE_FORGOTTEN:]), uid),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return {"version": version, "deleted": True, "line": _out(row)}
+
+
+def delete_advocate_memory(user_id: str, *, conn: Any = None) -> int:
+    """Forget everything remembered about the advocate, the forgotten list included. Returns lines deleted."""
+    uid = _require_user(user_id)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute("DELETE FROM advocate_memory_lines WHERE user_id = %s", (uid,))
+            count = int(cur.rowcount or 0)
+            cur.execute("DELETE FROM advocate_memory_sets WHERE user_id = %s", (uid,))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return count
+
+
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 def get_settings(scope_type: str, scope_id: str, *, conn: Any = None) -> dict[str, Any] | None:
@@ -1578,8 +1886,7 @@ def get_settings(scope_type: str, scope_id: str, *, conn: Any = None) -> dict[st
         return None
     with _conn(conn) as connection, connection.cursor() as cur:
         cur.execute(
-            "SELECT scope_type, scope_id, enabled, write_enabled, recall_enabled, "
-            "instructions_enabled, sensitive_enabled, updated_by, updated_at "
+            f"SELECT scope_type, scope_id, {', '.join(_settings_flags())}, updated_by, updated_at "
             "FROM memory_settings WHERE scope_type = %s AND scope_id = %s",
             (str(scope_type), sid),
         )
@@ -1602,18 +1909,19 @@ def put_settings(
 
     current = MemorySettings()
     values = {flag: bool(flags.get(flag, getattr(current, flag))) for flag in SETTINGS_FLAGS}
-    columns = ", ".join(SETTINGS_FLAGS)
-    placeholders = ", ".join(["%s"] * len(SETTINGS_FLAGS))
-    updates = ", ".join(f"{flag} = EXCLUDED.{flag}" for flag in SETTINGS_FLAGS)
 
     with _conn(conn) as connection, connection.cursor() as cur:
+        stored_flags = _settings_flags()
+        columns = ", ".join(stored_flags)
+        placeholders = ", ".join(["%s"] * len(stored_flags))
+        updates = ", ".join(f"{flag} = EXCLUDED.{flag}" for flag in stored_flags)
         cur.execute(
             f"INSERT INTO memory_settings (scope_type, scope_id, {columns}, updated_by) "
             f"VALUES (%s, %s, {placeholders}, %s) "
             f"ON CONFLICT (scope_type, scope_id) DO UPDATE SET {updates}, "
             f"updated_by = EXCLUDED.updated_by, updated_at = NOW() "
             f"RETURNING scope_type, scope_id, {columns}, updated_at",
-            (str(scope_type), sid, *[values[flag] for flag in SETTINGS_FLAGS], updated_by),
+            (str(scope_type), sid, *[values[flag] for flag in stored_flags], updated_by),
         )
         row = cur.fetchone()
         connection.commit()
@@ -1642,8 +1950,7 @@ def effective_settings(
     try:
         with _conn(conn) as connection, connection.cursor() as cur:
             cur.execute(
-                "SELECT scope_type, scope_id, enabled, write_enabled, recall_enabled, "
-                "instructions_enabled, sensitive_enabled FROM memory_settings "
+                f"SELECT scope_type, scope_id, {', '.join(_settings_flags())} FROM memory_settings "
                 "WHERE (scope_type, scope_id) IN (" + ", ".join(["(%s, %s)"] * len(pairs)) + ")",
                 [value for pair in pairs for value in pair],
             )

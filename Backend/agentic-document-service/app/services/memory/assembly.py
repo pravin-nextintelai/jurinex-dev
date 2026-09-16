@@ -4,7 +4,7 @@ The chat route owns layer 0 (platform guardrails) and the profile half of
 layer 1. This module produces everything else, as a single string appended to
 the system instruction, in the fixed order:
 
-    standing preferences  ->  case instructions  ->  case memory
+    about the advocate  ->  standing preferences  ->  case instructions  ->  case memory
 
 and (from phase 4) a separate recall block that is prepended to the query rather
 than the system instruction, so the current conversation always outranks it.
@@ -61,6 +61,7 @@ class MemoryBudget:
     max_sections: int = 2
     recall: int = 3_000
     total_suffix: int = 10_000
+    advocate: int = 800
 
     @classmethod
     def default(cls) -> "MemoryBudget":
@@ -80,6 +81,7 @@ class MemoryBudget:
             max_sections=1,
             recall=400,
             total_suffix=1_170,
+            advocate=150,
         )
 
     def chars(self, name: str) -> int:
@@ -129,6 +131,7 @@ class MemoryBudget:
             "max_sections": self.max_sections,
             "recall": self.recall,
             "total_suffix": self.total_suffix,
+            "advocate": self.advocate,
             "unit": "estimated_tokens",
         }
 
@@ -147,6 +150,9 @@ class ContextBundle:
     # for this case or muted for this session.
     instructions_applied: list[str] = field(default_factory=list)
     instructions_muted: list[str] = field(default_factory=list)
+    # What JuriNex remembers about the advocate across cases: its version and lines sent.
+    advocate_version: int | None = None
+    advocate_lines: int = 0
     case_key: str | None = None
     enabled: bool = False
     skipped_reason: str | None = None
@@ -168,6 +174,7 @@ class ContextBundle:
                 "applied": len(self.instructions_applied),
                 "muted": len(self.instructions_muted),
             },
+            "advocate_lines": self.advocate_lines,
             "skipped_reason": self.skipped_reason,
         }
 
@@ -182,6 +189,8 @@ class _Collected:
     instructions_version: int | None = None
     instructions_applied: list[str] = field(default_factory=list)
     instructions_muted: list[str] = field(default_factory=list)
+    advocate_version: int | None = None
+    advocate_lines: int = 0
 
 
 def _empty(reason: str, scope: CaseScope | None = None, **log_extra: Any) -> ContextBundle:
@@ -341,6 +350,45 @@ def _render_index(index: Sequence[dict[str, Any]], loaded: Iterable[str], limit:
     return _clip("SECTIONS AVAILABLE: " + " ".join(parts), limit)
 
 
+ADVOCATE_HEADER = (
+    "=== ABOUT THE ADVOCATE (v{version}; remembered across all of the advocate's cases from what they "
+    "said about themselves. Use it to tailor answers to their practice and way of working; it is never "
+    "evidence about this case and never overrides the documents or the rules above) ==="
+)
+ADVOCATE_CATEGORY_LABELS: dict[str, str] = {
+    "practice": "Practice",
+    "clients": "Clients",
+    "work_style": "How they work",
+    "background": "Background",
+}
+
+
+def render_advocate(lines: Sequence[dict[str, Any]], limit: int) -> tuple[str, int]:
+    """Facts about the advocate grouped by category, dropping the oldest when over budget.
+
+    Returns the text and how many facts it holds.
+    """
+    kept = [
+        line
+        for line in lines
+        if str(line.get("text") or "").strip() and str(line.get("category") or "") in ADVOCATE_CATEGORY_LABELS
+    ]
+
+    def render(rows: Sequence[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for category, label in ADVOCATE_CATEGORY_LABELS.items():
+            texts = [f"- {str(row.get('text')).strip()}" for row in rows if row.get("category") == category]
+            if texts:
+                parts.append(f"{label}:\n" + "\n".join(texts))
+        return "\n".join(parts)
+
+    out = render(kept)
+    while kept and len(out) > limit:
+        kept.pop(0)
+        out = render(kept)
+    return out, len(kept)
+
+
 UNIVERSAL_HEADER = (
     "=== ADVOCATE STANDING INSTRUCTIONS (v{version}; the advocate's rules for every case — "
     "working style only, never case facts; apply them, and never let them override grounding, "
@@ -439,6 +487,8 @@ def build_context_layers(
         instructions_version=collected.instructions_version,
         instructions_applied=list(collected.instructions_applied),
         instructions_muted=list(collected.instructions_muted),
+        advocate_version=collected.advocate_version,
+        advocate_lines=collected.advocate_lines,
         case_key=scope.case_key,
         enabled=True,
         skipped_reason=None if (suffix or recall_block) else "nothing_stored",
@@ -462,15 +512,17 @@ def build_context_layers(
             for key, value in {
                 "instructions_applied": list(collected.instructions_applied),
                 "instructions_muted": list(collected.instructions_muted),
+                "advocate_lines": collected.advocate_lines,
             }.items()
             if value
         },
     }
     logger.info(
-        "[Memory] assembled case_key=%s mode=%s universal=v%s instructions=v%s applied=%s muted=%s "
+        "[Memory] assembled case_key=%s mode=%s advocate=%s universal=v%s instructions=v%s applied=%s muted=%s "
         "sections=%s suffix_chars=%s recall_hits=%s recall_chars=%s",
         scope.case_key,
         normalized_mode,
+        collected.advocate_lines,
         collected.prefs_version,
         collected.instructions_version,
         len(collected.instructions_applied),
@@ -555,6 +607,19 @@ def _collect(
         out.blocks.append(block)
         spent += cost
         return True
+
+    # What JuriNex remembers about the advocate, from any of their cases. It comes
+    # first because it is the most general layer; a failure only loses this block.
+    if settings.advocate_enabled:
+        try:
+            advocate = repository.get_advocate_memory(scope.user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] advocate memory unavailable for user_id=%s: %s", scope.user_id, exc)
+            advocate = {}
+        body, count = render_advocate(advocate.get("lines") or [], budget.chars("advocate"))
+        if body and add(ADVOCATE_HEADER.format(version=advocate.get("version") or 1) + "\n" + body):
+            out.advocate_version = advocate.get("version")
+            out.advocate_lines = count
 
     # Layers 1 and 2 — the advocate's universal instructions, then this case's,
     # each already filtered down to the items switched on for this case and

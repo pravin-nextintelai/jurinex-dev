@@ -80,6 +80,11 @@ def fake_store(
             "get_sections",
             side_effect=lambda key, wanted: {k: sections[k] for k in wanted if k in sections},
         ),
+        patch.object(
+            assembly_mod.repository,
+            "get_advocate_memory",
+            return_value={"user_id": "42", "version": None, "lines": [], "forgotten": []},
+        ),
     )
 
 
@@ -337,7 +342,7 @@ class MetadataTests(unittest.TestCase):
         meta = build("When is the hearing?").metadata()
         self.assertEqual(
             sorted(meta.keys()),
-            ["case_key", "enabled", "instructions", "recall_chat_ids", "sections_loaded", "skipped_reason"],
+            ["advocate_lines", "case_key", "enabled", "instructions", "recall_chat_ids", "sections_loaded", "skipped_reason"],
         )
         self.assertTrue(meta["enabled"])
         self.assertEqual(meta["case_key"], "512")

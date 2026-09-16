@@ -310,6 +310,7 @@ class SettingsTests(unittest.TestCase):
                 "recall_enabled": False,
                 "instructions_enabled": True,
                 "sensitive_enabled": False,
+                "advocate_enabled": True,
             },
         )
 

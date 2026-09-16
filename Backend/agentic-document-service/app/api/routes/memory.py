@@ -27,6 +27,11 @@ from app.services.memory import repository
 from app.services.memory.instructions import annotate, normalize_session_id, user_proposal_key
 from app.services.memory.repository import VersionConflict
 from app.services.memory.schemas import (
+    ADVOCATE_CATEGORIES,
+    MAX_ADVOCATE_CHARS,
+    MAX_ADVOCATE_LINES,
+    MAX_LINE_CHARS,
+    AdvocateCategory,
     MAX_INSTRUCTION_ITEM_CHARS,
     MAX_INSTRUCTION_ITEMS,
     MAX_INSTRUCTIONS_CHARS,
@@ -43,9 +48,11 @@ from app.services.memory.schemas import (
 from app.services.memory.scope import CaseScope, firm_context_for, resolve_case_scope
 from app.services.memory.validator import (
     Rejection,
+    advocate_set_room,
     instruction_set_room,
     split_instruction_text,
     strip_tag_prefix,
+    validate_advocate_line,
     validate_instruction_item,
     validate_line,
 )
@@ -121,6 +128,7 @@ class SettingsUpdate(BaseModel):
     recall_enabled: bool | None = None
     instructions_enabled: bool | None = None
     sensitive_enabled: bool | None = None
+    advocate_enabled: bool | None = None
 
     def flags(self, current: dict[str, Any] | None) -> dict[str, bool]:
         """Merge the patch over what is stored, defaulting to on."""
@@ -161,6 +169,18 @@ class OverrideUpdate(BaseModel):
 class PolishRequest(BaseModel):
     text: str = Field(max_length=MAX_INSTRUCTION_ITEM_CHARS * 4)
     scope: InstructionScope = "case"
+
+
+class AdvocateLineCreate(BaseModel):
+    category: AdvocateCategory
+    text: str = Field(max_length=MAX_LINE_CHARS * 2)
+    version: int | None = None
+
+
+class AdvocateLinePatch(BaseModel):
+    category: AdvocateCategory | None = None
+    text: str | None = Field(default=None, max_length=MAX_LINE_CHARS * 2)
+    version: int | None = None
 
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
@@ -523,6 +543,131 @@ def _replace_from_text(
     return {"scope": scope_type, "version": result.get("version"), "items": items, "content": "\n".join(texts)}
 
 
+# ── About the advocate: facts remembered across every case ───────────────────
+
+def _advocate_payload(user_id: str) -> dict[str, Any]:
+    data = repository.get_advocate_memory(user_id)
+    return {
+        "version": data.get("version"),
+        "lines": data.get("lines") or [],
+        "categories": list(ADVOCATE_CATEGORIES),
+        "max_lines": MAX_ADVOCATE_LINES,
+        "max_line_chars": MAX_LINE_CHARS,
+        "max_chars": MAX_ADVOCATE_CHARS,
+    }
+
+
+def _advocate_conflict(exc: VersionConflict) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "detail": "stale_version",
+            "scope": "advocate",
+            "expected_version": exc.expected,
+            "current_version": exc.current_version,
+            "lines": exc.current_lines,
+        },
+    )
+
+
+def _check_advocate_text(text: str, category: str | None, user: dict[str, Any]) -> str:
+    """The cleaned text, or a 422 with the rule it breaks."""
+    clean = " ".join(str(text or "").split())
+    problem = validate_advocate_line(clean, category=category, party_names=_party_names(user))
+    if problem is not None:
+        raise _unprocessable([problem])
+    return clean
+
+
+@router.get("/advocate")
+def read_advocate_memory(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """What JuriNex remembers about this advocate, used in every case."""
+    return _advocate_payload(_actor(user))
+
+
+@router.post("/advocate")
+def add_advocate_fact(
+    body: AdvocateLineCreate,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    text = _check_advocate_text(body.text, body.category, user)
+    current = repository.get_advocate_memory(_actor(user))
+    room = advocate_set_room(current.get("lines") or [], text)
+    if room is not None:
+        raise _unprocessable([room])
+    try:
+        result = repository.add_advocate_line(
+            _actor(user), body.category, text, body.version, source_ref={"kind": "user"}, actor=_actor(user)
+        )
+    except VersionConflict as exc:
+        raise _advocate_conflict(exc) from exc
+    except ValueError as exc:
+        raise _unprocessable([Rejection("invalid", str(exc))]) from exc
+    logger.info("[Memory] user_id=%s added an advocate fact -> v%s", _actor(user), result.get("version"))
+    return {"version": result.get("version"), "line": result.get("line")}
+
+
+@router.patch("/advocate/{line_id}")
+def update_advocate_fact(
+    line_id: str,
+    body: AdvocateLinePatch,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    if body.text is None and body.category is None:
+        raise _unprocessable([Rejection("empty", "Nothing to change.")])
+    current = repository.get_advocate_memory(_actor(user))
+    lines = current.get("lines") or []
+    line = next((row for row in lines if str(row.get("id")) == str(line_id)), None)
+    if line is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That fact is no longer remembered.")
+    text = None
+    if body.text is not None:
+        text = _check_advocate_text(body.text, body.category or line.get("category"), user)
+        room = advocate_set_room([row for row in lines if str(row.get("id")) != str(line_id)], text)
+        if room is not None:
+            raise _unprocessable([room])
+    try:
+        result = repository.update_advocate_line(
+            _actor(user),
+            line_id,
+            body.version,
+            text=text,
+            category=body.category,
+            source_ref_extra={"edited_by": "user"},
+            actor=_actor(user),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except VersionConflict as exc:
+        raise _advocate_conflict(exc) from exc
+    return {"version": result.get("version"), "line": result.get("line")}
+
+
+@router.delete("/advocate/{line_id}")
+def delete_advocate_fact(
+    line_id: str,
+    version: int | None = Query(default=None),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Forget one fact. One JuriNex learned from chat is not learned again."""
+    try:
+        result = repository.delete_advocate_line(_actor(user), line_id, version, actor=_actor(user))
+    except VersionConflict as exc:
+        raise _advocate_conflict(exc) from exc
+    if not result.get("deleted"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That fact is no longer remembered.")
+    logger.info("[Memory] user_id=%s forgot advocate fact %s", _actor(user), line_id)
+    return {"version": result.get("version"), "deleted": True, "id": line_id}
+
+
+@router.delete("/advocate")
+def forget_advocate(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Forget everything JuriNex remembers about this advocate."""
+    count = repository.delete_advocate_memory(_actor(user))
+    logger.info("[Memory] user_id=%s forgot everything about themselves (%s facts)", _actor(user), count)
+    return {"deleted": count}
+
+
 # ── Layer 1: the advocate's universal instructions (older "preferences" routes) ──
 
 @router.get("/preferences")
@@ -873,6 +1018,7 @@ def get_turn(
         "lines": list(details.get("lines") or []),
         "instructions": list(details.get("instructions") or []),
         "suggestions": list(details.get("suggestions") or []),
+        "advocate": list(details.get("advocate") or []),
         "instructions_applied": len(details.get("instructions_applied") or []),
         "seeded": seeded if isinstance(seeded, dict) else None,
     }
