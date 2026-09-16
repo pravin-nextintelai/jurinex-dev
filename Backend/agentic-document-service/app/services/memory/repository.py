@@ -258,11 +258,15 @@ CREATE TABLE IF NOT EXISTS advocate_memory_lines (
     CONSTRAINT advocate_memory_lines_category_check
         CHECK (category IN ('practice','clients','work_style','background')),
     CONSTRAINT advocate_memory_lines_text_len_check CHECK (char_length(text) <= 300),
+    used_count   INTEGER     NOT NULL DEFAULT 0,
+    last_used_at TIMESTAMPTZ,
     CONSTRAINT advocate_memory_lines_set_fk
         FOREIGN KEY (user_id) REFERENCES advocate_memory_sets (user_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_advocate_memory_lines_user
     ON advocate_memory_lines (user_id, ord);
+CREATE INDEX IF NOT EXISTS idx_advocate_memory_lines_use
+    ON advocate_memory_lines (user_id, used_count, last_used_at NULLS FIRST);
 """
 
 # Tables purged when a case is deleted, in FK-safe order.
@@ -300,6 +304,10 @@ _tables_ready = False
 _details_column = True
 # Whether memory_settings has `advocate_enabled` (migration 175). Settled like `_details_column`.
 _advocate_column = True
+# Whether advocate_memory_lines has `used_count`/`last_used_at` (migration 176). Until
+# it does, facts are read without their use and nothing is counted; the panel then
+# shows no use and eviction falls back to the oldest auto-learned fact.
+_advocate_use_columns = True
 
 _PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected"})
 
@@ -327,7 +335,34 @@ def ensure_tables(conn: Any) -> None:
         logger.debug("[Memory] DDL skipped: %s", exc)
     _ensure_details_column(conn)
     _ensure_advocate_column(conn)
+    _ensure_advocate_use_columns(conn)
     _tables_ready = True
+
+
+def _ensure_advocate_use_columns(conn: Any) -> None:
+    """Give an advocate table created before migration 176 its use counters."""
+    global _advocate_use_columns
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'advocate_memory_lines' AND column_name = 'used_count' LIMIT 1"
+            )
+            if cur.fetchone() is None:
+                cur.execute("SET LOCAL lock_timeout = '2s'")
+                cur.execute(
+                    "ALTER TABLE advocate_memory_lines "
+                    "ADD COLUMN IF NOT EXISTS used_count INTEGER NOT NULL DEFAULT 0, "
+                    "ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ"
+                )
+        conn.commit()
+        _advocate_use_columns = True
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        _advocate_use_columns = False
+        logger.warning(
+            "[Memory] which remembered facts get used is not counted until migration 176 is applied: %s", exc
+        )
 
 
 def _ensure_advocate_column(conn: Any) -> None:
@@ -1644,7 +1679,14 @@ def set_instruction_override(
 # the writer does not learn them again. Keyed by user id only: nothing here
 # belongs to a case, and deleting a case leaves it alone.
 
-_ADVOCATE_COLUMNS = "id, category, ord, text, source_ref, created_by, created_at, updated_at"
+_ADVOCATE_BASE_COLUMNS = "id, category, ord, text, source_ref, created_by, created_at, updated_at"
+
+
+def _advocate_columns() -> str:
+    """The fact columns this database has: with use counters once migration 176 is in."""
+    if _advocate_use_columns:
+        return f"{_ADVOCATE_BASE_COLUMNS}, used_count, last_used_at"
+    return _ADVOCATE_BASE_COLUMNS
 
 
 def _require_user(user_id: str | None) -> str:
@@ -1670,7 +1712,7 @@ def _require_category(category: str | None) -> str:
 
 def _fetch_advocate_lines(cur: Any, uid: str) -> list[dict[str, Any]]:
     cur.execute(
-        f"SELECT {_ADVOCATE_COLUMNS} FROM advocate_memory_lines WHERE user_id = %s ORDER BY ord ASC, created_at ASC",
+        f"SELECT {_advocate_columns()} FROM advocate_memory_lines WHERE user_id = %s ORDER BY ord ASC, created_at ASC",
         (uid,),
     )
     return [_out(row) or {} for row in cur.fetchall()]
@@ -1772,7 +1814,7 @@ def add_advocate_line(
                 raise ValueError(f"At most {MAX_ADVOCATE_LINES} facts about the advocate are kept.")
             cur.execute(
                 "INSERT INTO advocate_memory_lines (user_id, category, ord, text, source_ref, created_by) "
-                f"VALUES (%s, %s, %s, %s, %s::jsonb, %s) RETURNING {_ADVOCATE_COLUMNS}",
+                f"VALUES (%s, %s, %s, %s, %s::jsonb, %s) RETURNING {_advocate_columns()}",
                 (uid, kind, int(counts.get("next_ord") or 1), body, _json(source_ref or {}), actor),
             )
             line = _out(cur.fetchone()) or {}
@@ -1811,7 +1853,7 @@ def update_advocate_line(
             cur.execute(
                 "UPDATE advocate_memory_lines SET text = COALESCE(%s, text), category = COALESCE(%s, category), "
                 "source_ref = source_ref || %s::jsonb, updated_at = NOW() "
-                f"WHERE id = %s::uuid AND user_id = %s RETURNING {_ADVOCATE_COLUMNS}",
+                f"WHERE id = %s::uuid AND user_id = %s RETURNING {_advocate_columns()}",
                 (body, kind, _json(source_ref_extra or {}), str(line_id), uid),
             )
             line = _out(cur.fetchone()) or {}
@@ -1828,9 +1870,14 @@ def delete_advocate_line(
     expected_version: int | None = None,
     *,
     actor: str | None = None,
+    remember_as_forgotten: bool = True,
     conn: Any = None,
 ) -> dict[str, Any]:
     """Forget one fact. One JuriNex learned from chat is kept on the forgotten list so it is not learned again.
+
+    `remember_as_forgotten=False` skips that list. Eviction uses it: a fact dropped to
+    make room was not rejected by the advocate, so JuriNex may learn it again once
+    there is space.
 
     Returns {version, deleted, line}.
     """
@@ -1838,7 +1885,7 @@ def delete_advocate_line(
     with _conn(conn) as connection, connection.cursor() as cur:
         try:
             cur.execute(
-                f"SELECT {_ADVOCATE_COLUMNS} FROM advocate_memory_lines WHERE id = %s::uuid AND user_id = %s",
+                f"SELECT {_advocate_columns()} FROM advocate_memory_lines WHERE id = %s::uuid AND user_id = %s",
                 (str(line_id), uid),
             )
             row = cur.fetchone()
@@ -1849,7 +1896,7 @@ def delete_advocate_line(
             version = _bump_advocate_set(cur, uid, expected_version)
             cur.execute("DELETE FROM advocate_memory_lines WHERE id = %s::uuid AND user_id = %s", (str(line_id), uid))
             ref = row.get("source_ref") if isinstance(row.get("source_ref"), dict) else {}
-            if str((ref or {}).get("kind") or "") == "chat":
+            if remember_as_forgotten and str((ref or {}).get("kind") or "") == "chat":
                 head = _advocate_set(cur, uid) or {}
                 forgotten = [*_forgotten_list(head.get("forgotten")), str(row.get("text") or "")]
                 cur.execute(
@@ -1876,6 +1923,64 @@ def delete_advocate_memory(user_id: str, *, conn: Any = None) -> int:
             connection.rollback()
             raise
     return count
+
+
+def record_advocate_use(user_id: str, line_ids: Sequence[str], *, conn: Any = None) -> int:
+    """Count one turn's use against the facts it carried. Returns how many were counted.
+
+    Called on the writer's thread after the answer, never in the chat's critical path.
+    A database without migration 176 counts nothing and says so once.
+    """
+    uid = _require_user(user_id)
+    ids = [str(value).strip() for value in line_ids if str(value or "").strip()]
+    if not ids or not _advocate_use_columns:
+        return 0
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute(
+                "UPDATE advocate_memory_lines "
+                "SET used_count = used_count + 1, last_used_at = NOW() "
+                "WHERE user_id = %s AND id = ANY(%s::uuid[])",
+                (uid, ids),
+            )
+            counted = int(cur.rowcount or 0)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return counted
+
+
+def least_useful_advocate_lines(
+    user_id: str,
+    *,
+    created_by: str,
+    limit: int = 5,
+    conn: Any = None,
+) -> list[dict[str, Any]]:
+    """Facts JuriNex learned by itself, least useful first.
+
+    `created_by` narrows this to the writer's own actor, so a fact the advocate typed
+    or edited is never a candidate: automatic memory manages its own space, and what a
+    person put there is theirs to remove. Never-used facts come out first, then the
+    least used, then the longest unused, then the oldest.
+    """
+    uid = _require_user(user_id)
+    actor = str(created_by or "").strip()
+    if not actor or limit <= 0:
+        return []
+    order = (
+        "used_count ASC, last_used_at ASC NULLS FIRST, created_at ASC"
+        if _advocate_use_columns
+        else "created_at ASC"
+    )
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            f"SELECT {_advocate_columns()} FROM advocate_memory_lines "
+            f"WHERE user_id = %s AND created_by = %s ORDER BY {order} LIMIT %s",
+            (uid, actor, int(limit)),
+        )
+        return [_out(row) or {} for row in cur.fetchall()]
 
 
 # ── Settings ─────────────────────────────────────────────────────────────────

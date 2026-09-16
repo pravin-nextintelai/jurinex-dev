@@ -1025,6 +1025,8 @@ def get_turn(
         "instructions": list(details.get("instructions") or []),
         "suggestions": list(details.get("suggestions") or []),
         "advocate": list(details.get("advocate") or []),
+        # Facts JuriNex had learned but never used, dropped to make room for a new one.
+        "advocate_evicted": list(details.get("advocate_evicted") or []),
         "instructions_applied": len(details.get("instructions_applied") or []),
         "seeded": seeded if isinstance(seeded, dict) else None,
     }

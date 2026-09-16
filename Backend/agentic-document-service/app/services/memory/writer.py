@@ -1480,7 +1480,7 @@ def _handle_advocate(
                 updated = True
             else:
                 room = advocate_set_room(state.lines, text)
-                if room is not None:
+                if room is not None and not _make_room(scope, state, text, report):
                     report.reject("advocate_full")
                     continue
                 result = repository.add_advocate_line(
@@ -1503,6 +1503,64 @@ def _handle_advocate(
             "advocate",
             {"id": line.get("id"), "category": fact.category, "text": text, "updated": updated},
         )
+
+
+# At most this many facts make way for one new one, so a single turn can never
+# empty the set.
+MAX_ADVOCATE_EVICTIONS = 2
+
+
+def _make_room(
+    scope: CaseScope,
+    state: AdvocateState,
+    text: str,
+    report: WriteReport,
+) -> bool:
+    """Free space for one new fact by dropping dead weight. True when there is now room.
+
+    Only facts JuriNex learned by itself **and has never once sent** are candidates: a
+    fact the advocate typed is theirs, and a fact that has shaped answers has earned
+    its place. If every stored fact is one of those, the set stays full and the new
+    fact is refused — which is the advocate's cue to decide what goes.
+    """
+    try:
+        candidates = repository.least_useful_advocate_lines(
+            scope.user_id, created_by=WRITER_ACTOR, limit=MAX_ADVOCATE_EVICTIONS + 2
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] no eviction candidates user_id=%s: %s", scope.user_id, exc)
+        return False
+
+    removed = 0
+    for candidate in candidates:
+        if removed >= MAX_ADVOCATE_EVICTIONS:
+            break
+        if int(candidate.get("used_count") or 0) > 0:
+            break  # the list is least-useful-first, so everything after this is used too
+        line_id = str(candidate.get("id") or "")
+        if not line_id:
+            continue
+        try:
+            repository.delete_advocate_line(
+                scope.user_id, line_id, None, actor=WRITER_ACTOR, remember_as_forgotten=False
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] a stale fact was not removed user_id=%s: %s", scope.user_id, exc)
+            break
+        state.lines = [line for line in state.lines if str(line.get("id")) != line_id]
+        removed += 1
+        report.note(
+            "advocate_evicted",
+            {"id": line_id, "category": candidate.get("category"), "text": candidate.get("text")},
+        )
+        logger.info(
+            "[Memory] a never-used fact made room for a new one user_id=%s text=%r",
+            scope.user_id,
+            str(candidate.get("text") or "")[:80],
+        )
+        if advocate_set_room(state.lines, text) is None:
+            return True
+    return removed > 0 and advocate_set_room(state.lines, text) is None
 
 
 # Upload paths prefix the original file name with an id ("<uuid>_Bail.pdf",
@@ -1705,6 +1763,23 @@ def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
         return None
 
 
+def _count_advocate_use(turn: TurnInput) -> None:
+    """Count this turn against the advocate facts it carried. Never raises.
+
+    Assembly recorded its choice in the log entry, so nothing extra is passed down the
+    chat route. Counting here keeps it off the critical path, and a fact that is never
+    chosen stays at zero — which is what makes it the first to go when room runs out.
+    """
+    details = turn.log_entry.get("details") if isinstance(turn.log_entry, dict) else None
+    chosen = (details or {}).get("advocate_selected") if isinstance(details, dict) else None
+    if not chosen or turn.scope is None:
+        return
+    try:
+        repository.record_advocate_use(turn.scope.user_id, list(chosen))
+    except Exception as exc:  # noqa: BLE001 — counting must never disturb a chat
+        logger.debug("[Memory] advocate use not counted user_id=%s: %s", turn.scope.user_id, exc)
+
+
 def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
     """Write what one turn established. Never raises."""
     report = WriteReport()
@@ -1715,6 +1790,7 @@ def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
             "[Memory] writer failed case_key=%s: %s", getattr(turn.scope, "case_key", None), exc
         )
         report.skipped_reason = report.skipped_reason or "writer_error"
+    _count_advocate_use(turn)
     report.assembly_log_id = _write_log(turn, report)
     logger.info(
         "[Memory] post-turn case_key=%s writes=%s instructions_saved=%s advocate=%s proposals=%s rejected=%s "

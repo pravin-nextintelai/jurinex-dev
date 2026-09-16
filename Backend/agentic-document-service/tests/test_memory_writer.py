@@ -149,6 +149,7 @@ def harness(
     pattern_save_after=3,
     advocate_lines=None,
     advocate_forgotten=None,
+    advocate_evictable=None,
     polished=None,
 ):
     mocks = {}
@@ -217,6 +218,9 @@ def harness(
                 "version": 2, "line": {"id": line_id, "category": category, "text": text}
             },
         )
+        repo("record_advocate_use", return_value=len(advocate_lines or []))
+        repo("least_useful_advocate_lines", return_value=[dict(line) for line in advocate_evictable or []])
+        repo("delete_advocate_line", return_value={"version": 2, "deleted": True, "line": None})
         module("party_names_for_user", return_value=tuple(party_names))
         if turns_error is not None:
             module("recent_turns", side_effect=turns_error)
@@ -1291,6 +1295,92 @@ class AdvocateMemoryTests(unittest.TestCase):
         )
         self.assertEqual([fact.category for fact in extraction.advocate], ["practice", "clients", "background"])
         self.assertEqual(extraction.invalid, 1)
+
+
+class AdvocateUseTests(unittest.TestCase):
+    """Which facts an answer carried is counted, so dead weight can be told from the rest."""
+
+    SELECTED = {"details": {"advocate_selected": ["adv-1", "adv-2"]}, "case_key": "512", "user_id": "42"}
+
+    def test_the_facts_an_answer_carried_are_counted(self) -> None:
+        _, mocks = run("Tell me about the hearing", turn={"log_entry": self.SELECTED})
+        mocks["record_advocate_use"].assert_called_once_with("42", ["adv-1", "adv-2"])
+
+    def test_a_turn_that_carried_none_counts_nothing(self) -> None:
+        _, mocks = run("Tell me about the hearing")
+        mocks["record_advocate_use"].assert_not_called()
+
+    def test_counting_failure_never_reaches_the_chat(self) -> None:
+        with harness() as mocks:
+            mocks["record_advocate_use"].side_effect = RuntimeError("db down")
+            report = run_post_turn(turn("Tell me about it", log_entry=self.SELECTED), today=TODAY)
+        self.assertNotEqual(report.skipped_reason, "writer_error")
+
+
+class AdvocateEvictionTests(unittest.TestCase):
+    """A full set makes room by dropping what JuriNex learned but never used."""
+
+    FACT = "Mostly appears before the Aurangabad Bench of the Bombay High Court in land matters"
+    MESSAGE = "I mostly appear before the Aurangabad Bench of the Bombay High Court in land matters."
+
+    @staticmethod
+    def full(**overrides):
+        """A set at the character cap, so any new fact needs room made for it."""
+        return [{"id": "old-1", "category": "background", "text": "x" * 2_990, **overrides}]
+
+    def run_full(self, **kwargs):
+        return run(
+            self.MESSAGE,
+            extraction=Extraction(advocate=[AdvocateFact(category="practice", text=self.FACT)]),
+            advocate_lines=self.full(),
+            **kwargs,
+        )
+
+    def test_a_never_used_fact_makes_room_and_the_new_one_is_saved(self) -> None:
+        report, mocks = self.run_full(
+            advocate_evictable=[{"id": "old-1", "category": "background", "text": "Stale", "used_count": 0}]
+        )
+        mocks["delete_advocate_line"].assert_called_once()
+        mocks["add_advocate_line"].assert_called_once()
+        self.assertEqual(report.details["advocate_evicted"][0]["id"], "old-1")
+        self.assertNotIn("advocate_full", report.rejection_codes)
+
+    def test_an_evicted_fact_may_be_learned_again(self) -> None:
+        """It was dropped for room, not rejected, so it does not join the forgotten list."""
+        _, mocks = self.run_full(
+            advocate_evictable=[{"id": "old-1", "category": "background", "text": "Stale", "used_count": 0}]
+        )
+        self.assertIs(mocks["delete_advocate_line"].call_args.kwargs["remember_as_forgotten"], False)
+
+    def test_only_facts_juri_nex_learned_itself_are_candidates(self) -> None:
+        _, mocks = self.run_full(
+            advocate_evictable=[{"id": "old-1", "category": "background", "text": "Stale", "used_count": 0}]
+        )
+        self.assertEqual(mocks["least_useful_advocate_lines"].call_args.kwargs["created_by"], writer_mod.WRITER_ACTOR)
+
+    def test_a_fact_that_has_shaped_answers_is_kept_and_the_new_one_refused(self) -> None:
+        report, mocks = self.run_full(
+            advocate_evictable=[{"id": "old-1", "category": "background", "text": "Useful", "used_count": 7}]
+        )
+        mocks["delete_advocate_line"].assert_not_called()
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertIn("advocate_full", report.rejection_codes)
+
+    def test_nothing_to_evict_still_refuses_cleanly(self) -> None:
+        report, mocks = self.run_full(advocate_evictable=[])
+        mocks["add_advocate_line"].assert_not_called()
+        self.assertIn("advocate_full", report.rejection_codes)
+
+    def test_a_failed_eviction_does_not_break_the_turn(self) -> None:
+        with harness(
+            extraction=Extraction(advocate=[AdvocateFact(category="practice", text=self.FACT)]),
+            advocate_lines=self.full(),
+            advocate_evictable=[{"id": "old-1", "category": "background", "text": "Stale", "used_count": 0}],
+        ) as mocks:
+            mocks["delete_advocate_line"].side_effect = RuntimeError("db down")
+            report = run_post_turn(turn(self.MESSAGE), today=TODAY)
+        self.assertIn("advocate_full", report.rejection_codes)
+        self.assertNotEqual(report.skipped_reason, "writer_error")
 
 
 if __name__ == "__main__":

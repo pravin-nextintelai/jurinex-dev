@@ -36,6 +36,11 @@ These migrations align the new Python `agentic-document-service` with the shared
     about themselves (practice, clients, way of working, background) in
     `advocate_memory_lines`, loaded into every case, and an `advocate_enabled`
     switch on `memory_settings`. Created on first use too.
+11. counts which remembered facts actually get used (migration `176`): `used_count`
+    and `last_used_at` on `advocate_memory_lines`. Each turn picks the facts that suit
+    the question (`app/services/memory/relevance.py`) and the writer counts what it
+    chose, so a full set makes room by dropping a fact JuriNex learned but never used —
+    never one the advocate typed. Added on first use too.
 
 ## Suggested Run Order
 
