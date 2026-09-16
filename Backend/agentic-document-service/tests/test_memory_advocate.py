@@ -74,11 +74,43 @@ class RenderTests(unittest.TestCase):
         self.assertLess(text.index("Clients:"), text.index("How they work:"))
         self.assertIn("Practice:\n- Mostly appears before the Aurangabad Bench", text)
 
-    def test_the_oldest_facts_go_first_when_over_budget(self) -> None:
+    def test_without_a_question_the_newest_facts_are_kept(self) -> None:
+        """Nothing to go on, so recency decides — the old behaviour, as the floor."""
         text, count = render_advocate(LINES, 80)
         self.assertEqual(count, 1)
         self.assertNotIn("borrowers", text)
         self.assertIn("Juniors prepare the first draft", text)
+
+    def test_the_question_decides_which_fact_fits(self) -> None:
+        """The same budget, three questions, three different facts chosen."""
+        for question, expected, unwanted in (
+            ("Which bench should this be filed before?", "Aurangabad Bench", "borrowers"),
+            ("Who are my usual clients?", "borrowers", "Aurangabad"),
+            ("Draft the reply for me", "Juniors prepare", "borrowers"),
+        ):
+            with self.subTest(question=question):
+                text, count = render_advocate(LINES, 80, question=question)
+                self.assertEqual(count, 1)
+                self.assertIn(expected, text)
+                self.assertNotIn(unwanted, text)
+
+    def test_a_shared_word_beats_the_newer_fact(self) -> None:
+        text, _ = render_advocate(LINES, 80, question="Tell me about borrowers in this matter")
+        self.assertIn("borrowers", text)
+
+    def test_the_block_keeps_its_shape_whatever_was_chosen(self) -> None:
+        """Membership moves with the question; the order of what is sent does not."""
+        text, count = render_advocate(LINES, 2_000, question="Draft the reply for me")
+        self.assertEqual(count, 3)
+        self.assertLess(text.index("Practice:"), text.index("Clients:"))
+        self.assertLess(text.index("Clients:"), text.index("How they work:"))
+
+    def test_what_was_chosen_is_reported(self) -> None:
+        body, selection = assembly_mod.select_advocate(LINES, 80, question="Draft the reply")
+        self.assertEqual(selection.kept_ids, ["a3"])
+        self.assertEqual(sorted(selection.dropped_ids), ["a1", "a2"])
+        self.assertIn("Juniors", body)
+        self.assertGreater(selection.scores["a3"], selection.scores["a1"])
 
     def test_blank_lines_and_unknown_categories_are_left_out(self) -> None:
         text, count = render_advocate([{"category": "hobbies", "text": "Chess"}, {"category": "practice", "text": " "}], 500)

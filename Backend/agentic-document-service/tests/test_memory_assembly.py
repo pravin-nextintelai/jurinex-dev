@@ -342,7 +342,10 @@ class MetadataTests(unittest.TestCase):
         meta = build("When is the hearing?").metadata()
         self.assertEqual(
             sorted(meta.keys()),
-            ["advocate_lines", "case_key", "enabled", "instructions", "recall_chat_ids", "sections_loaded", "skipped_reason"],
+            [
+                "advocate_lines", "advocate_skipped", "case_key", "enabled", "instructions",
+                "recall_chat_ids", "sections_loaded", "skipped_reason",
+            ],
         )
         self.assertTrue(meta["enabled"])
         self.assertEqual(meta["case_key"], "512")

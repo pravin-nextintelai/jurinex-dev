@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
 from app.core.config import get_settings
-from app.services.memory import repository
+from app.services.memory import relevance, repository
 from app.services.memory.instructions import InstructionContext, render_items, resolve_instructions
 from app.services.memory.schemas import SECTIONS, MemorySettings
 from app.services.memory.scope import CaseScope
@@ -153,6 +153,10 @@ class ContextBundle:
     # What JuriNex remembers about the advocate across cases: its version and lines sent.
     advocate_version: int | None = None
     advocate_lines: int = 0
+    # The facts this question chose, and how many were left out for room. Phase 2 of
+    # dynamic memory records these as use, so eviction can drop what never helps.
+    advocate_selected: list[str] = field(default_factory=list)
+    advocate_skipped: int = 0
     case_key: str | None = None
     enabled: bool = False
     skipped_reason: str | None = None
@@ -175,6 +179,7 @@ class ContextBundle:
                 "muted": len(self.instructions_muted),
             },
             "advocate_lines": self.advocate_lines,
+            "advocate_skipped": self.advocate_skipped,
             "skipped_reason": self.skipped_reason,
         }
 
@@ -191,6 +196,9 @@ class _Collected:
     instructions_muted: list[str] = field(default_factory=list)
     advocate_version: int | None = None
     advocate_lines: int = 0
+    # Which facts this question chose, and how many were left out for room.
+    advocate_selected: list[str] = field(default_factory=list)
+    advocate_skipped: int = 0
 
 
 def _empty(reason: str, scope: CaseScope | None = None, **log_extra: Any) -> ContextBundle:
@@ -363,30 +371,48 @@ ADVOCATE_CATEGORY_LABELS: dict[str, str] = {
 }
 
 
-def render_advocate(lines: Sequence[dict[str, Any]], limit: int) -> tuple[str, int]:
-    """Facts about the advocate grouped by category, dropping the oldest when over budget.
+def _advocate_body(rows: Sequence[dict[str, Any]]) -> str:
+    """Facts grouped under their category headings, in a fixed order."""
+    parts: list[str] = []
+    for category, label in ADVOCATE_CATEGORY_LABELS.items():
+        texts = [f"- {str(row.get('text')).strip()}" for row in rows if row.get("category") == category]
+        if texts:
+            parts.append(f"{label}:\n" + "\n".join(texts))
+    return "\n".join(parts)
 
-    Returns the text and how many facts it holds.
+
+def select_advocate(
+    lines: Sequence[dict[str, Any]],
+    limit: int,
+    *,
+    question: str | None = None,
+) -> tuple[str, relevance.Selection]:
+    """The advocate block for this question, and the choice behind it.
+
+    Which facts go in depends on what was asked (app/services/memory/relevance.py),
+    not on how long ago they were saved, so a drafting question carries how the
+    advocate wants drafts written even when that was the first thing JuriNex learned.
     """
-    kept = [
+    usable = [
         line
         for line in lines
         if str(line.get("text") or "").strip() and str(line.get("category") or "") in ADVOCATE_CATEGORY_LABELS
     ]
+    selection = relevance.select(
+        usable, question=question, limit_chars=limit, render=_advocate_body
+    )
+    return _advocate_body(selection.kept), selection
 
-    def render(rows: Sequence[dict[str, Any]]) -> str:
-        parts: list[str] = []
-        for category, label in ADVOCATE_CATEGORY_LABELS.items():
-            texts = [f"- {str(row.get('text')).strip()}" for row in rows if row.get("category") == category]
-            if texts:
-                parts.append(f"{label}:\n" + "\n".join(texts))
-        return "\n".join(parts)
 
-    out = render(kept)
-    while kept and len(out) > limit:
-        kept.pop(0)
-        out = render(kept)
-    return out, len(kept)
+def render_advocate(
+    lines: Sequence[dict[str, Any]],
+    limit: int,
+    *,
+    question: str | None = None,
+) -> tuple[str, int]:
+    """The advocate block and how many facts it holds."""
+    body, selection = select_advocate(lines, limit, question=question)
+    return body, len(selection.kept)
 
 
 UNIVERSAL_HEADER = (
@@ -489,6 +515,8 @@ def build_context_layers(
         instructions_muted=list(collected.instructions_muted),
         advocate_version=collected.advocate_version,
         advocate_lines=collected.advocate_lines,
+        advocate_selected=list(collected.advocate_selected),
+        advocate_skipped=collected.advocate_skipped,
         case_key=scope.case_key,
         enabled=True,
         skipped_reason=None if (suffix or recall_block) else "nothing_stored",
@@ -513,6 +541,8 @@ def build_context_layers(
                 "instructions_applied": list(collected.instructions_applied),
                 "instructions_muted": list(collected.instructions_muted),
                 "advocate_lines": collected.advocate_lines,
+                "advocate_selected": list(collected.advocate_selected),
+                "advocate_skipped": collected.advocate_skipped,
             }.items()
             if value
         },
@@ -616,10 +646,20 @@ def _collect(
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Memory] advocate memory unavailable for user_id=%s: %s", scope.user_id, exc)
             advocate = {}
-        body, count = render_advocate(advocate.get("lines") or [], budget.chars("advocate"))
+        body, selection = select_advocate(
+            advocate.get("lines") or [], budget.chars("advocate"), question=question_raw
+        )
         if body and add(ADVOCATE_HEADER.format(version=advocate.get("version") or 1) + "\n" + body):
             out.advocate_version = advocate.get("version")
-            out.advocate_lines = count
+            out.advocate_lines = len(selection.kept)
+            out.advocate_selected = selection.kept_ids
+            out.advocate_skipped = len(selection.dropped)
+            if selection.dropped:
+                logger.info(
+                    "[Memory] advocate facts chosen for this question user_id=%s %s",
+                    scope.user_id,
+                    relevance.describe(selection, question_raw),
+                )
 
     # Layers 1 and 2 — the advocate's universal instructions, then this case's,
     # each already filtered down to the items switched on for this case and
