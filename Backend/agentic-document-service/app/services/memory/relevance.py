@@ -25,6 +25,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
+from app.services.memory import script
+
 # Words that carry no subject. Kept small on purpose: this is a relevance hint, not
 # a search engine, and over-trimming makes short questions score nothing at all.
 STOPWORDS: frozenset[str] = frozenset(
@@ -71,8 +73,28 @@ _CATEGORY_CUES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# The same subjects in Marathi or Hindi, matched at the start of a word.
+_CATEGORY_CUES_DEVANAGARI: dict[str, tuple[str, ...]] = {
+    "work_style": (
+        "मसुद", "ड्राफ्ट", "मसौद", "लिह", "भाषा", "मराठी", "हिंदी", "इंग्रजी", "तक्त", "सारांश", "थोडक्यात",
+        "सविस्तर", "मुद्देसूद",
+    ),
+    "practice": (
+        "न्यायालय", "कोर्ट", "खंडपीठ", "खटल", "दावा", "अपील", "जामीन", "जमानत", "फौजदारी", "दिवाणी", "महसूल",
+        "याचिका", "प्रक्रिया",
+    ),
+    "clients": ("अशील", "क्लायंट", "मुवक्किल", "बँक", "कंपनी", "शेतकरी", "प्रतिनिधित्व"),
+    "background": ("अनुभव", "वरिष्ठ", "कनिष्ठ", "शिक्षण", "पदवी"),
+}
+
 _CATEGORY_PATTERNS: dict[str, re.Pattern[str]] = {
-    category: re.compile("|".join(rf"\b{cue}" for cue in cues), re.IGNORECASE)
+    category: re.compile(
+        "|".join(
+            [rf"\b{cue}" for cue in cues]
+            + [rf"(?<![{script.LETTERS}]){cue}" for cue in _CATEGORY_CUES_DEVANAGARI.get(category, ())]
+        ),
+        re.IGNORECASE,
+    )
     for category, cues in _CATEGORY_CUES.items()
 }
 
@@ -85,9 +107,9 @@ WEIGHT_RECENCY = 0.5
 
 
 def terms(text: str | None) -> set[str]:
-    """The subject words of a piece of text, lowercased and stripped of filler."""
+    """The subject words of a piece of text, lowercased and stripped of filler; Marathi and Hindi too."""
     found = _WORD_RE.findall(str(text or "").lower())
-    return {word for word in found if len(word) >= 3 and word not in STOPWORDS}
+    return {word for word in found if len(word) >= 3 and word not in STOPWORDS} | script.content_words(text)
 
 
 def category_hits(question: str | None) -> set[str]:

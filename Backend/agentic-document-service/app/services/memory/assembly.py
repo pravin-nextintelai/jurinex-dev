@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Sequence
 
 from app.core.config import get_settings
-from app.services.memory import relevance, repository
+from app.services.memory import relevance, repository, script
 from app.services.memory.instructions import InstructionContext, render_items, resolve_instructions
 from app.services.memory.schemas import SECTIONS, MemorySettings
 from app.services.memory.scope import CaseScope
@@ -305,10 +305,33 @@ _SECTION_CUES: dict[str, tuple[str, ...]] = {
         r"schedule",
     ),
 }
+# The same subjects asked about in Marathi or Hindi. A cue matches the start of a word,
+# so endings do not matter ("सुनावणीची", "आरोपीला").
+_SECTION_CUES_DEVANAGARI: dict[str, tuple[str, ...]] = {
+    "facts": ("तथ्य", "घटना", "हकीकत", "पार्श्वभूमी", "पृष्ठभूमि", "वस्तुस्थिति", "आरोप", "व्यवहार"),
+    "parties": (
+        "पक्षकार", "याचिकाकर्त", "प्रतिवादी", "वादी", "आरोपी", "फिर्यादी", "तक्रारदार", "अपीलकर्त", "अशील",
+        "साक्षीदार", "गवाह", "मुवक्किल", "शिकायतकर्त", "कोण", "कौन",
+    ),
+    "documents": (
+        "दस्त", "कागदपत्र", "करार", "प्रतिज्ञापत्र", "शपथपत्र", "याचिका", "नोटीस", "नोटिस", "पुरावा", "सबूत",
+        "अर्ज", "आदेश",
+    ),
+    "drafting_log": ("मसुदा", "मसुद्या", "ड्राफ्ट", "मसौद"),
+    "decisions": ("निर्णय", "ठरव", "रणनीत", "युक्तिवाद", "मुद्दा", "मुद्द्या", "भूमिका", "तर्क", "फैसल"),
+    "dates": ("तारीख", "दिनांक", "सुनावणी", "सुनवाई", "मुदत", "कालक्रम", "कधी", "कब", "परिसीमा"),
+}
 
 # Compiled once. Word-ish boundaries so "draft" does not match inside "draughtsman".
+# `\b` cannot start a Devanagari cue: a vowel sign before it is not a word character.
 _SECTION_PATTERNS: dict[str, re.Pattern[str]] = {
-    section: re.compile("|".join(rf"\b{cue}" for cue in cues), re.IGNORECASE)
+    section: re.compile(
+        "|".join(
+            [rf"\b{cue}" for cue in cues]
+            + [rf"(?<![{script.LETTERS}]){cue}" for cue in _SECTION_CUES_DEVANAGARI.get(section, ())]
+        ),
+        re.IGNORECASE,
+    )
     for section, cues in _SECTION_CUES.items()
 }
 
@@ -536,6 +559,14 @@ def build_context_layers(
         bundle.settings = effective
         return bundle
 
+    # A question that refers back is embedded while the other layers are read, so the
+    # search by meaning costs the time box no more than the slower of the two.
+    query_embedding = None
+    if load_recall and effective.recall_enabled:
+        from app.services.memory import recall
+
+        query_embedding = recall.start_query_embedding(question_raw)
+
     try:
         collected = _collect(
             scope,
@@ -555,7 +586,7 @@ def build_context_layers(
 
     recall_block, recall_chat_ids = "", []
     if load_recall and effective.recall_enabled:
-        recall_block, recall_chat_ids = _recall(scope, question_raw, session_id, budget)
+        recall_block, recall_chat_ids = _recall(scope, question_raw, session_id, budget, query_embedding)
 
     bundle = ContextBundle(
         system_suffix=suffix,
@@ -624,6 +655,7 @@ def _recall(
     question_raw: str,
     session_id: str | None,
     budget: MemoryBudget,
+    query_embedding: Any = None,
 ) -> tuple[str, list[str]]:
     """Past-session recall, only when the advocate's words point back. Never raises."""
     from app.services.memory import recall
@@ -635,6 +667,7 @@ def _recall(
             scope,
             question_raw=question_raw,
             current_session_id=session_id,
+            query_vector=query_embedding,
         )
         return recall.format_recall_block(hits, budget.chars("recall"))
     except Exception as exc:  # noqa: BLE001 — recall must never cost the other layers

@@ -186,13 +186,20 @@ def skeleton(word: str) -> str:
     return _finish(_devanagari_sounds(text) if has_devanagari(text) else _latin_sounds(text))
 
 
-def sound_alike(first: str, second: str, *, min_sounds: int = MIN_SOUNDS) -> bool:
+def sound_alike(
+    first: str,
+    second: str,
+    *,
+    min_sounds: int = MIN_SOUNDS,
+    cross_script_endings: bool = True,
+) -> bool:
     """Whether two words are one word, where at least one of them is in Devanagari.
 
     English words are never compared this way with each other: their own spelling says
     more than their consonants. A Devanagari word may carry a Marathi ending the other
     lacks ("पवारांचा" for "Pawar"), but only when the shared part is long enough to mean
-    something.
+    something. `cross_script_endings=False` allows an ending only between two Devanagari
+    words: for ordinary words, "प्रश्न" (question) is not "press" with an ending.
     """
     if not (has_devanagari(first) or has_devanagari(second)):
         return False
@@ -203,6 +210,8 @@ def sound_alike(first: str, second: str, *, min_sounds: int = MIN_SOUNDS) -> boo
     if shorter == longer:
         return True
     longer_word = second if longer is two else first
+    if not cross_script_endings and has_devanagari(first) != has_devanagari(second):
+        return False
     return (
         len(shorter) >= MIN_SOUNDS
         and has_devanagari(longer_word)
@@ -211,8 +220,16 @@ def sound_alike(first: str, second: str, *, min_sounds: int = MIN_SOUNDS) -> boo
     )
 
 
-def alike_any(word: str, words: Iterable[str], *, min_sounds: int = MIN_SOUNDS) -> bool:
-    return any(sound_alike(word, other, min_sounds=min_sounds) for other in words)
+def alike_any(
+    word: str,
+    words: Iterable[str],
+    *,
+    min_sounds: int = MIN_SOUNDS,
+    cross_script_endings: bool = True,
+) -> bool:
+    return any(
+        sound_alike(word, other, min_sounds=min_sounds, cross_script_endings=cross_script_endings) for other in words
+    )
 
 
 def find_alike(word: str, text: str | None, *, min_sounds: int = MIN_SOUNDS) -> int | None:

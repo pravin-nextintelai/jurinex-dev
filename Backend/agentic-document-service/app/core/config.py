@@ -885,6 +885,21 @@ class Settings(BaseSettings):
         default=3_000,
         validation_alias=AliasChoices("MEMORY_RECALL_TOKENS"),
     )
+    # Past-session recall by meaning (app/services/memory/chat_index.py): saved turns are
+    # embedded after each answer, and a question that refers back is embedded within
+    # MEMORY_RECALL_EMBED_TIMEOUT_S; past that, recall uses words only. Off: words only.
+    memory_recall_semantic_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("MEMORY_RECALL_SEMANTIC_ENABLED"),
+    )
+    memory_recall_embedding_model: str = Field(
+        default="gemini-embedding-001",
+        validation_alias=AliasChoices("MEMORY_RECALL_EMBEDDING_MODEL"),
+    )
+    memory_recall_embed_timeout_s: float = Field(
+        default=1.0,
+        validation_alias=AliasChoices("MEMORY_RECALL_EMBED_TIMEOUT_S"),
+    )
     # How far a block may stretch beyond its cap into room nobody else is using.
     # 1.0 switches stretching off and restores fixed per-block caps.
     memory_block_stretch: float = Field(

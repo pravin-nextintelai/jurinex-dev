@@ -63,6 +63,12 @@ These migrations align the new Python `agentic-document-service` with the shared
     `app/services/memory/profile.py` suggests practice facts counted from the advocate's
     own cases and standing instructions kept in two or more cases. Suggestions only.
     Added on first use too.
+16. indexes past chats by meaning (migration `181`): `folder_chat_vectors`, embeddings of
+    each saved turn (the advocate's words, and the answer in passages). Past-session
+    recall ranks by meaning, English words and topic words matched across scripts, so a
+    discussion is found however it was worded, and in Marathi or Hindi. Holds no folder
+    or user: searches join `folder_chats`, and deleting a turn deletes its vectors.
+    Created on first use too; earlier turns are indexed in the background.
 
 ## Suggested Run Order
 

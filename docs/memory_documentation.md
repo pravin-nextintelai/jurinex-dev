@@ -149,7 +149,17 @@ The running summary is shown in the Memory panel under the Summary section, for 
                           model answers
 ```
 
-Which sections load is decided by keywords: "hearing" or "deadline" pulls **dates**, "draft" pulls the **drafting log**, "who is" pulls **parties**. Drafting turns always get the drafting log and decisions. The summary always loads; the rest are listed by name and size only, so the model knows what exists.
+Which sections load is decided by keywords, in English, Marathi or Hindi: "hearing", "सुनावणी" or "deadline" pulls **dates**, "draft" or "मसुदा" pulls the **drafting log**, "who is" or "याचिकाकर्ता" pulls **parties**. Drafting turns always get the drafting log and decisions. The summary always loads; the rest are listed by name and size only, so the model knows what exists.
+
+**Searching earlier sessions.** Only when your words refer back ("as we discussed", "which ground did we agree to drop", "मागच्या वेळी … ठरवले", "पिछली बार हमने … फैसला किया"). Three rankings are fused (`app/services/memory/recall.py`):
+
+| Ranking | Finds | Example |
+|---|---|---|
+| Meaning | a discussion in other words or another language | "which side is more vulnerable" → "tell me the weaker party" |
+| English words | an exact term | "ascii diagram" |
+| Your topic words in your earlier messages, across scripts | a reference in Hindi or Marathi to an English message | "ग्राउंड" → "press the Section 63-1A ground" |
+
+Meaning uses embeddings of every saved turn (`gemini-embedding-001`): your words, and the answer in overlapping passages, so a point deep in a long answer is found and that part is shown. The question is embedded while the other layers load, within 1 s; if that runs out, recall uses words. Meaning cannot tell an unrelated question from a real one, since every chat in a case is about the case, so only turns close to its best match take part; if none is what you meant, the model is told to say so and ask. Each turn is indexed after its answer while "Search and reference past chats" is on; a case's earlier turns are indexed in the background the first time recall runs in it.
 
 ### 2.2 After the answer — the writer
 
@@ -336,6 +346,8 @@ Each turn appears in exactly one of those rows. Folding holds back `CHAT_HISTORY
 | Rolling summary | `gemini-3.8-flash`, thinking low | When a chat has turns older than the recent ones | Input is up to 12 turns with answers capped at 2,500 tokens; output at most 1,000 |
 | Polish an instruction | `gemini-3.1-flash-lite` | Only when you press Polish | One sentence |
 | Merge facts about you | `gemini-3.8-flash` | Only at 80% of the ceiling, at most once an hour | The stored facts in, a shorter set out; at most 2,048 output |
+| Index the turn for recall | `gemini-embedding-001` | After every answer, while past-chat search is on | About 5 short texts (your words and answer passages); no output |
+| Embed a question that refers back | `gemini-embedding-001` | Only on a backward reference, before the answer | One short text; about 0.5 s, capped at 1 s |
 
 Choosing which facts a question carries costs **nothing**: it is term matching, no model call and no embedding service, so it adds neither tokens nor latency to a turn.
 
@@ -355,8 +367,9 @@ The background calls all run after the answer, so they add nothing to the wait. 
 | `memory_proposals` | Suggestions and the count of how often each rule was asked for | `case_key` |
 | `memory_assembly_log` | One row per turn: what was loaded and what was written | `case_key` |
 | `chat_session_summaries` | The rolling summary per chat | `(folder, user, session)` |
+| `folder_chat_vectors` | Embeddings of each saved turn for recall; no folder or user of its own, deleted with the turn | `(chat_id, kind, piece)` |
 
-Migrations `170`–`175` in `db/migrations/`. Most tables are also created on first use; the recall indexes in `171` must be applied by hand.
+Migrations `170`–`181` in `db/migrations/`. Most tables are also created on first use; the recall indexes in `171` must be applied by hand.
 
 **Line tags:** `stated` (the advocate said it), `extracted` (a document shows it), `status` (pipeline state). There is deliberately no `inferred` tag — a model conclusion is offered as a suggestion, never stored as a fact.
 
@@ -484,6 +497,9 @@ All read from `.env`.
 | `MEMORY_SUMMARY_TOKENS` | `1500` | Case summary budget |
 | `MEMORY_SECTION_TOKENS` | `2500` | Each loaded section |
 | `MEMORY_RECALL_TOKENS` | `3000` | Earlier sessions, on cue |
+| `MEMORY_RECALL_SEMANTIC_ENABLED` | `true` | Recall by meaning; `false` searches words only |
+| `MEMORY_RECALL_EMBEDDING_MODEL` | `gemini-embedding-001` | The embedding model; turns are re-indexed when it changes |
+| `MEMORY_RECALL_EMBED_TIMEOUT_S` | `1.0` | How long a question's embedding may take before recall uses words |
 | `MEMORY_BLOCK_STRETCH` | `3.0` | How far a block may stretch into free room; `1.0` fixes the budgets |
 | `ADVOCATE_CONSOLIDATE_ENABLED` | `true` | Merging overlapping facts near the ceiling |
 | `ADVOCATE_CONSOLIDATE_AT` | `0.8` | How full before a merge is worth its call |
@@ -532,6 +548,8 @@ Every turn also writes a row to `memory_assembly_log`: which versions were loade
 
 - Memory applies to **case chat** only. Quick Chat has no case, so it gets none.
 - Facts about the advocate come from what they **say about themselves**. JuriNex does not infer them from behaviour.
-- Retrieval is keyword-based for section routing and full-text for past-chat recall; there is no semantic search over memory lines yet.
+- Section routing is keyword-based. Past-chat recall searches by meaning and words, but memory lines themselves are not searched by meaning.
+- Recall by meaning cannot tell that no earlier chat is about the question; it returns the closest ones and the model is told to say when none fits.
+- The first question after a restart may be searched by words only, while the connection to the embedding service warms up.
 - Case memory is never used as a citation source, by design. Citations come from documents.
 - Of Indian scripts, only Devanagari (Marathi, Hindi) is matched against English. Gujarati, Tamil and other scripts are compared as written.

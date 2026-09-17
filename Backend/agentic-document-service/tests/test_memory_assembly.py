@@ -435,6 +435,25 @@ class RecallAssemblyTests(unittest.TestCase):
         rank=0.9,
     )
 
+    def setUp(self) -> None:
+        # The question's embedding is a Gemini call; a stand-in marks what was passed on.
+        self.embedding = object()
+        patcher = patch.object(recall_mod, "start_query_embedding", return_value=self.embedding)
+        self.start_embedding = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_question_is_embedded_alongside_and_handed_to_the_search(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions", return_value=[self.HIT]) as search:
+            build("Add the medical ground we discussed")
+        self.start_embedding.assert_called_once_with("Add the medical ground we discussed")
+        self.assertIs(search.call_args.kwargs["query_vector"], self.embedding)
+
+    def test_nothing_is_embedded_while_recall_is_off(self) -> None:
+        with patch.object(recall_mod, "search_past_sessions"):
+            build("Add the ground we discussed", settings=MemorySettings(recall_enabled=False))
+            build("Add the ground we discussed", load_recall=False)
+        self.start_embedding.assert_not_called()
+
     def test_a_backward_reference_brings_in_earlier_sessions(self) -> None:
         with patch.object(recall_mod, "search_past_sessions", return_value=[self.HIT]) as search:
             bundle = build("Add the medical ground we discussed", session_id="s-now")

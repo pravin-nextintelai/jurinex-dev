@@ -189,6 +189,8 @@ def harness(
         )
         module("conversation_summary", return_value=summary)
         module("polished_rule", return_value=polished)
+        # Indexing for recall runs on its own thread against Gemini; never from a test.
+        mocks["index_schedule"] = stack.enter_context(patch.object(writer_mod.chat_index, "schedule", return_value=True))
         repo("update_proposal", return_value=True)
         repo("available", return_value=available)
         repo("effective_settings", return_value=settings or MemorySettings())

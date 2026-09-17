@@ -252,6 +252,13 @@ ROW = {
 
 
 class SearchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Words only: meaning needs Gemini, and indexing runs on its own thread.
+        for name, value in (("embed_query", None), ("schedule_case", False)):
+            patcher = patch.object(recall_mod.chat_index, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _search(self, cursor: FakeCursor, question: str, **kwargs):
         conn = FakeConn(cursor)
         hits = search_past_sessions(SCOPE, question_raw=question, conn=conn, **kwargs)
@@ -277,6 +284,7 @@ class SearchTests(unittest.TestCase):
 
         search_sql, search_params = cursor.executed[2]
         self.assertIn("websearch_to_tsquery", search_sql)
+        # The text search offers its best 10 to the fusion; recall still returns at most 3.
         self.assertEqual(
             search_params,
             [
@@ -284,7 +292,7 @@ class SearchTests(unittest.TestCase):
                 "State_v_Pawar",
                 "42",
                 "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                3,
+                10,
             ],
         )
         self.assertEqual(conn.rollbacks, 1)
@@ -295,10 +303,18 @@ class SearchTests(unittest.TestCase):
                 cursor = FakeCursor(rows=[ROW])
                 self._search(cursor, question, current_session_id=None)
                 history = [sql for sql, _ in cursor.executed if "from folder_chats" in sql.lower()]
-                self.assertEqual(len(history), 1)
-                self.assertIn("folder_name = %s", history[0])
-                self.assertIn("user_id::text = %s", history[0])
-                self.assertIn("session_id::text <> %s", history[0])
+                self.assertGreaterEqual(len(history), 1)
+                for sql in history:
+                    self.assertIn("folder_name = %s", sql)
+                    self.assertIn("user_id::text = %s", sql)
+                    self.assertIn("session_id::text <> %s", sql)
+
+    def test_at_most_the_limit_is_returned(self) -> None:
+        rows = [dict(ROW, chat_id=f"{n:08d}-1111-1111-1111-111111111111") for n in range(12)]
+        hits, _ = self._search(FakeCursor(rows=rows), "add the medical ground we discussed")
+        self.assertEqual(len(hits), 3)
+        hits, _ = self._search(FakeCursor(rows=rows), "add the medical ground we discussed", limit=50)
+        self.assertEqual(len(hits), 10)
 
     def test_no_topic_words_fall_back_to_the_most_recent_earlier_turns(self) -> None:
         cursor = FakeCursor(rows=[ROW])

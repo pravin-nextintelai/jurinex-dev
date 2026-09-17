@@ -65,7 +65,7 @@ from typing import Any, Sequence
 from pydantic import ValidationError
 
 from app.core.config import get_settings
-from app.services.memory import repository, script
+from app.services.memory import chat_index, repository, script
 from app.services.memory.instructions import user_proposal_key
 from app.services.memory.parties import party_names_for_user
 from app.services.memory.recall import RecallHit, latest_other_session, recent_turns, session_turns
@@ -2318,9 +2318,27 @@ def _count_advocate_use(turn: TurnInput) -> None:
         logger.debug("[Memory] advocate use not counted user_id=%s: %s", turn.scope.user_id, exc)
 
 
+def _index_turn(turn: TurnInput) -> None:
+    """Add the turn to the index past-session recall searches by meaning. Never raises.
+
+    Only while the advocate lets JuriNex search their past chats; turns from before they
+    turned it on are indexed when recall first runs in the case.
+    """
+    scope = turn.scope
+    if scope is None or not turn.chat_id or not is_real_user(scope.user_id):
+        return
+    try:
+        settings = repository.effective_settings(user_id=scope.user_id, case_key=scope.case_key, firm_id=scope.firm_id)
+        if settings.enabled and settings.recall_enabled:
+            chat_index.schedule([turn.chat_id])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] turn not indexed case_key=%s: %s", scope.case_key, exc)
+
+
 def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
     """Write what one turn established. Never raises."""
     report = WriteReport()
+    _index_turn(turn)
     try:
         _run(turn, report, today=today)
     except Exception as exc:  # noqa: BLE001 — memory must never fail a chat
