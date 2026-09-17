@@ -3312,8 +3312,29 @@ def _call_gemini_for_extraction(text: str) -> dict:
 # punctuation spacing ("p .a .", "18 %") — needs a model to reconstruct. This is
 # run ON STORED CHUNK TEXT (not the PDF) by the clean-chunks endpoint, one-time
 # per case, keeping the embeddings.
+#
+# The model and its thinking come from CHUNK_AUTOHEAL_MODEL and
+# CHUNK_AUTOHEAL_THINKING_LEVEL. Repair is copy-editing, not reasoning: measured on a
+# damaged 3,402-char chunk, gemini-2.5-flash at its default thinking took 35 s, spent
+# 7,862 tokens thinking and ran out of output room at 1,063 chars, so the repair was
+# thrown away; gemini-3.1-flash-lite at thinking "minimal" returned the whole chunk,
+# repaired, in 3.4 s.
 
-_RECONSTRUCT_MODEL = "gemini-2.5-flash"
+_RECONSTRUCT_DEFAULT_MODEL = "gemini-3.1-flash-lite"
+_RECONSTRUCT_DEFAULT_THINKING = "minimal"
+
+
+def _reconstruct_settings() -> tuple[str, str]:
+    """(model, thinking level) for chunk repair, from .env with the defaults behind them."""
+    try:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        model = str(getattr(settings, "chunk_autoheal_model", "") or "").strip()
+        level = str(getattr(settings, "chunk_autoheal_thinking_level", "") or "").strip().lower()
+    except Exception:  # noqa: BLE001 — repair falls back to its defaults, never fails on settings
+        model, level = "", ""
+    return model or _RECONSTRUCT_DEFAULT_MODEL, level or _RECONSTRUCT_DEFAULT_THINKING
 _RECONSTRUCT_PROMPT = (
     "You are an OCR text-repair tool for Indian legal documents. The TEXT below was "
     "extracted from a PDF and has spaces wrongly inserted INSIDE words, names, places, "
@@ -3400,27 +3421,54 @@ def _looks_fragmented(text: str) -> bool:
     return (signals / (len(s) / 1000.0)) >= _FRAGMENT_SIGNALS_PER_1000
 
 
+# The most text one repair call is given. A longer chunk is left as it is rather than cut:
+# the result would be saved in place of the whole chunk, dropping everything past here.
+_RECONSTRUCT_MAX_CHARS = 24_000
+
+
+def _stopped_at_token_limit(response: Any) -> bool:
+    """Whether the model ran out of output room, so what it returned is cut off."""
+    for candidate in getattr(response, "candidates", None) or []:
+        reason = getattr(candidate, "finish_reason", None)
+        if reason is not None and "MAX_TOKENS" in str(getattr(reason, "name", reason)).upper():
+            return True
+    return False
+
+
 def reconstruct_chunk_text(text: str) -> str:
     """
-    LLM-reconstruct OCR-fragmented chunk text (Gemini flash, temperature 0).
+    LLM-reconstruct OCR-fragmented chunk text (temperature 0, thinking minimal).
 
-    Returns the cleaned text, or the ORIGINAL input on any error / empty / clearly
-    truncated output — content is never lost.
+    Returns the cleaned text, or the ORIGINAL input on any error, on empty or much
+    shorter output, on output cut off at the token limit, and for a chunk too long to
+    send whole — content is never lost.
     """
     src = str(text or "")
     if not src.strip():
         return src
+    if len(src) > _RECONSTRUCT_MAX_CHARS:
+        logger.info("[DocumentAI] reconstruct_chunk_text skipped a %d-char chunk (too long to send whole)", len(src))
+        return src
+    model, thinking = _reconstruct_settings()
+    started = time.monotonic()
     try:
-        client = _gemini_client()
+        client = _gemini_client(model)
         if client is None:
             return src
         gen_kwargs = {"temperature": 0.0, "max_output_tokens": 8192}
-        config = _build_gemini_config(gen_kwargs, {}, model_name=_RECONSTRUCT_MODEL)
+        config = _build_gemini_config(gen_kwargs, {"thinking_level": thinking}, model_name=model)
         response = client.models.generate_content(
-            model=_RECONSTRUCT_MODEL,
-            contents=_RECONSTRUCT_PROMPT + src[:24000],
+            model=model,
+            contents=_RECONSTRUCT_PROMPT + src,
             config=config,
         )
+        if _stopped_at_token_limit(response):
+            logger.warning(
+                "[DocumentAI] reconstruct_chunk_text hit the output limit model=%s chars=%d — keeping original",
+                model,
+                len(src),
+            )
+            return src
         out = (getattr(response, "text", None) or "").strip()
         # Strip an accidental outer code fence.
         match = re.fullmatch(r"```(?:\w+)?\s*\n([\s\S]*?)\n```", out)
@@ -3430,9 +3478,17 @@ def reconstruct_chunk_text(text: str) -> str:
         # half the size. A much shorter result means refusal/truncation → keep original.
         if not out or len(out) < len(src) * 0.5:
             return src
+        logger.info(
+            "[DocumentAI] reconstruct_chunk_text model=%s thinking=%s chars=%d->%d in %.2fs",
+            model,
+            thinking,
+            len(src),
+            len(out),
+            time.monotonic() - started,
+        )
         return out
     except Exception as exc:
-        logger.warning("[DocumentAI] reconstruct_chunk_text failed (%s) — keeping original", exc)
+        logger.warning("[DocumentAI] reconstruct_chunk_text failed model=%s (%s) — keeping original", model, exc)
         return src
 
 

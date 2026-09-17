@@ -775,6 +775,18 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("CHUNK_AUTOHEAL_ENABLED"),
     )
+    # The model that repairs a chunk, and how hard it thinks. Repair is copy-editing, so
+    # thinking stays at its lowest: gemini-2.5-flash at its default thinking ran out of
+    # output room on damaged chunks and its repairs were thrown away.
+    # Gemini 3 levels: minimal | low | medium | high (gemini-3.7 has no "minimal").
+    chunk_autoheal_model: str = Field(
+        default="gemini-3.1-flash-lite",
+        validation_alias=AliasChoices("CHUNK_AUTOHEAL_MODEL"),
+    )
+    chunk_autoheal_thinking_level: str = Field(
+        default="minimal",
+        validation_alias=AliasChoices("CHUNK_AUTOHEAL_THINKING_LEVEL"),
+    )
     # What memory may send with one question (app/services/memory/assembly.py), in
     # estimated tokens. These are the caps each block always gets; a block that has
     # more to say may stretch into room the others left free, up to MEMORY_BLOCK_STRETCH
