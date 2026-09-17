@@ -69,6 +69,11 @@ These migrations align the new Python `agentic-document-service` with the shared
     discussion is found however it was worded, and in Marathi or Hindi. Holds no folder
     or user: searches join `folder_chats`, and deleting a turn deletes its vectors.
     Created on first use too; earlier turns are indexed in the background.
+17. records which chat turns memory has read (migration `182`): `memory_turn_reads`, with
+    the writer version that read each. `app/services/memory/reread.py` reads a case's
+    unread turns again, oldest first, and reviews chats never reviewed, without
+    overwriting anything newer or bringing back what was deleted. Purged with the case.
+    Created on first use too.
 
 ## Suggested Run Order
 

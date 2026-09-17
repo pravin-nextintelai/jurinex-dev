@@ -540,11 +540,32 @@ LIMIT %s
 """
 
 
+# The same, as they stood when an earlier turn was asked.
+_TURNS_BEFORE_SQL = """
+SELECT id::text AS chat_id,
+       session_id::text AS session_id,
+       question,
+       answer,
+       prompt_label,
+       used_secret_prompt,
+       created_at,
+       0.0 AS rank
+FROM folder_chats
+WHERE folder_name = %s
+  AND user_id::text = %s
+  AND id::text <> %s
+  AND created_at < %s::timestamptz
+ORDER BY created_at DESC
+LIMIT %s
+"""
+
+
 def recent_turns(
     scope: CaseScope | None,
     *,
     exclude_chat_id: str | None = None,
     limit: int = 10,
+    before: Any = None,
     conn: Any = None,
 ) -> list[RecallHit]:
     """This advocate's latest turns in this case, newest first, without the current one.
@@ -552,7 +573,8 @@ def recent_turns(
     The memory writer reads them for context: the question the assistant asked
     just before a short reply, and requests the advocate keeps repeating. The same
     guards as recall apply: only the advocate's own chats, and nothing at all when
-    the folder name is shared by more than one folder they can see.
+    the folder name is shared by more than one folder they can see. With `before`,
+    only turns asked before then: the context an earlier turn had.
     """
     if scope is None:
         return []
@@ -570,7 +592,10 @@ def recent_turns(
             cur.execute("SELECT set_config('statement_timeout', %s, true)", (STATEMENT_TIMEOUT,))
             if folder_is_ambiguous(cur, scope):
                 return []
-            cur.execute(_RECENT_TURNS_SQL, (folder_name, user_id, excluded, cap))
+            if before is not None:
+                cur.execute(_TURNS_BEFORE_SQL, (folder_name, user_id, excluded, before, cap))
+            else:
+                cur.execute(_RECENT_TURNS_SQL, (folder_name, user_id, excluded, cap))
             rows = list(cur.fetchall() or [])
         finally:
             connection.rollback()

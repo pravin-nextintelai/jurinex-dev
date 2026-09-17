@@ -10,6 +10,7 @@ from unittest.mock import patch
 from app.services.memory import answer_facts as answer_facts_mod
 from app.services.memory import consolidate as consolidate_mod
 from app.services.memory import profile as profile_mod
+from app.services.memory import reread as reread_mod
 from app.services.memory import synthesis as synthesis_mod
 from app.services.memory import writer as writer_mod
 from app.services.memory.consolidate import ConsolidationResult
@@ -191,6 +192,9 @@ def harness(
         module("polished_rule", return_value=polished)
         # Indexing for recall runs on its own thread against Gemini; never from a test.
         mocks["index_schedule"] = stack.enter_context(patch.object(writer_mod.chat_index, "schedule", return_value=True))
+        # Reading earlier turns again runs in the background; a test only sees it asked for.
+        repo("mark_turns_read", return_value=1)
+        mocks["reread_schedule"] = stack.enter_context(patch.object(reread_mod, "schedule_case", return_value=False))
         repo("update_proposal", return_value=True)
         repo("available", return_value=available)
         repo("effective_settings", return_value=settings or MemorySettings())

@@ -279,6 +279,14 @@ CREATE TABLE IF NOT EXISTS memory_review_state (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (case_key, user_id, session_id)
 );
+CREATE TABLE IF NOT EXISTS memory_turn_reads (
+    chat_id         UUID        PRIMARY KEY REFERENCES folder_chats (id) ON DELETE CASCADE,
+    case_key        TEXT        NOT NULL,
+    reader_version  INTEGER     NOT NULL,
+    outcome         TEXT,
+    read_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_memory_turn_reads_case ON memory_turn_reads (case_key);
 """
 
 # Tables purged when a case is deleted, in FK-safe order.
@@ -290,6 +298,7 @@ _CASE_TABLES: tuple[tuple[str, str], ...] = (
     ("memory_assembly_log", "case_key"),
     ("memory_proposals", "case_key"),
     ("memory_review_state", "case_key"),
+    ("memory_turn_reads", "case_key"),
 )
 # Instruction rows a case owns, or that were switched off for it. Items follow
 # their set through the FK; a universal instruction's per-case override is the
@@ -308,6 +317,7 @@ _REBIND_TABLES: tuple[str, ...] = (
     "case_instructions_history",
     "memory_assembly_log",
     "memory_proposals",
+    "memory_turn_reads",
 )
 
 _tables_ready = False
@@ -2422,6 +2432,70 @@ def mark_reviewed(
     return moved
 
 
+# ── Reading earlier turns again ──────────────────────────────────────────────
+# Which turns the writer has read, and with which version of it
+# (app/services/memory/reread.py), so a turn is read once per version.
+
+def mark_turns_read(
+    case_key: str,
+    chat_ids: Sequence[str],
+    reader_version: int,
+    *,
+    outcome: str | None = None,
+    conn: Any = None,
+) -> int:
+    """Record that these turns were read. Returns how many rows were written."""
+    key = _require_case_key(case_key)
+    ids = [chat for chat in (_uuid_or_none(value) for value in chat_ids) if chat]
+    if not ids:
+        return 0
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            for chat in ids:
+                cur.execute(
+                    """
+                    INSERT INTO memory_turn_reads (chat_id, case_key, reader_version, outcome)
+                    SELECT id, %s, %s, %s FROM folder_chats WHERE id = %s::uuid
+                    ON CONFLICT (chat_id) DO UPDATE SET
+                        case_key = EXCLUDED.case_key,
+                        reader_version = GREATEST(memory_turn_reads.reader_version, EXCLUDED.reader_version),
+                        outcome = EXCLUDED.outcome,
+                        read_at = NOW()
+                    """,
+                    (key, int(reader_version), _text_or_none(outcome), chat),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return len(ids)
+
+
+def written_line_texts(case_key: str, limit: int = 5_000, *, conn: Any = None) -> list[str]:
+    """Every line the writer has written to this case, as logged, whether or not it is still there.
+
+    A line that is gone was deleted by the advocate or replaced by a newer value; reading
+    an earlier turn again must not bring it back.
+    """
+    key = _require_case_key(case_key)
+    if not _details_column:
+        return []
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT line->>'text' AS text
+              FROM memory_assembly_log l,
+                   jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(l.details->'lines') = 'array' THEN l.details->'lines' ELSE '[]'::jsonb END
+                   ) AS line
+             WHERE l.case_key = %s AND coalesce(line->>'text', '') <> ''
+             LIMIT %s
+            """,
+            (key, max(1, int(limit))),
+        )
+        return [str(row["text"]) for row in cur.fetchall() if row.get("text")]
+
+
 def list_turn_activity(case_key: str, user_id: str, limit: int = 30, *, conn: Any = None) -> list[dict[str, Any]]:
     """One advocate's turns in one case, newest first, with the message each one was about.
 
@@ -2442,7 +2516,8 @@ def list_turn_activity(case_key: str, user_id: str, limit: int = 30, *, conn: An
                    {details},
                    CASE WHEN fc.secret_id IS NULL THEN left(fc.question, 400) END AS question,
                    fc.prompt_label,
-                   (fc.secret_id IS NOT NULL) AS preset
+                   (fc.secret_id IS NOT NULL) AS preset,
+                   fc.created_at AS asked_at
               FROM memory_assembly_log l
               LEFT JOIN folder_chats fc ON fc.id = l.chat_id
              WHERE l.case_key = %s AND l.user_id = %s

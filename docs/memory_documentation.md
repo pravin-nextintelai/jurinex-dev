@@ -210,6 +210,26 @@ The extractor sees: your message, the previous answer, the case's memory with li
 
 Nothing is translated, so an English line from a Marathi message is traceable only through its names, numbers and borrowed words. In a Marathi document, English words for what a document is ("Registration", "Village") cannot be looked up; there a fact rests on its numbers and names.
 
+**Restated facts.** Answers repeat the same facts in new words ("Sale Deed No. 4401/2006 was executed on 25/08/2006", "the sale deed dated 25.08.2006 …"). A fact from an answer is kept only if it adds a number, a whole date or a name that memory does not already hold; years alone do not count. Measured on a real case read from the start: 101 lines without this check, 33 with it.
+
+### 2.3 Earlier chats — reading them again
+
+Memory reads each turn as it is answered. Turns saved before memory could read them, or read by an older writer (before facts from answers, Marathi, or reviews), are read again by `app/services/memory/reread.py`: oldest first, each with the turns that came before it, and then chats that were never reviewed. Each turn read is recorded with the writer's version (`memory_turn_reads`), so it is read once per version; a turn whose reading failed is left to be read later.
+
+Newer turns have already shaped memory, so reading again follows stricter rules:
+
+| Reading an earlier turn again | Reason |
+|---|---|
+| Never overwrites a line it did not add in the same run | An old hearing date must not replace the current one |
+| Never adds a line written before, even if deleted since | What you deleted, or a newer value replaced, stays gone |
+| Suggests rules, never saves them | You did not see them counted |
+| Neither changes nor makes room among facts about you | What is remembered now is newer |
+| An old chat's review adds decisions and suggestions; only the latest chat may update Stage, Last action, Open items | An old chat's stage is not the case's now |
+
+**When it runs.** In the background, one case at a time: after an answer in a case that still has unread turns (at most once every `MEMORY_REREAD_EVERY_HOURS` per case, never for a case whose memory you asked to forget), and when you press **Read them now** in the Activity tab, which shows progress. A run reads at most `MEMORY_REREAD_MAX_TURNS` turns and reviews `MEMORY_REREAD_MAX_REVIEWS` chats; a long history is read over several runs. Three model failures in a row stop a run. Each turn that changed something appears in Activity as "Earlier message from …, read again".
+
+**Cost.** The same calls as a live turn: an extraction, facts from the answer when it cited documents, and a review per chat. Measured: a 34-turn case took about 5 minutes.
+
 ---
 
 ## 3. How a rule becomes an instruction
@@ -368,8 +388,9 @@ The background calls all run after the answer, so they add nothing to the wait. 
 | `memory_assembly_log` | One row per turn: what was loaded and what was written | `case_key` |
 | `chat_session_summaries` | The rolling summary per chat | `(folder, user, session)` |
 | `folder_chat_vectors` | Embeddings of each saved turn for recall; no folder or user of its own, deleted with the turn | `(chat_id, kind, piece)` |
+| `memory_turn_reads` | Which turns memory has read, and with which writer version | `chat_id` |
 
-Migrations `170`–`181` in `db/migrations/`. Most tables are also created on first use; the recall indexes in `171` must be applied by hand.
+Migrations `170`–`182` in `db/migrations/`. Most tables are also created on first use; the recall indexes in `171` must be applied by hand.
 
 **Line tags:** `stated` (the advocate said it), `extracted` (a document shows it), `status` (pipeline state). There is deliberately no `inferred` tag — a model conclusion is offered as a suggestion, never stored as a fact.
 
@@ -469,6 +490,8 @@ Base `/api/memory`, all routes behind a verified token. A case you cannot see re
 | `GET /suggestions`, `POST /suggestions/{id}/accept\|reject` | Cross-case suggestions |
 | `GET/PUT /settings?scope=user\|case\|firm` | The switches |
 | `GET /cases/{folder}/turns/{chat_id}` | What memory did after one answer |
+| `GET /cases/{folder}/activity` | What memory did with each recent turn, and why |
+| `GET/POST /cases/{folder}/reread` | Earlier messages not yet read; read them now (poll GET for progress) |
 | `GET /cases/{folder}/chat-summary?session_id=` | One chat's running summary, read only |
 | `POST /advocate/consolidate`, `POST .../undo` | Merge overlapping facts about you, and put them back |
 | `GET /cases/{folder}/export`, `POST .../import`, `POST .../seed` | Lifecycle |
@@ -500,6 +523,10 @@ All read from `.env`.
 | `MEMORY_RECALL_SEMANTIC_ENABLED` | `true` | Recall by meaning; `false` searches words only |
 | `MEMORY_RECALL_EMBEDDING_MODEL` | `gemini-embedding-001` | The embedding model; turns are re-indexed when it changes |
 | `MEMORY_RECALL_EMBED_TIMEOUT_S` | `1.0` | How long a question's embedding may take before recall uses words |
+| `MEMORY_REREAD_ENABLED` | `true` | Read a case's earlier turns by itself; the Activity button works either way |
+| `MEMORY_REREAD_EVERY_HOURS` | `6` | How often one case is read again by itself |
+| `MEMORY_REREAD_MAX_TURNS` | `40` | Turns read per run |
+| `MEMORY_REREAD_MAX_REVIEWS` | `5` | Old chats reviewed per run |
 | `MEMORY_BLOCK_STRETCH` | `3.0` | How far a block may stretch into free room; `1.0` fixes the budgets |
 | `ADVOCATE_CONSOLIDATE_ENABLED` | `true` | Merging overlapping facts near the ceiling |
 | `ADVOCATE_CONSOLIDATE_AT` | `0.8` | How full before a merge is worth its call |

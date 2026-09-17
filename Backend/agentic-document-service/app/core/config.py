@@ -860,6 +860,27 @@ class Settings(BaseSettings):
         default="medium",
         validation_alias=AliasChoices("MEMORY_PROFILE_THINKING_LEVEL"),
     )
+    # Reading a case's earlier chats again (app/services/memory/reread.py): turns saved before
+    # memory could read them, or read by an older writer, are read oldest first, and chats
+    # never reviewed are reviewed. Automatic after an answer in such a case, at most once
+    # every MEMORY_REREAD_EVERY_HOURS per case; on request from the memory panel always.
+    # Each run reads at most MEMORY_REREAD_MAX_TURNS turns and MEMORY_REREAD_MAX_REVIEWS chats.
+    memory_reread_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("MEMORY_REREAD_ENABLED"),
+    )
+    memory_reread_every_hours: float = Field(
+        default=6.0,
+        validation_alias=AliasChoices("MEMORY_REREAD_EVERY_HOURS"),
+    )
+    memory_reread_max_turns: int = Field(
+        default=40,
+        validation_alias=AliasChoices("MEMORY_REREAD_MAX_TURNS"),
+    )
+    memory_reread_max_reviews: int = Field(
+        default=5,
+        validation_alias=AliasChoices("MEMORY_REREAD_MAX_REVIEWS"),
+    )
     # What memory may send with one question (app/services/memory/assembly.py), in
     # estimated tokens. These are the caps each block always gets; a block that has
     # more to say may stretch into room the others left free, up to MEMORY_BLOCK_STRETCH

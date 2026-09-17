@@ -1127,6 +1127,42 @@ def get_memory_activity(
     return {"case_key": scope.case_key, "summary": activity.summarise(entries), "entries": entries}
 
 
+@router.get("/cases/{folder_name}/reread")
+def get_reread_status(
+    folder_name: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """How many of the advocate's earlier messages in this case memory has not read yet, and the latest run."""
+    from app.services.memory import reread
+
+    scope = _scope_or_404(folder_name, user)
+    return reread.status(scope)
+
+
+@router.post("/cases/{folder_name}/reread")
+def start_reread(
+    folder_name: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Read this case's earlier messages now, in the background. Poll GET for progress.
+
+    Runs even for a case whose memory was forgotten, because the advocate asked. The
+    same rules as always apply: nothing newer is overwritten, nothing deleted comes
+    back, and rules are only suggested.
+    """
+    from app.services.memory import reread
+
+    scope = _scope_or_404(folder_name, user)
+    settings = repository.effective_settings(user_id=scope.user_id, case_key=scope.case_key, firm_id=scope.firm_id)
+    if not settings.enabled or not settings.write_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Memory generation is switched off for this case. Switch it on to read earlier messages.",
+        )
+    reread.start(scope)
+    return reread.status(scope)
+
+
 @router.get("/cases/{folder_name}/turns/{chat_id}")
 def get_turn(
     folder_name: str,

@@ -328,6 +328,28 @@ Each advocate fact looks like:
 
 # ── Turn and report ──────────────────────────────────────────────────────────
 
+# What the writer reads from a turn. Raise it when the writer learns to read something new
+# (facts from answers, Marathi), so turns read by an older writer are read again
+# (app/services/memory/reread.py).
+READER_VERSION = 1
+
+
+@dataclass
+class RereadGuard:
+    """What reading an earlier turn again may not do.
+
+    It runs after newer turns have already shaped memory, so it may not overwrite a
+    line it did not add itself in this run, may not bring back a line written before
+    (deleted by the advocate, or replaced by a newer value), and may not save a rule on
+    its own: whatever it finds about how to work is only suggested.
+    """
+
+    # Every line written to this case before, as logged: [{"text": ...}].
+    written_before: list[dict[str, Any]] = field(default_factory=list)
+    # Lines this run added, which a later turn of the run may still update.
+    added_ids: set[str] = field(default_factory=set)
+
+
 @dataclass
 class TurnInput:
     """Everything the writer needs about one completed chat turn."""
@@ -347,6 +369,10 @@ class TurnInput:
     # The documents the answer cited ({document_name, file_id, ...}), so facts it read
     # out of them can be checked against their stored text and kept.
     citations: list[dict[str, Any]] = field(default_factory=list)
+    # Set when this is an earlier turn read again; None for the turn just answered.
+    reread: RereadGuard | None = None
+    # When an earlier turn was asked, so its context is the turns before it.
+    created_at: datetime | None = None
 
 
 @dataclass
@@ -849,8 +875,11 @@ def _write_one(
     *,
     retry: bool,
     today: date | None,
+    guard: RereadGuard | None = None,
 ) -> bool:
     section = op.section
+    if _guard_blocks(guard, op, report):
+        return False
     try:
         result = repository.apply_op(
             scope.case_key,
@@ -877,7 +906,7 @@ def _write_one(
         for retry_op in again:
             wrote = _write_one(
                 scope, memory_op, retry_op, snapshot, versions, settings, source_extra, report,
-                retry=False, today=today,
+                retry=False, today=today, guard=guard,
             ) or wrote
         return wrote
     except Exception as exc:  # noqa: BLE001
@@ -887,7 +916,26 @@ def _write_one(
 
     versions[section] = result.get("version", versions.get(section))
     _remember(snapshot, op, result)
+    if guard is not None and op.op == "append_line" and result.get("line_id"):
+        guard.added_ids.add(str(result["line_id"]))
     return True
+
+
+def _guard_blocks(guard: RereadGuard | None, op: ResolvedOp, report: WriteReport) -> bool:
+    """Whether reading an earlier turn again must not make this write. See `RereadGuard`."""
+    if guard is None:
+        return False
+    if op.op != "append_line":
+        # Dedupe turns a near-duplicate into an update of the line it matches. That line
+        # is newer than this turn unless this run added it.
+        if str(op.line_id or "") not in guard.added_ids:
+            report.reject("reread_keeps_newer")
+            return True
+        return False
+    if find_duplicate(op.text, guard.written_before) is not None:
+        report.reject("reread_written_before")
+        return True
+    return False
 
 
 def _apply_ops(
@@ -900,6 +948,7 @@ def _apply_ops(
     report: WriteReport,
     *,
     today: date | None,
+    guard: RereadGuard | None = None,
 ) -> None:
     snapshot = {name: [dict(line) for line in lines] for name, lines in existing.items()}
     for memory_op in ops:
@@ -916,7 +965,7 @@ def _apply_ops(
                 continue
             if _write_one(
                 scope, memory_op, op, snapshot, versions, settings, source_extra, report,
-                retry=True, today=today,
+                retry=True, today=today, guard=guard,
             ):
                 report.writes += 1
                 note = {"section": op.section, "tag": op.tag, "text": op.text, "updated": op.op == "replace_line"}
@@ -977,7 +1026,10 @@ def _learn_from_answer(
     kept = 0
     for fact in facts:
         if find_duplicate(fact.text, known) is not None:
-            continue  # already remembered, in whatever words
+            continue  # already remembered, in the same words
+        if not answer_facts.adds_to(fact.text, [str(line.get("text") or "") for line in known]):
+            report.reject("answer_fact_known")
+            continue  # already remembered, in other words: no number, date or name is new
         try:
             support = answer_facts.find_support(fact, documents)
         except Exception as exc:  # noqa: BLE001
@@ -1008,7 +1060,7 @@ def _learn_from_answer(
             "page": support.page,
         }
         before = report.writes
-        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today)
+        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today, guard=turn.reread)
         if report.writes > before:
             kept += 1
             known.append({"text": fact.text})
@@ -1508,8 +1560,10 @@ def _handle_proposals(
 
         stated_rule = bool(request.source_ref.get("explicit"))
         threshold = save_after if stated_rule else pattern_save_after
+        # An earlier turn read again only ever suggests: the advocate did not see it counted.
         will_save = (
-            settings.instructions_enabled
+            turn.reread is None
+            and settings.instructions_enabled
             and threshold > 0
             and request.count >= threshold
             and find_same_rule(text, book.undone[scope_type]) is None
@@ -1607,6 +1661,12 @@ def _handle_advocate(
             target = next((line for line in state.lines if str(line.get("id")) == str(fact.replaces)), None)
         if target is None:
             target = find_duplicate(text, state.lines)
+        if turn.reread is not None and target is not None:
+            # What is remembered now is newer than an earlier turn: never changed by one.
+            close = find_duplicate(text, [target], threshold=0.0) or {}
+            if float(close.get("_ratio") or 0.0) < DEDUPE_SAME:
+                report.reject("reread_keeps_newer")
+            continue
         try:
             if target is not None:
                 close = find_duplicate(text, [target], threshold=0.0) or {}
@@ -1625,6 +1685,10 @@ def _handle_advocate(
                 updated = True
             else:
                 room = advocate_set_room(state.lines, text)
+                if room is not None and turn.reread is not None:
+                    # Nothing is merged or dropped to make room for something said long ago.
+                    report.reject("advocate_full")
+                    continue
                 if room is not None:
                     # Tidy what is there first; only drop something if that was not enough.
                     consolidate_if_full(scope, state, report, party_names=book.party_names)
@@ -1866,7 +1930,8 @@ def _refresh_seed(scope: CaseScope, report: WriteReport) -> None:
 
 def _load_context(scope: CaseScope, turn: TurnInput) -> TurnContext:
     try:
-        turns = recent_turns(scope, exclude_chat_id=turn.chat_id, limit=RECENT_TURNS)
+        # An earlier turn read again is read with the turns before it, as it was asked.
+        turns = recent_turns(scope, exclude_chat_id=turn.chat_id, limit=RECENT_TURNS, before=turn.created_at)
     except Exception as exc:  # noqa: BLE001 — context helps; the turn is still worth reading without it
         logger.debug("[Memory] earlier turns unavailable case_key=%s: %s", scope.case_key, exc)
         return TurnContext()
@@ -1899,7 +1964,8 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
 
     # Every turn, greetings included: a case that predates memory fills itself
     # from its details on its first chat, and new documents are picked up.
-    _refresh_seed(scope, report)
+    if turn.reread is None:
+        _refresh_seed(scope, report)
 
     source_extra = {
         key: value
@@ -1940,7 +2006,8 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
     book = _Rulebook(scope)
     context.saved_rules = book.saved_rules()
     context.noticed_rules = book.noticed_rules()
-    context.conversation_summary = conversation_summary(scope, turn.session_id)
+    # The chat's summary covers turns after an earlier one; it would leak them into its reading.
+    context.conversation_summary = conversation_summary(scope, turn.session_id) if turn.reread is None else ""
     # Remembering the advocate across cases has its own switch; when it is off the
     # extractor is not shown what is remembered, and nothing about the advocate is written.
     advocate = load_advocate_state(scope) if settings.advocate_enabled else None
@@ -1965,7 +2032,7 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
         return
 
     accepted = screen_ops(extraction.ops, turn.question_raw, report)
-    _apply_ops(scope, accepted, existing, versions, settings, source_extra, report, today=today)
+    _apply_ops(scope, accepted, existing, versions, settings, source_extra, report, today=today, guard=turn.reread)
     _handle_proposals(scope, turn, extraction.proposals, source_extra, report, settings=settings, book=book)
     _handle_advocate(scope, turn, extraction.advocate, source_extra, report, state=advocate, book=book)
 
@@ -2062,7 +2129,14 @@ def _run_review(
     trigger: str,
     *,
     today: date | None,
+    guard: RereadGuard | None = None,
+    summary_allowed: bool = True,
 ) -> None:
+    """Review one chat's turns and write what the review found.
+
+    Reading an earlier chat again passes a `guard`, and `summary_allowed=False` unless it
+    is the case's latest chat: an old chat's stage and open items are not the case's now.
+    """
     from app.services.memory import synthesis
 
     window = rows[-synthesis.MAX_TURNS_PER_REVIEW:]
@@ -2113,7 +2187,7 @@ def _run_review(
     for field_name, label in synthesis.SUMMARY_KEYS:
         value = getattr(review, field_name)
         text = "; ".join(value) if isinstance(value, list) else value
-        if not text:
+        if not text or not summary_allowed:
             continue
         line_text = f"{label}: {text}"[:MAX_LINE_CHARS]
         if not synthesis.grounded_status(line_text, f"{advocate_text} {memory_text}"):
@@ -2132,6 +2206,7 @@ def _run_review(
             reason="conversation review",
             line=MemoryLine(tag="status", text=line_text),
         )
+        # The latest chat's review may keep the summary current even when read again.
         _apply_ops(scope, [op], existing, versions, settings, source, report, today=today)
 
     # Decisions the advocate reached, traceable to their own words in the turns cited.
@@ -2147,7 +2222,7 @@ def _run_review(
             reason="conversation review",
             line=MemoryLine(tag="stated", text=decision["text"]),
         )
-        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today)
+        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today, guard=guard)
 
     # Ways of working shown by a pattern: inferred, so only ever suggested.
     for preference in review.preferences:
@@ -2335,6 +2410,40 @@ def _index_turn(turn: TurnInput) -> None:
         logger.debug("[Memory] turn not indexed case_key=%s: %s", scope.case_key, exc)
 
 
+# Outcomes after which a turn was not really read: it is read again later.
+_NOT_READ = frozenset(
+    {"disabled_globally", "no_scope", "db_unavailable", "disabled_by_user", "writer_error", "extractor_error"}
+)
+
+
+def _mark_read(turn: TurnInput, report: WriteReport) -> None:
+    """Record that this turn has been read by this version of the writer. Never raises."""
+    scope = turn.scope
+    if scope is None or not turn.chat_id or not is_real_user(scope.user_id):
+        return
+    if report.skipped_reason in _NOT_READ or "answer_facts_unavailable" in report.rejection_codes:
+        return
+    try:
+        repository.mark_turns_read(
+            scope.case_key, [turn.chat_id], READER_VERSION, outcome=report.skipped_reason or "read"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] turn not marked read case_key=%s: %s", scope.case_key, exc)
+
+
+def _read_earlier_turns(turn: TurnInput, report: WriteReport) -> None:
+    """Start reading this case's earlier turns in the background, when some are unread. Never raises."""
+    scope = turn.scope
+    if scope is None or turn.reread is not None or report.skipped_reason in _NO_REVIEW:
+        return
+    try:
+        from app.services.memory import reread
+
+        reread.schedule_case(scope)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] earlier turns not scheduled case_key=%s: %s", scope.case_key, exc)
+
+
 def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
     """Write what one turn established. Never raises."""
     report = WriteReport()
@@ -2354,7 +2463,9 @@ def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
         )
     _learn_about_advocate(turn, report)
     _count_advocate_use(turn)
+    _mark_read(turn, report)
     report.assembly_log_id = _write_log(turn, report)
+    _read_earlier_turns(turn, report)
     logger.info(
         "[Memory] post-turn case_key=%s writes=%s instructions_saved=%s advocate=%s proposals=%s rejected=%s "
         "skipped=%s codes=%s",

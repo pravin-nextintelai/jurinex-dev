@@ -259,6 +259,7 @@ _NOT_NAMES = frozenset(
     deed sale agreement power attorney general order notice letter resolution circular
     gazette application copy exhibit annexure page section rule act no rs dated
     village taluka district hectares ares sq meters mr mrs smt shri late legal heirs
+    are hectare senior junior division ld learned honble subject
     """.split()
 )
 _NAME_RE = re.compile(r"\b[A-Z][A-Za-z]{2,}\b")
@@ -357,6 +358,32 @@ def _dates(text: str) -> set[tuple[int, int, int]]:
         if _month(word):
             found.add((int(day), _month(word), int(year)))
     return {date for date in found if 1 <= date[0] <= 31 and 1 <= date[1] <= 12}
+
+
+def adds_to(fact_text: str, known_texts: Sequence[str]) -> bool:
+    """Whether a fact tells memory something it does not hold: a number, a date or a name.
+
+    Answers restate the same facts in new words ("Registered Sale Deed No. 4401/2006 was
+    executed on 25/08/2006", "The sale deed dated 25.08.2006 was registered in favour of the
+    petitioner"), which the spelling-based dedupe does not catch; read turn after turn, one
+    case's memory filled with ten versions of the same deed. A fact whose numbers, dates
+    and names memory already has adds nothing. Years alone do not count: every fact in a
+    case shares a few. A fact with nothing to compare is left to the wording check.
+    """
+    numbers = {run for run in _digit_runs(fact_text) if len(run) >= 2 and not _YEAR_RE.match(run)}
+    dates = _dates(fact_text)
+    # Words for what a document is ("Document", "Registration") identify nothing.
+    names = {name for name in _names(fact_text) if name not in _DOCUMENT_WORDS}
+    if not numbers and not dates and not names:
+        return True
+    joined = "\n".join(str(text or "") for text in known_texts)
+    if numbers - _digit_runs(joined) or dates - _dates(joined):
+        return True
+    lowered = joined.lower()
+    return any(
+        not re.search(rf"\b{re.escape(name)}\b", lowered) and script.find_alike(name, joined, min_sounds=2) is None
+        for name in names
+    )
 
 
 def _name_in(name: str, text: str) -> bool:

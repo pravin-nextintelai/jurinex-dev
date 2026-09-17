@@ -60,6 +60,11 @@ REJECTIONS: dict[str, str] = {
     "extracted_from_chat": "A fact came from JuriNex's answer rather than from you, so it was dropped",
     "case_full": "This case's memory is full",
     "advocate_full": "What JuriNex knows about you is full",
+    "answer_fact_known": "A fact in the answer is already in memory in other words, so it was not added again",
+    "reread_keeps_newer": "Memory already holds something newer, so this earlier message did not change it",
+    "reread_written_before": (
+        "This was in memory before and was deleted or replaced since, so the earlier message did not bring it back"
+    ),
     "advocate_sensitive": "A personal detail about you was not kept",
     "advocate_not_in_advocate_message": "Something about you was not in your own words, so it was dropped",
     "advocate_forgotten_before": "You asked JuriNex to forget this about you before",
@@ -241,10 +246,15 @@ def describe(row: dict[str, Any]) -> dict[str, Any]:
         question = question[: QUESTION_CHARS - 1].rstrip() + "…"
 
     created = row.get("created_at")
+    asked = row.get("asked_at")
+    reread = str(row.get("mode") or "") == "reread"
     return {
         "id": row.get("id"),
         "chat_id": row.get("chat_id"),
         "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
+        # An earlier message read again: when it was asked, not when it was read.
+        "reread": reread,
+        "asked_at": asked.isoformat() if hasattr(asked, "isoformat") else asked,
         "question": question or None,
         "preset": preset,
         "outcome": outcome,
