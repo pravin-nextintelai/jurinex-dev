@@ -768,6 +768,13 @@ class Settings(BaseSettings):
         default=60.0,
         validation_alias=AliasChoices("CHAT_SUMMARY_TIMEOUT_S"),
     )
+    # Background repair of OCR-fragmented chunks that retrieval turns up
+    # (app/services/chunk_autoheal.py). Retrieval never waits for it; the clean text is
+    # written back for the next question. false stops queuing repairs altogether.
+    chunk_autoheal_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("CHUNK_AUTOHEAL_ENABLED"),
+    )
     # What memory may send with one question (app/services/memory/assembly.py), in
     # estimated tokens. These are the caps each block always gets; a block that has
     # more to say may stretch into room the others left free, up to MEMORY_BLOCK_STRETCH
