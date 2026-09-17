@@ -104,10 +104,10 @@ class SupportTests(unittest.TestCase):
 class SearchAndPageTests(unittest.TestCase):
     def test_distinctive_numbers_are_searched_before_years(self) -> None:
         patterns = af._search_patterns("Power of Attorney No. 4345/2006 executed on 22/08/2006")
-        self.assertEqual(patterns, ["%4345%"])
+        self.assertEqual(patterns, ["%4345%", "%४३४५%"])  # and as a Marathi document writes it
 
     def test_years_are_used_when_nothing_else_identifies_the_fact(self) -> None:
-        self.assertEqual(af._search_patterns("The suit was filed in 2005"), ["%2005%"])
+        self.assertEqual(af._search_patterns("The suit was filed in 2005"), ["%2005%", "%२००५%"])
 
     def test_names_are_searched_when_there_is_no_number(self) -> None:
         self.assertIn("%balkrushna%", af._search_patterns("Hitesh Balkrushna Lahoti is the petitioner"))

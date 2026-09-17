@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Iterable, NamedTuple, Sequence
 
+from app.services.memory import script
 from app.services.memory.schemas import (
     ADVOCATE_CATEGORIES,
     MAX_ADVOCATE_CHARS,
@@ -55,6 +56,11 @@ def _rule(code: str, pattern: str, detail: str) -> Rule:
     return Rule(code=code, pattern=re.compile(pattern, re.IGNORECASE), detail=detail)
 
 
+def _devanagari(words: str) -> str:
+    """Whole Devanagari words. `\\b` cannot be used: a vowel sign is not a word character."""
+    return rf"(?<![{script.LETTERS}])(?:{words})(?![{script.LETTERS}])"
+
+
 # ── Rule sets ────────────────────────────────────────────────────────────────
 
 # A model conclusion dressed as a fact. "The complaint is likely retaliatory"
@@ -68,6 +74,15 @@ INFERENCE_RULES: tuple[Rule, ...] = (
         r"in\s+all\s+likelihood|arguably)",
         "Reads as a conclusion, not something the user stated or a document shows.",
     ),
+    # Marathi and Hindi: perhaps, probably, it seems, must be, could be.
+    _rule(
+        "inference_language",
+        _devanagari(
+            r"कदाचित|बहुधा|शक्यता|वाटते|वाटतं|असावा|असावी|असावे|असावेत|असू\s+शकते|असू\s+शकतो|असू\s+शकेल|"
+            r"दिसते|शायद|संभवतः|संभावना|लगता\s+है|प्रतीत\s+होता|हो\s+सकता|हो\s+सकती|हो\s+सकते"
+        ),
+        "Reads as a conclusion, not something the user stated or a document shows.",
+    ),
 )
 
 # Facts that expire on their own. Filing them creates stale noise.
@@ -77,6 +92,15 @@ TRANSIENT_RULES: tuple[Rule, ...] = (
         r"\b(this\s+session|in\s+this\s+chat|right\s+now|just\s+now|for\s+now|"
         r"temporarily|at\s+the\s+moment|as\s+of\s+this\s+message|currently\s+typing|"
         r"i\s+am\s+in\s+a\s+hurry|be\s+concise\s+today|after\s+lunch|later\s+today)",
+        "Transient context; it belongs in the message, not in memory.",
+    ),
+    # Marathi and Hindi: right now, for now, temporarily, in this chat.
+    _rule(
+        "transient",
+        _devanagari(
+            r"आत्ता|सध्यापुरते|आजपुरते|तात्पुरते|तात्पुरता|तात्पुरती|या\s+चॅटमध्ये|या\s+सत्रात|"
+            r"अभी\s+के\s+लिए|फिलहाल|अस्थायी\s+रूप\s+से|इस\s+चैट\s+में"
+        ),
         "Transient context; it belongs in the message, not in memory.",
     ),
 )
@@ -131,6 +155,29 @@ CASE_DATA_RULES: tuple[Rule, ...] = (
         r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:v\.?s?\.?|versus)\s+[A-Z]",
         "Names parties to a matter. Preferences are tenant-wide and must carry no case data.",
     ),
+    # The same, in Marathi and Hindi. `\d` also matches Devanagari digits.
+    _rule(
+        "case_data_date",
+        r"\d{1,2}\s+(?:जानेवारी|फेब्रुवारी|मार्च|एप्रिल|मे|जून|जुलै|ऑगस्ट|सप्टेंबर|ऑक्टोबर|नोव्हेंबर|डिसेंबर|"
+        r"जनवरी|फरवरी|अप्रैल|मई|जुलाई|अगस्त|सितंबर|सितम्बर|अक्टूबर|अक्तूबर|नवंबर|नवम्बर|दिसंबर|दिसम्बर)"
+        r"\S*\s+\d{4}",
+        "Contains a date. Preferences are tenant-wide and must carry no case data.",
+    ),
+    _rule(
+        "case_data_fir",
+        r"एफ\.?\s?आय\.?\s?आर|गु\.?\s?र\.?\s?(?:नं|क्र)|गुन्हा\s+(?:रजिस्टर\s+)?(?:नं|क्र)|प्राथमिकी",
+        "Mentions an FIR/crime number. That belongs in case memory, not here.",
+    ),
+    _rule(
+        "case_data_case_number",
+        r"(?:क्र|क्रमांक|नं)\s*\.?\s*\d+\s*/\s*\d{2,4}",
+        "Contains a case number. That belongs in case memory, not here.",
+    ),
+    _rule(
+        "case_data_party",
+        rf"[{script.LETTERS}]+\s+(?:विरुद्ध|विरूद्ध|बनाम)\s+[{script.LETTERS}]",
+        "Names parties to a matter. Preferences are tenant-wide and must carry no case data.",
+    ),
 )
 
 # Free text that tries to switch off grounding, verification or the guardrails.
@@ -181,7 +228,9 @@ DEDUPE_NEAR = 0.85
 DEDUPE_SAME = 0.97
 
 _WS_RE = re.compile(r"\s+")
-_PUNCT_RE = re.compile(r"[^\w\s]")
+# Punctuation, but not the vowel signs of Indian scripts, which `\w` does not cover:
+# "मराठीत" must not become "मर ठ त". The dandas (।, ॥) are punctuation.
+_PUNCT_RE = re.compile(r"[^\w\sऀ-ॣ०-෿]")
 _TAG_PREFIX_RE = re.compile(r"^\s*\[(?:stated|extracted|status|inferred)\]\s*", re.IGNORECASE)
 
 
@@ -195,8 +244,8 @@ def _first_match(text: str, rules: Iterable[Rule]) -> Rejection | None:
 
 
 def normalize_for_compare(text: str) -> str:
-    """Lowercase, drop any tag prefix and punctuation, collapse whitespace."""
-    cleaned = _TAG_PREFIX_RE.sub("", str(text or ""))
+    """Lowercase, drop any tag prefix and punctuation, collapse whitespace; "४१४४" reads "4144"."""
+    cleaned = _TAG_PREFIX_RE.sub("", script.ascii_digits(text))
     cleaned = _PUNCT_RE.sub(" ", cleaned.lower())
     return _WS_RE.sub(" ", cleaned).strip()
 
@@ -378,6 +427,9 @@ def party_name_in(text: str, party_names: Iterable[str]) -> str | None:
             return str(name)
         for token in norm.split():
             if len(token) >= 5 and token not in _NAME_STOPWORDS and f" {token} " in haystack:
+                return str(name)
+            # "पवार" in a Marathi line is the party "Pawar".
+            if len(token) >= 5 and token not in _NAME_STOPWORDS and script.find_alike(token, text) is not None:
                 return str(name)
     return None
 
@@ -578,11 +630,16 @@ _NEGATION_RE = re.compile(
     r"instead\s+of|rather\s+than|neither|nor|no(?!\s*\.)(?!\s*\d))\b",
     re.IGNORECASE,
 )
+# Marathi and Hindi: don't, must not, not, never, instead of, without.
+_NEGATION_DEVANAGARI_RE = re.compile(
+    _devanagari(r"नको|नका|नये|नाही|नाहीत|नव्हे|कधीच|ऐवजी|नहीं|नही|बिना|बजाय|न")
+)
 
 
 def is_negative(text: str | None) -> bool:
     """Whether a rule asks for something NOT to be done."""
-    return bool(_NEGATION_RE.search(str(text or "")))
+    body = str(text or "")
+    return bool(_NEGATION_RE.search(body) or _NEGATION_DEVANAGARI_RE.search(body))
 
 
 def same_polarity(first: str | None, second: str | None) -> bool:
@@ -619,7 +676,9 @@ def repeats_rule(text: str | None, rule_text: str | None) -> bool:
     first, second = _rule_words(new), _rule_words(old)
     if not first or not second:
         return False
-    return len(first & second) / min(len(first), len(second)) >= 0.5
+    # Marathi words match with their endings: "उत्तरे" is "उत्तर".
+    shared = {word for word in first if word in second or script.alike_any(word, second, min_sounds=2)}
+    return len(shared) / min(len(first), len(second)) >= 0.5
 
 
 def merge_with_history(new_text: str, old_text: str, *, today: date | None = None) -> str:

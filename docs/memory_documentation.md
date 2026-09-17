@@ -188,6 +188,18 @@ Which sections load is decided by keywords: "hearing" or "deadline" pulls **date
 
 The extractor sees: your message, the previous answer, the case's memory with line ids, your saved rules, rules it is still counting, the chat summary, earlier requests, and what it already knows about you. It never records anything that appears only in the assistant's answer.
 
+**Marathi and Hindi.** A message in Marathi or Hindi gives memory lines in that language; the extractor does not translate. Every check that compares a line with its source (your message, a cited document, the turns of a review) reads Devanagari as well as English (`app/services/memory/script.py`):
+
+| Check | English | Devanagari |
+|---|---|---|
+| Numbers | `4144/2011` | `४१४४/२०११` is the same number |
+| Names | `Pawar` | `पवार`, and with a Marathi ending `पवारांचा`, compared by consonants |
+| Dates | `28/07/2011`, `28 July 2011` | `२८/०७/२०११`, `२८ जुलै २०११`; a date must appear whole |
+| Guesses refused | probably, seems | कदाचित, असावा, शायद |
+| Rule words | always, from now on, don't, in a table | नेहमी, यापुढे, नको, तक्त्यात |
+
+Nothing is translated, so an English line from a Marathi message is traceable only through its names, numbers and borrowed words. In a Marathi document, English words for what a document is ("Registration", "Village") cannot be looked up; there a fact rests on its numbers and names.
+
 ---
 
 ## 3. How a rule becomes an instruction
@@ -522,3 +534,4 @@ Every turn also writes a row to `memory_assembly_log`: which versions were loade
 - Facts about the advocate come from what they **say about themselves**. JuriNex does not infer them from behaviour.
 - Retrieval is keyword-based for section routing and full-text for past-chat recall; there is no semantic search over memory lines yet.
 - Case memory is never used as a citation source, by design. Citations come from documents.
+- Of Indian scripts, only Devanagari (Marathi, Hindi) is matched against English. Gujarati, Tamil and other scripts are compared as written.

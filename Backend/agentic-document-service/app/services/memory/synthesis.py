@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
 from app.core.config import get_settings
+from app.services.memory import script
 
 logger = logging.getLogger("agentic_document_service.memory.synthesis")
 
@@ -70,7 +71,8 @@ facts already verified; you may refer to them.
 
 2. DECISIONS the advocate reached, especially across several messages ("go with the
    extension ground", "we will not press the Nazrana ground"). Only what THEY decided,
-   in their words, citing the turn numbers that show it. Not questions, not requests for
+   in their words and in the language they wrote it in (Marathi stays Marathi), citing
+   the turn numbers that show it. Not questions, not requests for
    an answer, not JuriNex's recommendations, not anything in DECISIONS ALREADY RECORDED.
 
 3. PREFERENCES: a way the advocate wants answers written that at least two of their
@@ -96,8 +98,27 @@ _CAPITAL_RE = re.compile(r"\b[A-Z][A-Za-z]{2,}\b")
 # which is what advocates most often ask for without stating a rule.
 _DEPTH_RE = re.compile(
     r"\b(?:detail\w*|in[\s-]depth|elaborat\w*|thorough\w*|simple|simply|plain|easy\s+to\s+understand|"
-    r"step[\s-]by[\s-]step|layman|summar(?:y|ise|ize)\s+first|short\s+and|point\s+by\s+point)\b",
+    r"step[\s-]by[\s-]step|layman|summar(?:y|ise|ize)\s+first|short\s+and|point\s+by\s+point)\b"
+    # Marathi and Hindi: in detail, detailed, simple language, step by step.
+    rf"|(?<![{script.LETTERS}])(?:सविस्तर|तपशीलवार|विस्तार|विस्तृत|सोप्या|सोपे|सोपी|सरल|आसान|टप्प्याटप्प्याने|क्रमवार)",
     re.IGNORECASE,
+)
+# The English a Marathi or Hindi word for a way of writing means, keyed by the words'
+# starts so that endings do not matter ("तक्ता", "तक्त्यात").
+_MANNER_MEANINGS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("सविस्तर", "तपशीलवार", "विस्तार", "विस्तृत"), "detailed in-depth"),
+    (("सोप्या", "सोपे", "सोपी", "सरल", "आसान"), "simple"),
+    (("टप्प्याटप्प्याने", "क्रमवार"), "step-by-step"),
+    (("तक्त", "टेबल", "तालिका"), "table tables tabular"),
+    (("मुद्देसूद", "मुद्द्यांमध्ये", "पॉइंट", "बुलेट"), "point-wise bullet"),
+    (("हेडिंग", "शीर्षक"), "heading headings"),
+    (("फॉरमॅट", "फॉर्मेट", "फॉर्मॅट"), "format"),
+    (("मराठी",), "marathi"),
+    (("हिंदी", "हिन्दी"), "hindi"),
+    (("इंग्रजी", "इंग्लिश", "अंग्रेज़ी", "अंग्रेजी"), "english"),
+    (("थोडक्यात", "संक्षिप्त", "संक्षेप"), "brief briefly concise"),
+    (("कालक्रम",), "chronology timeline"),
+    (("उद्धरण",), "citation citations"),
 )
 _session_locks: dict[tuple[str, str, str], threading.Lock] = {}
 _session_locks_guard = threading.Lock()
@@ -310,7 +331,8 @@ _NOT_NAMES = frozenset(
 
 
 def _numbers(text: str) -> set[str]:
-    return {run.lstrip("0") or "0" for run in _DIGITS_RE.findall(re.sub(r"(?<=\d),(?=\d)", "", text))}
+    plain = re.sub(r"(?<=\d),(?=\d)", "", script.ascii_digits(text))
+    return {run.lstrip("0") or "0" for run in _DIGITS_RE.findall(plain)}
 
 
 def _proper_names(text: str) -> set[str]:
@@ -328,7 +350,12 @@ def grounded_status(line: str, evidence: str) -> bool:
     if not names:
         return True
     lowered = evidence.lower()
-    present = {name for name in names if re.search(rf"\b{re.escape(name)}\b", lowered)}
+    # "Pawar" is in the evidence when the advocate wrote "पवार".
+    present = {
+        name
+        for name in names
+        if re.search(rf"\b{re.escape(name)}\b", lowered) or script.find_alike(name, evidence, min_sounds=2) is not None
+    }
     return len(present) / len(names) >= 0.75
 
 
@@ -345,7 +372,14 @@ def _manner_terms(text: str) -> set[str]:
     found: set[str] = set()
     for pattern in (MANNER_RE, _DEPTH_RE):
         for match in pattern.finditer(text):
-            found |= content_words(match.group(0)) or {match.group(0).lower()}
+            word = match.group(0)
+            if script.has_devanagari(word):
+                # Read as the English it means, so "सविस्तर" in two messages backs
+                # "Give detailed answers" and "तक्त्यात" backs "in a table".
+                meaning = next((english for stems, english in _MANNER_MEANINGS if word.startswith(stems)), "")
+                found |= content_words(meaning) or {word}
+                continue
+            found |= content_words(word) or {word.lower()}
     return found
 
 

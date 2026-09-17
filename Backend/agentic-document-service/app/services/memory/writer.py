@@ -65,7 +65,7 @@ from typing import Any, Sequence
 from pydantic import ValidationError
 
 from app.core.config import get_settings
-from app.services.memory import repository
+from app.services.memory import repository, script
 from app.services.memory.instructions import user_proposal_key
 from app.services.memory.parties import party_names_for_user
 from app.services.memory.recall import RecallHit, latest_other_session, recent_turns, session_turns
@@ -123,10 +123,17 @@ SKIP_MODES = frozenset({"learning", "deep_research"})
 _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-writer")
 
 GREETING_RE = re.compile(
-    r"^\s*(?:hi+|hello|hey|thanks?|thank\s+you|thx|ok(?:ay)?|good\s+(?:morning|afternoon|evening|night)|"
-    r"bye|cool|great|nice|done|yes|no|sure|got\s+it|noted)\b[\s!.,?]*$",
+    r"^\s*(?:(?:hi+|hello|hey|thanks?|thank\s+you|thx|ok(?:ay)?|good\s+(?:morning|afternoon|evening|night)|"
+    r"bye|cool|great|nice|done|yes|no|sure|got\s+it|noted)\b"
+    # Marathi and Hindi: hello, thanks, okay, yes, fine, good morning.
+    r"|(?:नमस्कार|नमस्ते|धन्यवाद|आभार|शुक्रिया|ठीक\s+आहे|ठीक\s+है|ओके|हो|होय|हां|हाँ|जी|बरं|छान|सुप्रभात)"
+    rf"(?![{script.LETTERS}]))[\s!.,?।]*$",
     re.IGNORECASE,
 )
+
+# Wrapped around Marathi and Hindi words, where `\b` cannot be used: a vowel sign is not
+# a word character, so `\b` falls inside "यापुढे".
+_BEFORE_WORD = rf"(?<![{script.LETTERS}])"
 
 # Words that make a request a standing rule rather than a one-off. A rule is
 # saved by itself only when the advocate's message AND the extractor's wording
@@ -138,7 +145,10 @@ STANDING_RULE_RE = re.compile(
     r"remember\s+to|(?:don'?t|do\s+not)\s+ever|"
     r"throughout\s+(?:this|the)\s+(?:case|matter)|for\s+the\s+rest\s+of\s+(?:this|the)\s+(?:case|matter)|"
     r"(?:in|for)\s+(?:all|every)\s+(?:future\s+|my\s+|your\s+)?"
-    r"(?:answers?|repl(?:y|ies)|responses?|drafts?|summar(?:y|ies)|outputs?|chats?|documents?))\b",
+    r"(?:answers?|repl(?:y|ies)|responses?|drafts?|summar(?:y|ies)|outputs?|chats?|documents?))\b"
+    # Marathi and Hindi: from now on, always, every time, ever, remember.
+    rf"|{_BEFORE_WORD}(?:यापुढे|यापुढील|इथून\s+पुढे|आतापासून|आता\s+पासून|नेहमी|कायम|प्रत्येक\s+वेळी|"
+    r"दरवेळी|दर\s+वेळी|कधीही|कधीच|लक्षात\s+ठेव|हमेशा|आगे\s+से|अब\s+से|हर\s+बार|कभी\s+भी|कभी\s+नहीं|याद\s+रख)",
     re.IGNORECASE,
 )
 
@@ -159,7 +169,11 @@ UNIVERSAL_CUE_RE = re.compile(
     r"|whatever\s+the\s+(?:case|matter)"
     r"|regardless\s+of\s+(?:the\s+)?(?:case|matter)"
     r"|in\s+general\b|as\s+a\s+general\s+rule|universally"
-    r"|not\s+(?:just|only)\s+(?:for\s+|in\s+)?this\s+(?:case|matter))\b",
+    r"|not\s+(?:just|only)\s+(?:for\s+|in\s+)?this\s+(?:case|matter))\b"
+    # Marathi and Hindi: in all (my) cases, in every case, not only for this case.
+    rf"|{_BEFORE_WORD}(?:सर्व|सगळ्या|प्रत्येक|सभी|हर|सारे)\s+(?:माझ्या\s+|आमच्या\s+|मेरे\s+|हमारे\s+)?"
+    r"(?:केस|प्रकरण|खटल|मॅटर|फाइल|फाईल|मामल|मामले|मुकदम)"
+    rf"|{_BEFORE_WORD}फक्त\s+या\s+(?:केस|प्रकरण|खटल)\S*\s+(?:साठी\s+)?(?:नाही|नव्हे)",
     re.IGNORECASE,
 )
 
@@ -182,7 +196,10 @@ MANNER_RE = re.compile(
     r"cite|cites|citation\w*|footnote\w*|authorit(?:y|ies)|"
     r"brief|briefly|concise\w*|short(?:er)?|crisp|one[\s-]?page|word\s+limit)\b"
     # How to name someone: "refer to my client as the Applicant", "call Pawar the Applicant".
-    r"|\b(?:refer\s+to|address|call)\s+[^,.]{0,40}?\b(?:as|the)\b",
+    r"|\b(?:refer\s+to|address|call)\s+[^,.]{0,40}?\b(?:as|the)\b"
+    # Marathi and Hindi: table, point-wise, heading, format, a language, briefly, chronology.
+    rf"|{_BEFORE_WORD}(?:तक्त|टेबल|तालिका|मुद्देसूद|मुद्द्यांमध्ये|पॉइंट|बुलेट|हेडिंग|शीर्षक|फॉरमॅट|फॉर्मेट|फॉर्मॅट|"
+    r"मराठी|हिंदी|हिन्दी|इंग्रजी|इंग्लिश|अंग्रेज़ी|अंग्रेजी|थोडक्यात|संक्षिप्त|संक्षेप|कालक्रम|उद्धरण)",
     re.IGNORECASE,
 )
 
@@ -235,18 +252,22 @@ RULES
    section.
 5. Keep the advocate's own wording where you can. One fact per line, plain text,
    at most 300 characters.
-6. Never record: the assistant's suggestions, options it offered, its analysis or
+6. Write in the language the advocate wrote in, never translating: a message in
+   Marathi or Hindi gives lines in Marathi or Hindi, in Devanagari, with names and
+   numbers as they wrote them. English typed in Devanagari letters ("समरी इन डिटेल")
+   is English: write it in English.
+7. Never record: the assistant's suggestions, options it offered, its analysis or
    draft text; greetings; questions; Aadhaar, PAN, bank or card numbers; anyone
    who is not part of this case.
-7. Set "sensitive": true for health, financial, family or criminal-record details.
-8. A request for an answer ("give me a detailed summary", "list the dates") is
+8. Set "sensitive": true for health, financial, family or criminal-record details.
+9. A request for an answer ("give me a detailed summary", "list the dates") is
    not a fact. Record nothing for it unless the message also states a fact or a
    decision.
 
 STANDING RULES
 A rule for how to work, rather than a fact about the case, is never a memory
 line. Put it in "proposals", written as a short instruction in the advocate's
-own words from THIS message:
+own words and language from THIS message:
 - kind "instruction" for this case, such as "Refer to my client as the
   Applicant" or "From now on, answer in a table";
 - kind "preference" only when the advocate says the rule is for all their
@@ -285,8 +306,8 @@ advocate states it about THEMSELVES in their message:
 Never put here anything about this case (its parties, dates, numbers, documents
 or facts), a rule for how to answer (that is a proposal), anything the assistant
 said, or the advocate's health, family or money (mark those "sensitive": true).
-Write it in the third person, keeping the advocate's words: "Mostly appears before
-the Aurangabad Bench". If WHAT JURINEX KNOWS ABOUT THE ADVOCATE already says it,
+Write it in the third person, keeping the advocate's words and language: "Mostly
+appears before the Aurangabad Bench". If WHAT JURINEX KNOWS ABOUT THE ADVOCATE already says it,
 record nothing; if it changed, set "replaces" to that line's id.
 
 LIMITS
@@ -411,15 +432,19 @@ def _stem(word: str) -> str:
 
 
 def content_words(text: str) -> set[str]:
-    """Meaningful words of a text, lightly stemmed. Numbers and short words are left out."""
+    """Meaningful words of a text, lightly stemmed. Numbers and short words are left out.
+
+    Marathi and Hindi words are included as written.
+    """
     words: set[str] = set()
-    for token in _WORD_RE.findall(str(text or "").lower()):
+    body = str(text or "").lower()
+    for token in _WORD_RE.findall(body):
         if token.isdigit() or len(token) < 4:
             continue
         if token in _GROUNDING_STOPWORDS or token in _FRAMING_WORDS:
             continue
         words.add(_stem(token))
-    return words
+    return words | script.content_words(body)
 
 
 def is_grounded(text: str, message: str, *, min_ratio: float = GROUNDING_MIN_RATIO) -> bool:
@@ -428,11 +453,17 @@ def is_grounded(text: str, message: str, *, min_ratio: float = GROUNDING_MIN_RAT
     Deliberately strict. Missing a paraphrased fact costs little, because the
     advocate can add it by hand; filing an assistant claim as the advocate's own
     words would poison every later session of the case.
+
+    A word written in Devanagari counts where the other text has the same word in
+    English letters, or with a Marathi ending ("Pawar", "पवार", "पवारांचा"). Nothing is
+    translated, so a translated line is traceable only through its names and borrowed
+    words; the extractor keeps the advocate's language for that reason.
     """
     line = content_words(text)
     if not line:
         return False
-    overlap = line & content_words(message)
+    heard = content_words(message)
+    overlap = {word for word in line if word in heard or script.alike_any(word, heard)}
     return bool(overlap) and len(overlap) / len(line) >= min_ratio
 
 
