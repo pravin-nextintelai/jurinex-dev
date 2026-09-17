@@ -83,6 +83,17 @@ class ChangeTests(Case):
         self.assertEqual(entry["items"][0]["section_label"], "Dates")
         self.assertTrue(entry["items"][1]["updated"])
 
+    def test_a_fact_read_from_a_document_says_which_and_what_page(self) -> None:
+        details = {
+            "lines": [{"section": "dates", "tag": "extracted", "text": "FIR registered on 14/03/2026",
+                       "document": "FIR 45-2026.pdf", "page": 2}],
+            "rejection_codes": ["answer_fact_not_in_document"],
+        }
+        entry = activity.describe(row(details=details))
+        self.assertEqual(entry["headline"], "Saved 1 fact")
+        self.assertEqual((entry["items"][0]["document"], entry["items"][0]["page"]), ("FIR 45-2026.pdf", 2))
+        self.assertIn("not found in the document it cited", entry["reasons"][0])
+
     def test_one_shown_rule_is_one_suggestion_with_what_was_said(self) -> None:
         """Logged under "requests" and "suggestions" with one id: shown once, polished."""
         details = {

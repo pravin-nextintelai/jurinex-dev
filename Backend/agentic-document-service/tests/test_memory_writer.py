@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app.services.memory import answer_facts as answer_facts_mod
 from app.services.memory import consolidate as consolidate_mod
 from app.services.memory import writer as writer_mod
 from app.services.memory.consolidate import ConsolidationResult
@@ -155,6 +156,10 @@ def harness(
     consolidation=None,
     last_consolidation=None,
     polished=None,
+    answer_facts=None,
+    answer_support=None,
+    answer_facts_error=None,
+    answer_facts_enabled=True,
 ):
     mocks = {}
     with ExitStack() as stack:
@@ -237,6 +242,19 @@ def harness(
                 "plan",
                 return_value=consolidation if consolidation is not None else ConsolidationResult(error="too_few"),
             )
+        )
+        mocks["answer_enabled"] = stack.enter_context(
+            patch.object(answer_facts_mod, "enabled", return_value=answer_facts_enabled)
+        )
+        mocks["answer_extract"] = stack.enter_context(
+            patch.object(
+                answer_facts_mod,
+                "extract",
+                **({"side_effect": answer_facts_error} if answer_facts_error else {"return_value": list(answer_facts or [])}),
+            )
+        )
+        mocks["answer_support"] = stack.enter_context(
+            patch.object(answer_facts_mod, "find_support", return_value=answer_support)
         )
         repo("record_advocate_use", return_value=len(advocate_lines or []))
         repo("least_useful_advocate_lines", return_value=[dict(line) for line in advocate_evictable or []])
@@ -1315,6 +1333,125 @@ class AdvocateMemoryTests(unittest.TestCase):
         )
         self.assertEqual([fact.category for fact in extraction.advocate], ["practice", "clients", "background"])
         self.assertEqual(extraction.invalid, 1)
+
+
+class AnswerFactTests(unittest.TestCase):
+    """Facts an answer read out of its cited documents, kept only when the document backs them."""
+
+    CITED = [{"document_name": "FIR 45-2026.pdf", "file_id": "file-9"}]
+    FACT = answer_facts_mod.AnswerFact(section="dates", text="FIR No. 45/2026 was registered on 14/03/2026", document="FIR 45-2026.pdf")
+    SUPPORT = answer_facts_mod.Support(document="FIR 45-2026.pdf", file_id="file-9", chunk_id="chunk-3", page=2)
+    ANSWER = "The FIR (No. 45/2026) was registered on 14/03/2026 [FIR 45-2026.pdf p.2]."
+
+    def ask(self, message="when was the FIR registered?", *, turn_overrides=None, **kwargs):
+        overrides = {"citations": self.CITED, "answer": self.ANSWER, **(turn_overrides or {})}
+        return run(message, turn=overrides, **kwargs)
+
+    def test_a_question_keeps_the_facts_its_cited_answer_read_from_the_document(self) -> None:
+        report, mocks = self.ask(answer_facts=[self.FACT], answer_support=self.SUPPORT)
+        apply = mocks["apply_op"]
+        apply.assert_called_once()
+        resolved = apply.call_args.args[1]
+        self.assertEqual((resolved.section, resolved.tag, resolved.text), ("dates", "extracted", self.FACT.text))
+        ref = apply.call_args.kwargs["source_ref_extra"]
+        self.assertEqual(
+            (ref["kind"], ref["document"], ref["page"], ref["chunk_id"], ref["chat_id"]),
+            ("answer", "FIR 45-2026.pdf", 2, "chunk-3", CHAT),
+        )
+        self.assertEqual(report.writes, 1)
+        self.assertIsNone(report.skipped_reason)
+        self.assertEqual(report.details["lines"][0]["document"], "FIR 45-2026.pdf")
+
+    def test_a_fact_the_document_does_not_back_is_not_kept(self) -> None:
+        report, mocks = self.ask(answer_facts=[self.FACT], answer_support=None)
+        mocks["apply_op"].assert_not_called()
+        self.assertIn("answer_fact_not_in_document", report.rejection_codes)
+        self.assertEqual(report.skipped_reason, "nothing_durable")
+
+    def test_a_fact_already_remembered_is_never_replaced(self) -> None:
+        stored = {"dates": {"version": 4, "lines": [
+            {"id": "d1", "tag": "stated", "text": "FIR No. 45/2026 was registered on 14/03/2026"},
+        ]}}
+        _, mocks = self.ask(answer_facts=[self.FACT], answer_support=self.SUPPORT, stored=stored)
+        mocks["apply_op"].assert_not_called()
+        mocks["answer_support"].assert_not_called()
+
+    def test_the_writer_reads_the_answer_with_the_documents_and_memory(self) -> None:
+        stored = {"summary": {"version": 2, "lines": [{"id": "s1", "tag": "stated", "text": "Case number: WP/1/2026"}]}}
+        _, mocks = self.ask(answer_facts=[], stored=stored)
+        question, answer, documents, known = mocks["answer_extract"].call_args.args
+        self.assertEqual((question, answer), ("when was the FIR registered?", self.ANSWER))
+        self.assertEqual([doc.file_id for doc in documents], ["file-9"])
+        self.assertEqual(known[0]["text"], "Case number: WP/1/2026")
+
+    def test_a_greeting_never_reads_the_answer(self) -> None:
+        report, mocks = self.ask("hi")
+        mocks["answer_extract"].assert_not_called()
+        self.assertEqual(report.skipped_reason, "greeting")
+
+    def test_a_draft_is_not_read_for_facts(self) -> None:
+        _, mocks = self.ask("draft the reply", turn_overrides={"mode": "draft"})
+        mocks["answer_extract"].assert_not_called()
+
+    def test_a_saved_prompts_answer_is_read_but_its_prompt_is_not(self) -> None:
+        report, mocks = self.ask(
+            "Case summary", turn_overrides={"saved_prompt": True}, answer_facts=[self.FACT], answer_support=self.SUPPORT
+        )
+        mocks["answer_extract"].assert_called_once()
+        mocks["extract_ops"].assert_not_called()
+        self.assertEqual(report.writes, 1)
+        self.assertIsNone(report.skipped_reason)
+
+    def test_a_saved_prompt_with_nothing_learned_still_says_why(self) -> None:
+        report, _ = self.ask("Case summary", turn_overrides={"saved_prompt": True}, answer_facts=[])
+        self.assertEqual(report.skipped_reason, "saved_prompt")
+
+    def test_an_answer_without_citations_costs_nothing(self) -> None:
+        _, mocks = self.ask(turn_overrides={"citations": []})
+        mocks["answer_extract"].assert_not_called()
+
+    def test_switched_off_costs_nothing(self) -> None:
+        _, mocks = self.ask(answer_facts_enabled=False)
+        mocks["answer_extract"].assert_not_called()
+
+    def test_a_failed_read_is_reported_and_the_advocates_words_are_still_read(self) -> None:
+        report, mocks = self.ask(answer_facts_error=RuntimeError("quota"))
+        self.assertIn("answer_facts_unavailable", report.rejection_codes)
+        mocks["extract_ops"].assert_called_once()
+
+    def test_a_sensitive_fact_is_dropped_when_sensitive_details_are_off(self) -> None:
+        fact = answer_facts_mod.AnswerFact(
+            section="facts", text="The accused was treated at Civil Hospital on 12/03/2026", document="FIR 45-2026.pdf",
+            sensitive=True,
+        )
+        _, mocks = self.ask(
+            answer_facts=[fact], answer_support=self.SUPPORT, settings=MemorySettings(sensitive_enabled=False)
+        )
+        mocks["apply_op"].assert_not_called()
+
+
+class ExtractorThinkingTests(unittest.TestCase):
+    """Gemini 3 extractors think as little as they can; 3.7 has no "minimal" level."""
+
+    def config(self, model: str, level: str = "minimal"):
+        settings = SimpleNamespace(memory_extraction_thinking_level=level)
+        with patch.object(writer_mod, "get_settings", return_value=settings):
+            return writer_mod._generation_config("prompt", 0.1, model, with_schema=False)
+
+    def level(self, config):
+        thinking = getattr(config, "thinking_config", None)
+        value = getattr(thinking, "thinking_level", None)
+        return str(getattr(value, "value", value)).lower() if value is not None else None
+
+    def test_flash_lite_thinks_at_minimal(self) -> None:
+        self.assertEqual(self.level(self.config("gemini-3.1-flash-lite")), "minimal")
+
+    def test_gemini_3_7_is_raised_to_low(self) -> None:
+        self.assertEqual(self.level(self.config("gemini-3.7-flash")), "low")
+
+    def test_gemini_2_5_flash_keeps_thinking_off(self) -> None:
+        config = self.config("gemini-2.5-flash")
+        self.assertEqual(getattr(config.thinking_config, "thinking_budget", None), 0)
 
 
 class AdvocateUseTests(unittest.TestCase):

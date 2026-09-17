@@ -63,6 +63,11 @@ REJECTIONS: dict[str, str] = {
     "advocate_sensitive": "A personal detail about you was not kept",
     "advocate_not_in_advocate_message": "Something about you was not in your own words, so it was dropped",
     "advocate_forgotten_before": "You asked JuriNex to forget this about you before",
+    "answer_fact_not_in_document": (
+        "A fact in the answer was not found in the document it cited, so it was not kept"
+    ),
+    "answer_fact_unchecked": "A fact in the answer could not be checked against its document, so it was not kept",
+    "answer_facts_unavailable": "The answer could not be read for facts this time",
 }
 GENERIC_REJECTION = "A change could not be saved"
 
@@ -105,15 +110,17 @@ def _details(row: dict[str, Any]) -> dict[str, Any]:
 def _items(details: dict[str, Any], needed: int) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for line in details.get("lines") or []:
-        items.append(
-            {
-                "kind": "fact",
-                "section": line.get("section"),
-                "section_label": SECTION_LABELS.get(str(line.get("section") or ""), "Memory"),
-                "text": line.get("text"),
-                "updated": bool(line.get("updated")),
-            }
-        )
+        item = {
+            "kind": "fact",
+            "section": line.get("section"),
+            "section_label": SECTION_LABELS.get(str(line.get("section") or ""), "Memory"),
+            "text": line.get("text"),
+            "updated": bool(line.get("updated")),
+        }
+        if line.get("document"):
+            # Read out of a cited document by the answer, and found there.
+            item.update({"document": line.get("document"), "page": line.get("page")})
+        items.append(item)
     for rule in details.get("instructions") or []:
         items.append({"kind": "instruction", "scope": rule.get("scope") or "case", "text": rule.get("text")})
     # A rule that was shown is logged twice under one id: under "requests" in the

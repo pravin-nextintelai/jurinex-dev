@@ -2232,6 +2232,12 @@ class FolderWorkflowService:
                         model=selected_model,
                         log_entry=dict((memory_bundle.log_entry if memory_bundle is not None else None) or {}),
                         saved_prompt=bool(secret_id or (label and label != question_text.strip())),
+                        # The documents the answer cited, as the streaming route passes them.
+                        citations=[
+                            {"document_name": c.document_name, "file_id": c.document_id}
+                            for c in citations
+                            if getattr(c, "document_id", None) and getattr(c, "document_name", None)
+                        ],
                     )
                 )
             except Exception as memory_writer_exc:  # noqa: BLE001

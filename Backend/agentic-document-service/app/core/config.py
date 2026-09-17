@@ -705,10 +705,20 @@ class Settings(BaseSettings):
     )
     # Extraction model used by the post-turn memory writer. A cheap flash model
     # is right here: the task is structured extraction against strict rules, and
-    # it runs once per substantive turn.
+    # it runs once per substantive turn. Measured on four kinds of message (a date and
+    # a decision, a standing rule, a question, a fact about the advocate):
+    # gemini-3.1-flash-lite at thinking "minimal" got all four right in 1.9–2.3 s, the
+    # same as gemini-2.5-flash but faster; gemini-3.7-flash at "low" returned facts with
+    # empty text, which the writer has to throw away.
     memory_extraction_model: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.1-flash-lite",
         validation_alias=AliasChoices("MEMORY_EXTRACTION_MODEL"),
+    )
+    # Gemini 3 thinking for the extractor: minimal | low | medium | high
+    # (gemini-3.7 has no "minimal"; it is raised to "low" there).
+    memory_extraction_thinking_level: str = Field(
+        default="minimal",
+        validation_alias=AliasChoices("MEMORY_EXTRACTION_THINKING_LEVEL"),
     )
     # Tidies an instruction the advocate typed, on request ("Polish"). A small,
     # fast model: it rewrites one sentence and adds nothing.
@@ -786,6 +796,22 @@ class Settings(BaseSettings):
     chunk_autoheal_thinking_level: str = Field(
         default="minimal",
         validation_alias=AliasChoices("CHUNK_AUTOHEAL_THINKING_LEVEL"),
+    )
+    # Case facts learned from answers (app/services/memory/answer_facts.py): a small model
+    # lists the facts an answer attributes to its cited documents, and each is kept only
+    # if the document's stored text contains its numbers and names. Runs after the answer.
+    # gemini-3.7-flash accepts low | medium | high, not minimal.
+    memory_answer_facts_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("MEMORY_ANSWER_FACTS_ENABLED"),
+    )
+    memory_answer_facts_model: str = Field(
+        default="gemini-3.1-flash-lite",
+        validation_alias=AliasChoices("MEMORY_ANSWER_FACTS_MODEL"),
+    )
+    memory_answer_facts_thinking_level: str = Field(
+        default="minimal",
+        validation_alias=AliasChoices("MEMORY_ANSWER_FACTS_THINKING_LEVEL"),
     )
     # What memory may send with one question (app/services/memory/assembly.py), in
     # estimated tokens. These are the caps each block always gets; a block that has

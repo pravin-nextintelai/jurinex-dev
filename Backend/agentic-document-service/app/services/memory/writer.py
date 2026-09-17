@@ -75,6 +75,7 @@ from app.services.memory.schemas import (
     MAX_OPS_PER_TURN,
     SECTIONS,
     AdvocateFact,
+    MemoryLine,
     MemoryOp,
     MemoryOps,
     MemoryProposal,
@@ -320,6 +321,9 @@ class TurnInput:
     log_entry: dict[str, Any] = field(default_factory=dict)
     saved_prompt: bool = False
     draft_template: str | None = None
+    # The documents the answer cited ({document_name, file_id, ...}), so facts it read
+    # out of them can be checked against their stored text and kept.
+    citations: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -706,12 +710,19 @@ def _generation_config(system_prompt: str, temperature: float, model: str, *, wi
     }
     if with_schema:
         kwargs["response_schema"] = MemoryOps
-    if str(model).lower().startswith("gemini-2.5-flash"):
-        # A classification job: thinking tokens would only eat the output budget.
-        try:
+    name = str(model).lower().rsplit("/", 1)[-1]
+    try:
+        if name.startswith("gemini-2.5-flash"):
+            # A classification job: thinking tokens would only eat the output budget.
             kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-        except Exception:  # noqa: BLE001
-            pass
+        elif name.startswith("gemini-3"):
+            level = str(getattr(get_settings(), "memory_extraction_thinking_level", "") or "minimal").strip().lower()
+            if "gemini-3.7" in name and level == "minimal":
+                level = "low"  # 3.7 has no minimal level
+            if level in ("minimal", "low", "medium", "high"):
+                kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=level)
+    except Exception:  # noqa: BLE001 — an older SDK without thinking levels
+        pass
     try:
         return types.GenerateContentConfig(
             **kwargs, http_options=types.HttpOptions(timeout=EXTRACTOR_TIMEOUT_MS)
@@ -875,10 +886,105 @@ def _apply_ops(
                 retry=True, today=today,
             ):
                 report.writes += 1
-                report.note(
-                    "lines",
-                    {"section": op.section, "tag": op.tag, "text": op.text, "updated": op.op == "replace_line"},
-                )
+                note = {"section": op.section, "tag": op.tag, "text": op.text, "updated": op.op == "replace_line"}
+                if source_extra.get("document"):
+                    note.update({"document": source_extra.get("document"), "page": source_extra.get("page")})
+                report.note("lines", note)
+
+
+# ── Facts from the answer ────────────────────────────────────────────────────
+
+# Skips that mean there was no real exchange. A saved prompt still counts: its answer
+# reads the documents like any other, only its question is not the advocate's words.
+_NO_EXCHANGE = frozenset({"greeting", "too_short", "no_message"})
+
+
+def _answer_facts_eligible(turn: TurnInput, mode: str) -> bool:
+    """Whether this turn's answer is worth reading for document facts."""
+    from app.services.memory import answer_facts
+
+    if mode == "draft" or not str(turn.answer or "").strip():
+        return False  # a draft is text the advocate will edit, not facts
+    if turn_skip_reason(turn) in _NO_EXCHANGE:
+        return False
+    try:
+        return answer_facts.enabled() and bool(answer_facts.cited_documents(turn.citations))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _learn_from_answer(
+    scope: CaseScope,
+    turn: TurnInput,
+    existing: dict[str, list[dict[str, Any]]],
+    versions: dict[str, int | None],
+    settings: MemorySettings,
+    source_extra: dict[str, Any],
+    report: WriteReport,
+    *,
+    today: date | None,
+) -> int:
+    """Keep the facts the answer read out of its cited documents. Returns how many. Never raises.
+
+    Each fact is kept only if the stored text of the document it names backs it
+    (app/services/memory/answer_facts.py), and only as an addition: a fact memory already
+    holds, above all one the advocate stated, is never replaced by one from an answer.
+    """
+    from app.services.memory import answer_facts
+
+    documents = answer_facts.cited_documents(turn.citations)
+    known = [dict(line) for lines in existing.values() for line in lines]
+    try:
+        facts = answer_facts.extract(turn.question_raw, turn.answer, documents, known)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] answer facts unavailable case_key=%s: %s", scope.case_key, exc)
+        report.reject("answer_facts_unavailable")
+        return 0
+
+    kept = 0
+    for fact in facts:
+        if find_duplicate(fact.text, known) is not None:
+            continue  # already remembered, in whatever words
+        try:
+            support = answer_facts.find_support(fact, documents)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Memory] answer fact not checked case_key=%s: %s", scope.case_key, exc)
+            report.reject("answer_fact_unchecked")
+            continue
+        if support is None:
+            report.reject("answer_fact_not_in_document")
+            continue
+        op = MemoryOp(
+            op="append_line",
+            section=fact.section,
+            reason="read from a cited document",
+            line=MemoryLine(
+                tag="extracted",
+                text=fact.text,
+                source="document",
+                document=support.document,
+                sensitive=fact.sensitive,
+            ),
+        )
+        source = {
+            **source_extra,
+            "kind": "answer",
+            "document": support.document,
+            "file_id": support.file_id,
+            "chunk_id": support.chunk_id,
+            "page": support.page,
+        }
+        before = report.writes
+        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today)
+        if report.writes > before:
+            kept += 1
+            known.append({"text": fact.text})
+            existing.setdefault(fact.section, []).append({"text": fact.text, "tag": "extracted"})
+    if facts:
+        logger.info(
+            "[Memory] answer facts case_key=%s found=%s kept=%s", scope.case_key, len(facts), kept
+        )
+    return kept
 
 
 def _already_saved(text: str, items: Sequence[dict[str, Any]]) -> bool:
@@ -1766,13 +1872,28 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
         _record_draft(scope, turn, source_extra, report, today=today)
 
     reason = turn_skip_reason(turn)
-    if reason:
+    from_answer = _answer_facts_eligible(turn, mode)
+    if reason and not from_answer:
         report.skipped_reason = reason
         return
 
     stored = repository.get_sections(scope.case_key)
     existing = {name: list((data or {}).get("lines") or []) for name, data in stored.items()}
     versions: dict[str, int | None] = {name: (data or {}).get("version") for name, data in stored.items()}
+
+    # What the answer read out of the case's documents. Independent of what the
+    # advocate typed: a question has no fact in it, but its cited answer usually does,
+    # and a saved prompt's answer is as document-grounded as any other.
+    learned = (
+        _learn_from_answer(scope, turn, existing, versions, settings, source_extra, report, today=today)
+        if from_answer
+        else 0
+    )
+    if reason:
+        if not learned:
+            report.skipped_reason = reason
+        return
+
     context = _load_context(scope, turn)
     # What is already saved or still being counted, read once. The extractor sees it, so
     # it neither proposes a saved rule again nor loses count of one asked for before,
@@ -1794,12 +1915,14 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
         extraction = extract_ops(turn, existing, today=today, context=context)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Memory] extractor unavailable case_key=%s: %s", scope.case_key, exc)
-        report.skipped_reason = "extractor_error"
+        if not learned:
+            report.skipped_reason = "extractor_error"
         return
 
     report.reject("invalid_op", extraction.invalid)
     if extraction.nothing_durable and not extraction.ops and not extraction.proposals and not extraction.advocate:
-        report.skipped_reason = "nothing_durable"
+        if not learned:
+            report.skipped_reason = "nothing_durable"
         return
 
     accepted = screen_ops(extraction.ops, turn.question_raw, report)

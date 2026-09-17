@@ -6308,6 +6308,9 @@ async def intelligent_chat_stream(
                             draft_template=(
                                 str(getattr(chat_request, "template_gcs_path", "") or "") if is_draft else None
                             ),
+                            # The documents this answer drew on, so facts it read out of
+                            # them can be checked against their stored text and kept.
+                            citations=list(locals().get("citations_payload") or []),
                         )
                     )
                 except Exception as _mem_writer_exc:  # noqa: BLE001
