@@ -333,6 +333,96 @@ def recent_turns(
     return [hit for hit in (_to_hit(row) for row in rows) if hit is not None]
 
 
+_SESSION_TURNS_SQL = """
+SELECT id::text AS chat_id,
+       question,
+       answer,
+       (secret_id IS NOT NULL) AS preset,
+       created_at
+FROM folder_chats
+WHERE folder_name = %s
+  AND user_id::text = %s
+  AND session_id::text = %s
+  AND (%s::timestamptz IS NULL OR created_at > %s::timestamptz)
+ORDER BY created_at ASC
+LIMIT %s
+"""
+
+_LATEST_OTHER_SESSION_SQL = """
+SELECT session_id::text AS session_id, MAX(created_at) AS last_at
+FROM folder_chats
+WHERE folder_name = %s
+  AND user_id::text = %s
+  AND session_id IS NOT NULL
+  AND session_id::text <> %s
+GROUP BY session_id
+ORDER BY MAX(created_at) DESC
+LIMIT 1
+"""
+
+
+def session_turns(
+    scope: CaseScope | None,
+    session_id: str | None,
+    *,
+    since: Any = None,
+    limit: int = 40,
+    conn: Any = None,
+) -> list[dict[str, Any]]:
+    """One chat's turns after `since`, oldest first, for a review of the conversation.
+
+    The same guards as recall: only this advocate's chats, and nothing when the folder
+    name is shared by more than one folder they can see. A saved prompt's text is not
+    returned; `preset` says the turn was one.
+    """
+    session = str(session_id or "").strip()
+    if scope is None or not session:
+        return []
+    user_id = str(scope.user_id or "").strip()
+    folder_name = str(scope.folder_name or "").strip()
+    if not user_id or not folder_name or (conn is None and not is_db_available()):
+        return []
+    cap = max(1, min(int(limit or 40), 100))
+    with _connection(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute("SELECT set_config('statement_timeout', %s, true)", (STATEMENT_TIMEOUT,))
+            if folder_is_ambiguous(cur, scope):
+                return []
+            cur.execute(_SESSION_TURNS_SQL, (folder_name, user_id, session, since, since, cap))
+            rows = [dict(row) for row in cur.fetchall() or []]
+        finally:
+            connection.rollback()
+    for row in rows:
+        if row.get("preset"):
+            row["question"] = ""
+    return rows
+
+
+def latest_other_session(
+    scope: CaseScope | None,
+    exclude_session_id: str | None,
+    *,
+    conn: Any = None,
+) -> dict[str, Any] | None:
+    """The advocate's most recent other chat in this case: {session_id, last_at}, or None."""
+    if scope is None:
+        return None
+    user_id = str(scope.user_id or "").strip()
+    folder_name = str(scope.folder_name or "").strip()
+    if not user_id or not folder_name or (conn is None and not is_db_available()):
+        return None
+    with _connection(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute("SELECT set_config('statement_timeout', %s, true)", (STATEMENT_TIMEOUT,))
+            if folder_is_ambiguous(cur, scope):
+                return None
+            cur.execute(_LATEST_OTHER_SESSION_SQL, (folder_name, user_id, str(exclude_session_id or "")))
+            row = cur.fetchone()
+        finally:
+            connection.rollback()
+    return dict(row) if row else None
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value

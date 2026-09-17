@@ -68,6 +68,12 @@ REJECTIONS: dict[str, str] = {
     ),
     "answer_fact_unchecked": "A fact in the answer could not be checked against its document, so it was not kept",
     "answer_facts_unavailable": "The answer could not be read for facts this time",
+    "review_unavailable": "Your recent messages could not be reviewed this time",
+    "review_summary_not_grounded": (
+        "A summary line named something you did not write and memory does not hold, so it was not kept"
+    ),
+    "review_decision_not_in_advocate_messages": "A decision was not in your own words, so it was not kept",
+    "review_preference_not_a_pattern": "A way of working was not asked for often enough to suggest",
 }
 GENERIC_REJECTION = "A change could not be saved"
 
@@ -160,6 +166,17 @@ def _items(details: dict[str, Any], needed: int) -> list[dict[str, Any]]:
             items.append(
                 {"kind": "tidied", "lines_before": tidy.get("lines_before"), "lines_after": tidy.get("lines_after")}
             )
+    review = details.get("review")
+    if isinstance(review, dict) and review.get("turns"):
+        items.append(
+            {
+                "kind": "reviewed",
+                "turns": int(review.get("turns") or 0),
+                "trigger": review.get("trigger"),
+                "changed": int(review.get("changed") or 0),
+                "suggested": int(review.get("suggested") or 0),
+            }
+        )
     seeded = details.get("seeded")
     if isinstance(seeded, dict) and (seeded.get("added") or seeded.get("updated")):
         items.append({"kind": "filled_in", "added": int(seeded.get("added") or 0), "updated": int(seeded.get("updated") or 0)})
@@ -187,6 +204,8 @@ def _headline(items: Sequence[dict[str, Any]], rejections: Sequence[str]) -> tup
         return "noticed", "Noticed a request and started counting it"
     if "tidied" in kinds or "filled_in" in kinds or "made_room" in kinds:
         return "saved", "Tidied memory"
+    if "reviewed" in kinds:
+        return "nothing", "Reviewed your recent messages, nothing new to keep"
     if rejections:
         return "nothing", "Checked, but nothing could be kept"
     return "nothing", "Checked, nothing to keep"

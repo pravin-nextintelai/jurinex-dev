@@ -52,6 +52,12 @@ These migrations align the new Python `agentic-document-service` with the shared
     (`app/services/chunk_autoheal.py`); a chunk with `healed_at` set is never queued
     again, so a false alarm costs one model call in total instead of one per question.
     A failed repair leaves it null to be retried. Added on first use too.
+14. records how far each chat has been reviewed as a whole (migration `179`):
+    `memory_review_state`. Every few turns, and for an earlier chat left for a while,
+    `app/services/memory/synthesis.py` keeps the case summary's Stage / Last action /
+    Open items current, records decisions reached over several messages, and suggests
+    ways of working the advocate keeps asking for. Purged with the case. Created on
+    first use too.
 
 ## Suggested Run Order
 

@@ -68,7 +68,7 @@ from app.core.config import get_settings
 from app.services.memory import repository
 from app.services.memory.instructions import user_proposal_key
 from app.services.memory.parties import party_names_for_user
-from app.services.memory.recall import RecallHit, recent_turns
+from app.services.memory.recall import RecallHit, latest_other_session, recent_turns, session_turns
 from app.services.memory.repository import VersionConflict
 from app.services.memory.schemas import (
     MAX_LINE_CHARS,
@@ -1931,6 +1931,262 @@ def _run(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
     _handle_advocate(scope, turn, extraction.advocate, source_extra, report, state=advocate, book=book)
 
 
+# ── Reviewing the conversation as a whole ────────────────────────────────────
+
+# Skips after which nothing about the case may be written, reviews included.
+_NO_REVIEW = frozenset({"disabled_globally", "no_scope", "db_unavailable", "disabled_by_user", "writer_error"})
+# A chat whose review failed is left alone this long, so a model outage does not
+# re-run a review on every turn.
+REVIEW_RETRY_AFTER_S = 600
+_review_failed_at: dict[tuple[str, str, str], datetime] = {}
+
+
+def _review_target(scope: CaseScope, turn: TurnInput) -> tuple[str, list[dict[str, Any]], Any, str] | None:
+    """The one chat due a review now: (session_id, turns, reviewed_until, trigger), or None.
+
+    This chat once enough turns have piled up since its last review; otherwise the
+    advocate's previous chat in this case, once it has sat unreviewed long enough to be
+    over. At most one review per turn, so the cost of a turn stays bounded.
+    """
+    from app.services.memory import synthesis
+
+    session = str(turn.session_id or "").strip()
+    if session:
+        state = repository.get_review_state(scope.case_key, scope.user_id, session) or {}
+        until = state.get("reviewed_until")
+        turns = session_turns(scope, session, since=until, limit=synthesis.MAX_TURNS_PER_REVIEW * 3)
+        if turn.chat_id and all(str(row.get("chat_id")) != str(turn.chat_id) for row in turns):
+            # This turn's row may not be saved yet; it is still part of the conversation.
+            turns.append({
+                "chat_id": turn.chat_id,
+                "question": "" if turn.saved_prompt else turn.question_raw,
+                "answer": turn.answer,
+                "preset": bool(turn.saved_prompt),
+                "created_at": datetime.now(timezone.utc),
+            })
+        if synthesis.due_by_count(len(turns)):
+            return session, turns, until, "every_turns"
+
+    other = latest_other_session(scope, session)
+    if other and other.get("session_id"):
+        other_session = str(other["session_id"])
+        state = repository.get_review_state(scope.case_key, scope.user_id, other_session) or {}
+        until = state.get("reviewed_until")
+        turns = session_turns(scope, other_session, since=until, limit=synthesis.MAX_TURNS_PER_REVIEW * 3)
+        if synthesis.due_after_break(len(turns), other.get("last_at")):
+            return other_session, turns, until, "after_break"
+    return None
+
+
+def _review_conversation(turn: TurnInput, report: WriteReport, *, today: date | None) -> None:
+    """Review a stretch of conversation when one is due, and bring case memory up to date.
+
+    Never raises. See app/services/memory/synthesis.py for what a review may change and
+    how each change is checked before it is written.
+    """
+    from app.services.memory import synthesis
+
+    scope = turn.scope
+    if scope is None or not synthesis.enabled() or report.skipped_reason in _NO_REVIEW:
+        return
+    if str(report.skipped_reason or "").startswith("mode_"):
+        return
+    settings = repository.effective_settings(user_id=scope.user_id, case_key=scope.case_key, firm_id=scope.firm_id)
+    if not settings.enabled or not settings.write_enabled:
+        return
+
+    target = _review_target(scope, turn)
+    if target is None:
+        return
+    session, rows, until, trigger = target
+    key = (scope.case_key, str(scope.user_id), session)
+    failed = _review_failed_at.get(key)
+    if failed and (datetime.now(timezone.utc) - failed).total_seconds() < REVIEW_RETRY_AFTER_S:
+        return
+    lock = synthesis.session_lock(*key)
+    if not lock.acquire(blocking=False):
+        return  # another turn is reviewing this chat right now
+    try:
+        _run_review(scope, turn, report, settings, session, rows, until, trigger, today=today)
+    finally:
+        lock.release()
+
+
+def _run_review(
+    scope: CaseScope,
+    turn: TurnInput,
+    report: WriteReport,
+    settings: MemorySettings,
+    session: str,
+    rows: list[dict[str, Any]],
+    until: Any,
+    trigger: str,
+    *,
+    today: date | None,
+) -> None:
+    from app.services.memory import synthesis
+
+    window = rows[-synthesis.MAX_TURNS_PER_REVIEW:]
+    turns = [
+        synthesis.Turn(
+            number=index + 1,
+            chat_id=str(row.get("chat_id") or ""),
+            question=str(row.get("question") or ""),
+            answer=str(row.get("answer") or ""),
+            preset=bool(row.get("preset")),
+            created_at=row.get("created_at"),
+        )
+        for index, row in enumerate(window)
+    ]
+    by_number = {item.number: item for item in turns}
+    stored = repository.get_sections(scope.case_key)
+    existing = {name: list((data or {}).get("lines") or []) for name, data in stored.items()}
+    versions: dict[str, int | None] = {name: (data or {}).get("version") for name, data in stored.items()}
+    book = _Rulebook(scope)
+
+    request = synthesis.build_request(
+        turns,
+        summary_lines=existing.get("summary") or [],
+        decision_lines=existing.get("decisions") or [],
+        saved_rules=book.saved_rules(),
+        noticed_rules=[rule["text"] for rule in book.noticed_rules()],
+        chat_summary=conversation_summary(scope, session),
+    )
+    try:
+        review, model = synthesis.ask_model(request, list(by_number))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] conversation review unavailable case_key=%s: %s", scope.case_key, exc)
+        _review_failed_at[(scope.case_key, str(scope.user_id), session)] = datetime.now(timezone.utc)
+        report.reject("review_unavailable")
+        return
+
+    advocate_text = " ".join(item.question for item in turns if not item.preset and item.question)
+    memory_text = " ".join(str(line.get("text") or "") for lines in existing.values() for line in lines)
+    source = {
+        "kind": "review",
+        "session_id": session,
+        "chat_ids": [item.chat_id for item in turns if item.chat_id][:12],
+    }
+    writes_before, proposals_before = report.writes, report.proposals
+
+    # Summary: Stage, Last action and Open items, kept in place. A line the advocate
+    # wrote under the same label is theirs and is left alone.
+    for field_name, label in synthesis.SUMMARY_KEYS:
+        value = getattr(review, field_name)
+        text = "; ".join(value) if isinstance(value, list) else value
+        if not text:
+            continue
+        line_text = f"{label}: {text}"[:MAX_LINE_CHARS]
+        if not synthesis.grounded_status(line_text, f"{advocate_text} {memory_text}"):
+            report.reject("review_summary_not_grounded")
+            continue
+        current = next(
+            (line for line in existing.get("summary") or [] if str(line.get("text") or "").lower().startswith(label.lower() + ":")),
+            None,
+        )
+        if current is not None and str(current.get("tag") or "") != "status":
+            continue
+        op = MemoryOp(
+            op="replace_line" if current is not None else "append_line",
+            section="summary",
+            line_id=str(current.get("id")) if current is not None and current.get("id") else None,
+            reason="conversation review",
+            line=MemoryLine(tag="status", text=line_text),
+        )
+        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today)
+
+    # Decisions the advocate reached, traceable to their own words in the turns cited.
+    for decision in review.decisions:
+        cited = [by_number[number] for number in decision["turns"] if not by_number[number].preset]
+        words = " ".join(item.question for item in cited)
+        if not words or not is_grounded(decision["text"], words):
+            report.reject("review_decision_not_in_advocate_messages")
+            continue
+        op = MemoryOp(
+            op="append_line",
+            section="decisions",
+            reason="conversation review",
+            line=MemoryLine(tag="stated", text=decision["text"]),
+        )
+        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today)
+
+    # Ways of working shown by a pattern: inferred, so only ever suggested.
+    for preference in review.preferences:
+        _suggest_pattern(scope, book, preference, by_number, source, report)
+
+    last = window[-1].get("created_at") if window else None
+    try:
+        repository.mark_reviewed(
+            scope.case_key, scope.user_id, session, until=last, turns=len(window), expected_until=until
+        )
+    except Exception as exc:  # noqa: BLE001 — the changes stand; the next turn may review again
+        logger.warning("[Memory] review not recorded case_key=%s: %s", scope.case_key, exc)
+
+    changed = report.writes - writes_before
+    suggested = report.proposals - proposals_before
+    report.details["review"] = {
+        "turns": len(window),
+        "trigger": trigger,
+        "model": model,
+        "session_id": session,
+        "changed": changed,
+        "suggested": suggested,
+    }
+    if (changed or suggested) and report.skipped_reason not in _NO_REVIEW:
+        report.skipped_reason = None
+    logger.info(
+        "[Memory] reviewed %s turn(s) case_key=%s trigger=%s changed=%s suggested=%s model=%s",
+        len(window), scope.case_key, trigger, changed, suggested, model,
+    )
+
+
+def _suggest_pattern(
+    scope: CaseScope,
+    book: _Rulebook,
+    preference: dict[str, Any],
+    by_number: dict[int, Any],
+    source: dict[str, Any],
+    report: WriteReport,
+) -> None:
+    """Offer a way of working the advocate keeps asking for, as a suggestion only."""
+    from app.services.memory import synthesis
+
+    text = str(preference.get("text") or "").strip()
+    messages = [by_number[number].question for number in preference.get("turns") or [] if not by_number[number].preset]
+    if not text or not synthesis.is_manner(text) or not synthesis.shows_pattern(text, messages):
+        report.reject("review_preference_not_a_pattern")
+        return
+    if book.problems(text, "case") or _already_saved(text, book.items["case"]) or _already_saved(text, book.items["user"]):
+        return
+    if find_duplicate(text, book.dismissed["case"]) is not None or book.find_pending(text, "case", None) is not None:
+        return
+    polished = polished_rule(book, text, "case")
+    ref = {
+        **source,
+        "kind": "pattern",
+        "evidence": [by_number[number].chat_id for number in preference.get("turns") or []],
+        "request_count": len(messages),
+        "explicit": False,
+        "hidden": False,
+    }
+    if polished:
+        ref["polished"] = polished
+    try:
+        proposal_id = repository.add_proposal(book.key("case"), scope.user_id, "instruction", text, ref)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] pattern suggestion not recorded case_key=%s: %s", scope.case_key, exc)
+        report.reject("proposal_write_failed")
+        return
+    if not proposal_id:
+        return
+    book.pending["case"].append({"id": proposal_id, "text": text, "status": "pending", "source_ref": ref})
+    report.proposals += 1
+    report.note(
+        "suggestions",
+        {"id": proposal_id, "kind": "instruction", "scope": "case", "text": polished or text, "pattern": True},
+    )
+
+
 def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
     """One assembly-log row per turn: what was read, and what was written."""
     entry = dict(turn.log_entry or {})
@@ -1997,6 +2253,12 @@ def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
             "[Memory] writer failed case_key=%s: %s", getattr(turn.scope, "case_key", None), exc
         )
         report.skipped_reason = report.skipped_reason or "writer_error"
+    try:
+        _review_conversation(turn, report, today=today)
+    except Exception as exc:  # noqa: BLE001 — a review must never fail a chat
+        logger.warning(
+            "[Memory] conversation review failed case_key=%s: %s", getattr(turn.scope, "case_key", None), exc
+        )
     _count_advocate_use(turn)
     report.assembly_log_id = _write_log(turn, report)
     logger.info(

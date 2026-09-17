@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import unittest
 from contextlib import ExitStack, contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services.memory import answer_facts as answer_facts_mod
 from app.services.memory import consolidate as consolidate_mod
+from app.services.memory import synthesis as synthesis_mod
 from app.services.memory import writer as writer_mod
 from app.services.memory.consolidate import ConsolidationResult
 from app.services.memory.recall import RecallHit
@@ -160,6 +161,11 @@ def harness(
     answer_support=None,
     answer_facts_error=None,
     answer_facts_enabled=True,
+    review_turns=None,
+    review_other_session=None,
+    review_state=None,
+    review=None,
+    review_error=None,
 ):
     mocks = {}
     with ExitStack() as stack:
@@ -241,6 +247,18 @@ def harness(
                 consolidate_mod,
                 "plan",
                 return_value=consolidation if consolidation is not None else ConsolidationResult(error="too_few"),
+            )
+        )
+        # Conversation reviews: nothing due unless a test sets it up.
+        module("session_turns", return_value=list(review_turns or []))
+        module("latest_other_session", return_value=review_other_session)
+        repo("get_review_state", return_value=review_state)
+        repo("mark_reviewed", return_value=True)
+        mocks["review_model"] = stack.enter_context(
+            patch.object(
+                synthesis_mod,
+                "ask_model",
+                **({"side_effect": review_error} if review_error else {"return_value": (review or synthesis_mod.Review(), "gemini-3.7-flash")}),
             )
         )
         mocks["answer_enabled"] = stack.enter_context(
@@ -1428,6 +1446,167 @@ class AnswerFactTests(unittest.TestCase):
             answer_facts=[fact], answer_support=self.SUPPORT, settings=MemorySettings(sensitive_enabled=False)
         )
         mocks["apply_op"].assert_not_called()
+
+
+class ReviewTests(unittest.TestCase):
+    """Every few turns, or after a break, the conversation is reviewed as a whole."""
+
+    NOW = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+    MESSAGES = [
+        "The hearing is on 14 October 2026 before the Aurangabad Bench",
+        "We will press the Section 63-1A ground",
+        "give me a detailed analysis of the reply",
+        "explain in detail the respondents' objections",
+    ]
+
+    def setUp(self) -> None:
+        writer_mod._review_failed_at.clear()
+        self.addCleanup(writer_mod._review_failed_at.clear)
+
+    def rows(self, messages=None, *, start=None):
+        base = start or self.NOW - timedelta(minutes=20)
+        return [
+            {"chat_id": f"c{n}", "question": text, "answer": "An answer.", "preset": False,
+             "created_at": base + timedelta(minutes=n)}
+            for n, text in enumerate(messages if messages is not None else self.MESSAGES, 1)
+        ]
+
+    @staticmethod
+    def review(**fields):
+        return synthesis_mod.Review(**fields)
+
+    def run_due(self, message="draft the reply now", **kwargs):
+        """Four saved turns plus this one: five, which is due."""
+        kwargs.setdefault("review_turns", self.rows())
+        return run(message, turn={"session_id": "s-1"}, **kwargs)
+
+    def test_five_turns_bring_the_summary_and_decisions_up_to_date(self) -> None:
+        review = self.review(
+            stage="Preparing for the 14 October 2026 hearing",
+            last_action="Asked for a draft reply",
+            decisions=[{"text": "Press the Section 63-1A ground", "turns": [2]}],
+        )
+        report, mocks = self.run_due(review=review)
+        mocks["review_model"].assert_called_once()
+        written = [(call.args[1].section, call.args[1].tag, call.args[1].text) for call in mocks["apply_op"].call_args_list]
+        self.assertIn(("summary", "status", "Stage: Preparing for the 14 October 2026 hearing"), written)
+        self.assertIn(("summary", "status", "Last action: Asked for a draft reply"), written)
+        self.assertIn(("decisions", "stated", "Press the Section 63-1A ground"), written)
+        self.assertEqual(mocks["apply_op"].call_args_list[0].kwargs["source_ref_extra"]["kind"], "review")
+        self.assertEqual(report.details["review"]["turns"], 5)
+        self.assertEqual(report.details["review"]["trigger"], "every_turns")
+        marked = mocks["mark_reviewed"].call_args
+        self.assertEqual((marked.args[2], marked.kwargs["turns"], marked.kwargs["expected_until"]), ("s-1", 5, None))
+
+    def test_fewer_turns_are_left_for_later(self) -> None:
+        _, mocks = run("draft the reply now", turn={"session_id": "s-1"}, review_turns=self.rows()[:2])
+        mocks["review_model"].assert_not_called()
+        mocks["mark_reviewed"].assert_not_called()
+
+    def test_only_turns_since_the_last_review_are_read(self) -> None:
+        state = {"reviewed_until": self.NOW - timedelta(hours=1)}
+        _, mocks = self.run_due(review_state=state)
+        self.assertEqual(mocks["session_turns"].call_args.kwargs["since"], state["reviewed_until"])
+        self.assertEqual(mocks["mark_reviewed"].call_args.kwargs["expected_until"], state["reviewed_until"])
+
+    def test_the_summary_line_it_wrote_before_is_updated_in_place(self) -> None:
+        stored = {"summary": {"version": 3, "lines": [{"id": "st1", "tag": "status", "text": "Stage: Reading the petition"}]}}
+        _, mocks = self.run_due(review=self.review(stage="Preparing the reply"), stored=stored)
+        resolved = mocks["apply_op"].call_args.args[1]
+        self.assertEqual((resolved.op, resolved.line_id, resolved.text), ("replace_line", "st1", "Stage: Preparing the reply"))
+
+    def test_a_summary_line_the_advocate_wrote_is_left_alone(self) -> None:
+        stored = {"summary": {"version": 3, "lines": [{"id": "st1", "tag": "stated", "text": "Stage: Arguments"}]}}
+        _, mocks = self.run_due(review=self.review(stage="Preparing the reply"), stored=stored)
+        mocks["apply_op"].assert_not_called()
+
+    def test_a_summary_naming_something_nobody_wrote_is_refused(self) -> None:
+        report, mocks = self.run_due(review=self.review(stage="Preparing for the 21 November 2026 hearing"))
+        mocks["apply_op"].assert_not_called()
+        self.assertIn("review_summary_not_grounded", report.rejection_codes)
+
+    def test_a_decision_not_in_the_advocates_words_is_refused(self) -> None:
+        review = self.review(decisions=[{"text": "Withdraw the petition and settle with the respondents", "turns": [2]}])
+        report, mocks = self.run_due(review=review)
+        mocks["apply_op"].assert_not_called()
+        self.assertIn("review_decision_not_in_advocate_messages", report.rejection_codes)
+
+    def test_a_decision_citing_only_a_saved_prompt_is_refused(self) -> None:
+        rows = self.rows()
+        rows[1]["preset"], rows[1]["question"] = True, ""
+        review = self.review(decisions=[{"text": "Press the Section 63-1A ground", "turns": [2]}])
+        report, mocks = self.run_due(review=review, review_turns=rows)
+        mocks["apply_op"].assert_not_called()
+
+    def test_a_way_of_working_asked_for_repeatedly_is_suggested_never_saved(self) -> None:
+        review = self.review(preferences=[{"text": "Give detailed answers", "turns": [3, 4]}])
+        report, mocks = self.run_due(review=review, polished="Give detailed, thorough answers.")
+        add = mocks["add_proposal"]
+        add.assert_called_once()
+        kind, text, ref = add.call_args.args[2], add.call_args.args[3], add.call_args.args[4]
+        self.assertEqual((kind, text), ("instruction", "Give detailed answers"))
+        self.assertEqual((ref["kind"], ref["hidden"], ref["polished"]), ("pattern", False, "Give detailed, thorough answers."))
+        self.assertEqual(ref["evidence"], ["c3", "c4"])
+        mocks["add_instruction"].assert_not_called()
+        self.assertEqual(report.details["suggestions"][0]["text"], "Give detailed, thorough answers.")
+
+    def test_a_way_of_working_asked_for_once_is_not_suggested(self) -> None:
+        review = self.review(preferences=[{"text": "Give detailed answers", "turns": [3, 1]}])
+        report, mocks = self.run_due(review=review)
+        mocks["add_proposal"].assert_not_called()
+        self.assertIn("review_preference_not_a_pattern", report.rejection_codes)
+
+    def test_a_way_of_working_already_saved_is_not_suggested_again(self) -> None:
+        review = self.review(preferences=[{"text": "Give detailed answers", "turns": [3, 4]}])
+        items = {"case": [{"id": "i1", "text": "Give detailed answers", "enabled": True}]}
+        _, mocks = self.run_due(review=review, instruction_items=items)
+        mocks["add_proposal"].assert_not_called()
+
+    def test_an_earlier_chat_left_for_a_while_is_reviewed(self) -> None:
+        old = self.rows(start=datetime.now(timezone.utc) - timedelta(hours=3))[:3]
+
+        def turns(scope, session, since=None, limit=40):
+            return old if session == "s-old" else []
+
+        with harness(
+            review_other_session={"session_id": "s-old", "last_at": old[-1]["created_at"]},
+            review=self.review(last_action="Asked for a detailed analysis of the reply"),
+        ) as mocks:
+            mocks["session_turns"].side_effect = turns
+            report = run_post_turn(turn("hello again, new chat", session_id="s-new"), today=TODAY)
+        mocks["review_model"].assert_called_once()
+        self.assertEqual(report.details["review"]["trigger"], "after_break")
+        self.assertEqual(mocks["mark_reviewed"].call_args.args[2], "s-old")
+
+    def test_an_earlier_chat_still_in_use_is_left_alone(self) -> None:
+        recent = self.rows(start=datetime.now(timezone.utc) - timedelta(minutes=5))[:3]
+        with harness(review_other_session={"session_id": "s-old", "last_at": recent[-1]["created_at"]}) as mocks:
+            mocks["session_turns"].side_effect = lambda scope, session, since=None, limit=40: recent if session == "s-old" else []
+            run_post_turn(turn("hello again", session_id="s-new"), today=TODAY)
+        mocks["review_model"].assert_not_called()
+
+    def test_a_failed_review_is_not_retried_on_every_turn(self) -> None:
+        report, mocks = self.run_due(review_error=RuntimeError("quota"))
+        self.assertIn("review_unavailable", report.rejection_codes)
+        mocks["mark_reviewed"].assert_not_called()
+        _, again = self.run_due(review_error=RuntimeError("quota"))
+        again["review_model"].assert_not_called()
+
+    def test_no_review_when_generating_memory_is_off(self) -> None:
+        _, mocks = self.run_due(settings=MemorySettings(write_enabled=False))
+        mocks["review_model"].assert_not_called()
+
+    def test_this_turn_counts_even_before_its_row_is_saved(self) -> None:
+        _, mocks = self.run_due()  # four saved rows + this turn = five
+        request = mocks["review_model"].call_args.args[0]
+        self.assertIn("[Turn 5]", request)
+        self.assertIn("draft the reply now", request)
+
+    def test_a_greeting_that_triggers_a_useful_review_is_not_reported_as_skipped(self) -> None:
+        review = self.review(decisions=[{"text": "Press the Section 63-1A ground", "turns": [2]}])
+        report, _ = run("hello", turn={"session_id": "s-1"}, review_turns=self.rows(), review=review)
+        self.assertIsNone(report.skipped_reason)
+        self.assertEqual(report.writes, 1)
 
 
 class ExtractorThinkingTests(unittest.TestCase):

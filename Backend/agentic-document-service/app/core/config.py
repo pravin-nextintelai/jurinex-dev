@@ -813,6 +813,33 @@ class Settings(BaseSettings):
         default="minimal",
         validation_alias=AliasChoices("MEMORY_ANSWER_FACTS_THINKING_LEVEL"),
     )
+    # Reviewing a stretch of conversation as a whole (app/services/memory/synthesis.py):
+    # keeps the case summary's Stage / Last action / Open items current, records decisions
+    # reached over several messages, and suggests ways of working the advocate keeps asking
+    # for. Runs every MEMORY_SYNTHESIS_EVERY_TURNS turns of a chat, and for an earlier chat
+    # left unreviewed for MEMORY_SYNTHESIS_IDLE_MINUTES. Measured on a real 10-turn chat:
+    # gemini-3.7-flash at "medium" named the right last action and skipped a saved rule;
+    # gemini-3.1-flash-lite named an older action and re-suggested the saved rule.
+    memory_synthesis_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("MEMORY_SYNTHESIS_ENABLED"),
+    )
+    memory_synthesis_every_turns: int = Field(
+        default=5,
+        validation_alias=AliasChoices("MEMORY_SYNTHESIS_EVERY_TURNS"),
+    )
+    memory_synthesis_idle_minutes: int = Field(
+        default=30,
+        validation_alias=AliasChoices("MEMORY_SYNTHESIS_IDLE_MINUTES"),
+    )
+    memory_synthesis_model: str = Field(
+        default="gemini-3.7-flash",
+        validation_alias=AliasChoices("MEMORY_SYNTHESIS_MODEL"),
+    )
+    memory_synthesis_thinking_level: str = Field(
+        default="medium",
+        validation_alias=AliasChoices("MEMORY_SYNTHESIS_THINKING_LEVEL"),
+    )
     # What memory may send with one question (app/services/memory/assembly.py), in
     # estimated tokens. These are the caps each block always gets; a block that has
     # more to say may stretch into room the others left free, up to MEMORY_BLOCK_STRETCH

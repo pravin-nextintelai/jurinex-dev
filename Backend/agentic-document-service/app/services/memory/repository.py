@@ -268,6 +268,16 @@ CREATE INDEX IF NOT EXISTS idx_advocate_memory_lines_user
     ON advocate_memory_lines (user_id, ord);
 CREATE INDEX IF NOT EXISTS idx_advocate_memory_lines_use
     ON advocate_memory_lines (user_id, used_count, last_used_at NULLS FIRST);
+CREATE TABLE IF NOT EXISTS memory_review_state (
+    case_key        TEXT        NOT NULL,
+    user_id         TEXT        NOT NULL,
+    session_id      TEXT        NOT NULL,
+    reviewed_until  TIMESTAMPTZ,
+    reviewed_turns  INTEGER     NOT NULL DEFAULT 0,
+    reviews         INTEGER     NOT NULL DEFAULT 0,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (case_key, user_id, session_id)
+);
 """
 
 # Tables purged when a case is deleted, in FK-safe order.
@@ -278,6 +288,7 @@ _CASE_TABLES: tuple[tuple[str, str], ...] = (
     ("case_instructions", "case_key"),
     ("memory_assembly_log", "case_key"),
     ("memory_proposals", "case_key"),
+    ("memory_review_state", "case_key"),
 )
 # Instruction rows a case owns, or that were switched off for it. Items follow
 # their set through the FK; a universal instruction's per-case override is the
@@ -2292,6 +2303,56 @@ def list_assembly_log(case_key: str, limit: int = 20, *, conn: Any = None) -> li
             (key, max(1, min(int(limit or 20), 200))),
         )
         return [_out(row) or {} for row in cur.fetchall()]
+
+
+# ── Conversation reviews ─────────────────────────────────────────────────────
+# How far each chat has been reviewed (app/services/memory/synthesis.py), so the same
+# turns are not reviewed twice and a chat left with unreviewed turns can be found.
+
+def get_review_state(case_key: str, user_id: str, session_id: str, *, conn: Any = None) -> dict[str, Any] | None:
+    key = _require_case_key(case_key)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "SELECT reviewed_until, reviewed_turns, reviews, updated_at FROM memory_review_state "
+            "WHERE case_key = %s AND user_id = %s AND session_id = %s",
+            (key, str(user_id), str(session_id)),
+        )
+        return _out(cur.fetchone())
+
+
+def mark_reviewed(
+    case_key: str,
+    user_id: str,
+    session_id: str,
+    *,
+    until: Any,
+    turns: int,
+    expected_until: Any = None,
+    conn: Any = None,
+) -> bool:
+    """Record a review up to `until`. False when another review moved it first."""
+    key = _require_case_key(case_key)
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            cur.execute(
+                """
+                INSERT INTO memory_review_state (case_key, user_id, session_id, reviewed_until, reviewed_turns, reviews)
+                VALUES (%s, %s, %s, %s::timestamptz, %s, 1)
+                ON CONFLICT (case_key, user_id, session_id) DO UPDATE SET
+                    reviewed_until = EXCLUDED.reviewed_until,
+                    reviewed_turns = memory_review_state.reviewed_turns + EXCLUDED.reviewed_turns,
+                    reviews = memory_review_state.reviews + 1,
+                    updated_at = NOW()
+                WHERE memory_review_state.reviewed_until IS NOT DISTINCT FROM %s::timestamptz
+                """,
+                (key, str(user_id), str(session_id), until, int(turns), expected_until),
+            )
+            moved = (cur.rowcount or 0) > 0
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    return moved
 
 
 def list_turn_activity(case_key: str, user_id: str, limit: int = 30, *, conn: Any = None) -> list[dict[str, Any]]:
