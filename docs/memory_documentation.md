@@ -435,7 +435,9 @@ Migrations `170`–`182` in `db/migrations/`. Most tables are also created on fi
      In both cases, what JuriNex knows about YOU is untouched.
 ```
 
-"Forget everything about this case" also stops automatic refilling, so the case does not quietly repopulate from its details on the next chat. Deleting a case removes its memory, instructions, suggestions and log. Facts about the advocate are untouched.
+**New documents.** When an upload job for a case finishes, the case's memory is brought up to date with the documents it processed straight away, in the background, instead of at the next chat message (`seed.schedule_after_upload`). It is the same refresh a chat turn runs, so nothing is written when nothing changed, and the Activity tab shows "Added your newly processed documents to memory" with the lines filled in. Intake folders (`temp-…`) are left out: their memory is filled when the case is created.
+
+"Forget everything about this case" also stops automatic refilling, so the case does not quietly repopulate from its details on the next chat or the next upload. Deleting a case removes its memory, instructions, suggestions and log. Facts about the advocate are untouched.
 
 ### 7.1 When "about you" fills up
 

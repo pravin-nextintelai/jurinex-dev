@@ -191,6 +191,10 @@ def _items(details: dict[str, Any], needed: int) -> list[dict[str, Any]]:
     seeded = details.get("seeded")
     if isinstance(seeded, dict) and (seeded.get("added") or seeded.get("updated")):
         items.append({"kind": "filled_in", "added": int(seeded.get("added") or 0), "updated": int(seeded.get("updated") or 0)})
+    documents = [str(name) for name in details.get("documents") or [] if str(name or "").strip()]
+    if documents:
+        # Documents whose processing brought memory up to date (app/services/memory/seed.py).
+        items.append({"kind": "uploaded", "documents": documents})
     return items
 
 
@@ -213,6 +217,10 @@ def _headline(items: Sequence[dict[str, Any]], rejections: Sequence[str]) -> tup
         return "suggested", "Suggested a rule for you to review" if count == 1 else f"Suggested {count} rules to review"
     if "noticed" in kinds:
         return "noticed", "Noticed a request and started counting it"
+    if "uploaded" in kinds:
+        return "saved", "Added your newly processed documents to memory"
+    if "filled_in" in kinds and "tidied" not in kinds and "made_room" not in kinds:
+        return "saved", "Filled in memory from the case details"
     if "tidied" in kinds or "filled_in" in kinds or "made_room" in kinds:
         return "saved", "Tidied memory"
     if "reviewed" in kinds:

@@ -34,6 +34,7 @@ import json
 import logging
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Iterable, Sequence
@@ -760,3 +761,80 @@ def refresh_seed(
         actor=SEED_ACTOR,
         now=moment,
     )
+
+
+# ── After an upload ──────────────────────────────────────────────────────────
+# Documents added to an existing case used to reach memory only with the next chat
+# message, and at most every SEED_RECHECK_SECONDS: an advocate who uploaded a document and
+# opened the memory panel did not find it there. Once an upload job finishes, the case is
+# brought up to date at once. Intake folders (temp-*) are left out: their memory is filled
+# when the case is created from them.
+
+_UPLOAD_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-upload-seed")
+UPLOAD_ACTOR = "memory-upload"
+
+
+def refresh_after_upload(folder_name: str, user_id: str, *, documents: Sequence[str] = ()) -> dict[str, Any] | None:
+    """Bring a case's memory up to date with documents just processed. Never raises.
+
+    The same refresh a chat turn runs, without waiting for its interval: nothing is
+    written for a case whose memory the advocate asked to forget, while memory is off,
+    or when nothing seeding reads from has changed. What it added is recorded in the
+    case's activity.
+    """
+    from app.services.memory.scope import resolve_case_scope
+
+    try:
+        scope = resolve_case_scope(folder_name, str(user_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] no case for uploaded documents folder=%s: %s", folder_name, exc)
+        return None
+    if scope is None:
+        return None
+    result = refresh_seed(scope, min_interval_s=0)
+    if not result:
+        return None
+    added, updated = int(result.get("added") or 0), int(result.get("updated") or 0)
+    if added or updated:
+        repository.write_assembly_log(
+            {
+                "case_key": scope.case_key,
+                "user_id": scope.user_id,
+                "mode": "upload",
+                "writes": added + updated,
+                "details": {
+                    "seeded": {"added": added, "updated": updated},
+                    "documents": [str(name) for name in documents][:20],
+                },
+            }
+        )
+    logger.info(
+        "[Memory] memory refreshed after upload case_key=%s documents=%s added=%s updated=%s",
+        scope.case_key, len(documents), added, updated,
+    )
+    return result
+
+
+def _refresh_quietly(folder_name: str, user_id: str, documents: Sequence[str]) -> None:
+    try:
+        refresh_after_upload(folder_name, user_id, documents=documents)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] memory not refreshed after upload folder=%s: %s", folder_name, exc)
+
+
+def schedule_after_upload(folder_name: str, user_id: str, *, documents: Sequence[str] = ()) -> bool:
+    """Refresh a case's memory in the background once its uploaded documents are processed."""
+    from app.core.config import get_settings
+
+    folder = str(folder_name or "").strip()
+    if not folder or folder.startswith("temp-") or not str(user_id or "").strip().isdigit():
+        return False
+    settings = get_settings()
+    if not getattr(settings, "memory_enabled", True) or not getattr(settings, "memory_write_enabled", True):
+        return False
+    try:
+        _UPLOAD_EXECUTOR.submit(_refresh_quietly, folder, str(user_id), list(documents))
+        return True
+    except Exception as exc:  # noqa: BLE001 — e.g. shutting down
+        logger.debug("[Memory] refresh after upload not queued folder=%s: %s", folder, exc)
+        return False

@@ -2660,6 +2660,7 @@ class FolderWorkflowService:
 
         try:
             self._run_job_inner(job_id, case_id, documents, stored_case, document_ids)
+            self._refresh_memory_after_upload(job_id, case_id)
         except Exception as exc:
             # Catch-all: if _run_job_inner crashes before processing futures, mark every
             # document that is still at 20% (processing) as failed so they never get stuck.
@@ -2682,6 +2683,28 @@ class FolderWorkflowService:
                             self._update_document(job_id, doc_id, ProcessingState.error, 100.0, "failed", error=str(exc))
                     job_ref.status = ProcessingState.error
                     job_ref.updated_at = datetime.now(tz=UTC)
+
+    def _refresh_memory_after_upload(self, job_id: str, folder_name: str) -> None:
+        """Bring the case's memory up to date with the documents this job processed. Never raises.
+
+        Runs in the background (app/services/memory/seed.py), so the job queue moves on at once.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            user_id = job.user_id
+            processed = [
+                doc.document_name for doc in job.documents.values() if doc.status == ProcessingState.processed
+            ]
+        if not processed:
+            return
+        try:
+            from app.services.memory.seed import schedule_after_upload
+
+            schedule_after_upload(folder_name, user_id, documents=processed)
+        except Exception as exc:  # noqa: BLE001 — memory must never fail an upload
+            logger.debug("[FolderService] memory refresh after upload skipped folder=%s: %s", folder_name, exc)
 
     def _run_job_inner(
         self,
