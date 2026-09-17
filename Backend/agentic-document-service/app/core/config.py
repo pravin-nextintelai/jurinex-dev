@@ -840,6 +840,26 @@ class Settings(BaseSettings):
         default="medium",
         validation_alias=AliasChoices("MEMORY_SYNTHESIS_THINKING_LEVEL"),
     )
+    # Learning about the advocate across their cases (app/services/memory/profile.py):
+    # suggests practice facts counted from their cases and standing instructions kept in
+    # two or more cases. Suggestions only. At most once per MEMORY_PROFILE_INTERVAL_HOURS
+    # per advocate, and whenever they press "Look across my cases".
+    memory_profile_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("MEMORY_PROFILE_ENABLED"),
+    )
+    memory_profile_interval_hours: float = Field(
+        default=24.0,
+        validation_alias=AliasChoices("MEMORY_PROFILE_INTERVAL_HOURS"),
+    )
+    memory_profile_model: str = Field(
+        default="gemini-3.7-flash",
+        validation_alias=AliasChoices("MEMORY_PROFILE_MODEL"),
+    )
+    memory_profile_thinking_level: str = Field(
+        default="medium",
+        validation_alias=AliasChoices("MEMORY_PROFILE_THINKING_LEVEL"),
+    )
     # What memory may send with one question (app/services/memory/assembly.py), in
     # estimated tokens. These are the caps each block always gets; a block that has
     # more to say may stretch into room the others left free, up to MEMORY_BLOCK_STRETCH

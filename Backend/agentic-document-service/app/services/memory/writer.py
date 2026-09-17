@@ -2187,6 +2187,42 @@ def _suggest_pattern(
     )
 
 
+# ── Learning about the advocate across cases ─────────────────────────────────
+
+# How often a busy advocate's turns even check whether the daily look is due, so a
+# long session does not read the same timestamp on every message.
+PROFILE_CHECK_EVERY_S = 900
+_profile_checked_at: dict[str, datetime] = {}
+
+
+def _learn_about_advocate(turn: TurnInput, report: WriteReport) -> None:
+    """At most once a day, look across the advocate's cases for suggestions. Never raises."""
+    scope = turn.scope
+    if scope is None or report.skipped_reason in _NO_REVIEW or str(report.skipped_reason or "").startswith("mode_"):
+        return
+    uid = str(scope.user_id)
+    now = datetime.now(timezone.utc)
+    last_check = _profile_checked_at.get(uid)
+    if last_check and (now - last_check).total_seconds() < PROFILE_CHECK_EVERY_S:
+        return
+    _profile_checked_at[uid] = now
+    try:
+        from app.services.memory import profile
+
+        outcome = profile.learn(uid)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] learning across cases skipped user_id=%s: %s", uid, exc)
+        return
+    if outcome.practice_suggested or outcome.rules_suggested:
+        report.proposals += len(outcome.practice_suggested) + len(outcome.rules_suggested)
+        report.details["profile"] = {
+            "practice": list(outcome.practice_suggested),
+            "rules": list(outcome.rules_suggested),
+        }
+        if report.skipped_reason not in _NO_REVIEW:
+            report.skipped_reason = None
+
+
 def _write_log(turn: TurnInput, report: WriteReport) -> str | None:
     """One assembly-log row per turn: what was read, and what was written."""
     entry = dict(turn.log_entry or {})
@@ -2259,6 +2295,7 @@ def run_post_turn(turn: TurnInput, *, today: date | None = None) -> WriteReport:
         logger.warning(
             "[Memory] conversation review failed case_key=%s: %s", getattr(turn.scope, "case_key", None), exc
         )
+    _learn_about_advocate(turn, report)
     _count_advocate_use(turn)
     report.assembly_log_id = _write_log(turn, report)
     logger.info(

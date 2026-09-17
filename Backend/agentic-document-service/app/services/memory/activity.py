@@ -177,6 +177,12 @@ def _items(details: dict[str, Any], needed: int) -> list[dict[str, Any]]:
                 "suggested": int(review.get("suggested") or 0),
             }
         )
+    profile = details.get("profile")
+    if isinstance(profile, dict):
+        for text in profile.get("practice") or []:
+            items.append({"kind": "suggestion", "scope": "about_you", "text": text})
+        for text in profile.get("rules") or []:
+            items.append({"kind": "suggestion", "scope": "user", "text": text, "across_cases": True})
     seeded = details.get("seeded")
     if isinstance(seeded, dict) and (seeded.get("added") or seeded.get("updated")):
         items.append({"kind": "filled_in", "added": int(seeded.get("added") or 0), "updated": int(seeded.get("updated") or 0)})

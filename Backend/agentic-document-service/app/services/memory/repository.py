@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS advocate_memory_sets (
     version     INTEGER     NOT NULL DEFAULT 1,
     forgotten   JSONB       NOT NULL DEFAULT '[]'::jsonb,
     last_consolidation JSONB,
+    learned_at  TIMESTAMPTZ,
     updated_by  TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -323,6 +324,9 @@ _advocate_use_columns = True
 # Whether advocate_memory_sets has `last_consolidation` (migration 177). Without it a
 # merge cannot be undone, so consolidation stays switched off rather than run blind.
 _advocate_consolidation_column = True
+# Whether advocate_memory_sets has `learned_at` (migration 180): when JuriNex last looked
+# across the advocate's cases. Without it, that look runs on request only.
+_advocate_learned_column = True
 
 _PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected"})
 
@@ -380,7 +384,13 @@ def _ensure_advocate_use_columns(conn: Any) -> None:
     Each is settled on its own, so a database that has one and not the other keeps the
     half it has.
     """
-    global _advocate_use_columns, _advocate_consolidation_column
+    global _advocate_use_columns, _advocate_consolidation_column, _advocate_learned_column
+    _advocate_learned_column = _add_column(
+        conn,
+        "advocate_memory_sets",
+        "learned_at",
+        "ALTER TABLE advocate_memory_sets ADD COLUMN IF NOT EXISTS learned_at TIMESTAMPTZ",
+    )
     _advocate_use_columns = _add_column(
         conn,
         "advocate_memory_lines",
@@ -2303,6 +2313,63 @@ def list_assembly_log(case_key: str, limit: int = 20, *, conn: Any = None) -> li
             (key, max(1, min(int(limit or 20), 200))),
         )
         return [_out(row) or {} for row in cur.fetchall()]
+
+
+# ── Learning about the advocate across cases ─────────────────────────────────
+# Read by app/services/memory/profile.py: what an advocate's own cases say about their
+# practice, and the rules they have kept in each case.
+
+def list_own_cases(user_id: str, limit: int = 200, *, conn: Any = None) -> list[dict[str, Any]]:
+    """The advocate's own cases, newest first: what each is and where. Never another's."""
+    uid = str(user_id or "").strip()
+    if not uid.isdigit():
+        return []
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "SELECT id::text AS case_key, case_title, case_type, court_level, jurisdiction, "
+            "bench_division, primary_category FROM cases WHERE user_id = %s ORDER BY id DESC LIMIT %s",
+            (int(uid), max(1, min(int(limit or 200), 500))),
+        )
+        return [_out(row) or {} for row in cur.fetchall()]
+
+
+def list_case_rules(case_keys: Sequence[str], *, conn: Any = None) -> list[dict[str, Any]]:
+    """The switched-on instructions saved in these cases: {case_key, text}."""
+    keys = [str(key).strip() for key in case_keys if str(key or "").strip()]
+    if not keys:
+        return []
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            "SELECT scope_id AS case_key, text FROM memory_instructions "
+            "WHERE scope_type = 'case' AND enabled AND scope_id = ANY(%s::text[]) ORDER BY scope_id, ord",
+            (keys,),
+        )
+        return [_out(row) or {} for row in cur.fetchall()]
+
+
+def get_learned_at(user_id: str, *, conn: Any = None) -> Any:
+    """When JuriNex last looked across this advocate's cases, or None."""
+    uid = _require_user(user_id)
+    if not _advocate_learned_column:
+        return None
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute("SELECT learned_at FROM advocate_memory_sets WHERE user_id = %s", (uid,))
+        row = cur.fetchone()
+    return (row or {}).get("learned_at") if row else None
+
+
+def mark_learned(user_id: str, *, conn: Any = None) -> None:
+    uid = _require_user(user_id)
+    if not _advocate_learned_column:
+        return
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            _ensure_advocate_set(cur, uid, "memory-profile")
+            cur.execute("UPDATE advocate_memory_sets SET learned_at = NOW() WHERE user_id = %s", (uid,))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 # ── Conversation reviews ─────────────────────────────────────────────────────

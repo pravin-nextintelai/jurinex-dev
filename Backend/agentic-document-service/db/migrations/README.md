@@ -58,6 +58,11 @@ These migrations align the new Python `agentic-document-service` with the shared
     Open items current, records decisions reached over several messages, and suggests
     ways of working the advocate keeps asking for. Purged with the case. Created on
     first use too.
+15. records when JuriNex last looked across an advocate's cases (migration `180`):
+    `learned_at` on `advocate_memory_sets`. Once a day, and on request,
+    `app/services/memory/profile.py` suggests practice facts counted from the advocate's
+    own cases and standing instructions kept in two or more cases. Suggestions only.
+    Added on first use too.
 
 ## Suggested Run Order
 

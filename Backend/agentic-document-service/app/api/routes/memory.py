@@ -1308,9 +1308,64 @@ def resolve_user_suggestion(
     if decision == "reject":
         repository.set_proposal_status(key, proposal_id, "rejected")
         return {"id": proposal_id, "status": "rejected"}
-    added = _accept_suggestion(proposal, case_scope=None, user=user, approved_text=body.text if body else None)
+    source = proposal.get("source_ref") if isinstance(proposal.get("source_ref"), dict) else {}
+    if (source or {}).get("target") == "advocate":
+        added = _accept_advocate_suggestion(proposal, user=user, approved_text=body.text if body else None)
+    else:
+        added = _accept_suggestion(proposal, case_scope=None, user=user, approved_text=body.text if body else None)
     repository.set_proposal_status(key, proposal_id, "accepted")
     return {"id": proposal_id, "status": "accepted", **added}
+
+
+def _accept_advocate_suggestion(
+    proposal: dict[str, Any],
+    *,
+    user: dict[str, Any],
+    approved_text: str | None = None,
+) -> dict[str, Any]:
+    """Add an accepted "about you" suggestion to what JuriNex knows about the advocate.
+
+    These come from counting their cases (app/services/memory/profile.py), so they are
+    facts about them, not rules: they go to their facts, under the rules a typed fact meets.
+    """
+    source = proposal.get("source_ref") if isinstance(proposal.get("source_ref"), dict) else {}
+    category = str((source or {}).get("category") or "practice")
+    text = _check_advocate_text(
+        " ".join(str(approved_text or "").split()) or str(proposal.get("text") or ""), category, user
+    )
+    actor = _actor(user)
+    current = repository.get_advocate_memory(actor)
+    room = advocate_set_room(current.get("lines") or [], text)
+    if room is not None:
+        raise _unprocessable([room])
+    try:
+        result = repository.add_advocate_line(
+            actor,
+            category,
+            text,
+            current.get("version"),
+            source_ref={"kind": "learned", "from": "cases", "proposal_id": str(proposal.get("id") or "")},
+            actor=actor,
+        )
+    except VersionConflict as exc:
+        raise _advocate_conflict(exc) from exc
+    return {"scope": "advocate", "version": result.get("version"), "line": result.get("line")}
+
+
+@router.post("/advocate/learn")
+def learn_about_advocate(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Look across the advocate's own cases now and suggest what they show.
+
+    Practice facts counted from their cases, and ways of working kept in two or more
+    cases. Suggestions only; nothing is saved until the advocate accepts one.
+    """
+    from app.services.memory import profile
+
+    outcome = profile.learn(_actor(user), force=True)
+    return {
+        **outcome.as_dict(),
+        "proposals": repository.list_proposals(user_proposal_key(_actor(user)), "pending"),
+    }
 
 
 # ── Case lifecycle: export, import, seed ─────────────────────────────────────

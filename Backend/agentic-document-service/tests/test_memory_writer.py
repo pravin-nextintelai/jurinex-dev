@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from app.services.memory import answer_facts as answer_facts_mod
 from app.services.memory import consolidate as consolidate_mod
+from app.services.memory import profile as profile_mod
 from app.services.memory import synthesis as synthesis_mod
 from app.services.memory import writer as writer_mod
 from app.services.memory.consolidate import ConsolidationResult
@@ -166,6 +167,7 @@ def harness(
     review_state=None,
     review=None,
     review_error=None,
+    profile_outcome=None,
 ):
     mocks = {}
     with ExitStack() as stack:
@@ -248,6 +250,11 @@ def harness(
                 "plan",
                 return_value=consolidation if consolidation is not None else ConsolidationResult(error="too_few"),
             )
+        )
+        # Learning across cases: nothing to suggest unless a test sets it up.
+        writer_mod._profile_checked_at.clear()
+        mocks["profile_learn"] = stack.enter_context(
+            patch.object(profile_mod, "learn", return_value=profile_outcome or profile_mod.LearnReport())
         )
         # Conversation reviews: nothing due unless a test sets it up.
         module("session_turns", return_value=list(review_turns or []))
@@ -1607,6 +1614,38 @@ class ReviewTests(unittest.TestCase):
         report, _ = run("hello", turn={"session_id": "s-1"}, review_turns=self.rows(), review=review)
         self.assertIsNone(report.skipped_reason)
         self.assertEqual(report.writes, 1)
+
+
+class LearnAcrossCasesTests(unittest.TestCase):
+    """After a turn, the daily look across the advocate's cases is offered a chance to run."""
+
+    def test_what_it_suggests_is_reported_on_the_turn(self) -> None:
+        outcome = profile_mod.LearnReport(
+            ran=True,
+            practice_suggested=["Mostly handles Writ Petition matters (2 of 3 cases)"],
+            rules_suggested=["Give detailed answers"],
+        )
+        report, mocks = run("tell me about the petitioner", profile_outcome=outcome)
+        mocks["profile_learn"].assert_called_once_with("42")
+        self.assertEqual(report.details["profile"]["practice"], ["Mostly handles Writ Petition matters (2 of 3 cases)"])
+        self.assertEqual(report.proposals, 2)
+        self.assertIsNone(report.skipped_reason)
+
+    def test_a_busy_session_checks_at_most_every_fifteen_minutes(self) -> None:
+        with harness() as mocks:
+            run_post_turn(turn("tell me about the petitioner"), today=TODAY)
+            run_post_turn(turn("and the respondents?"), today=TODAY)
+        self.assertEqual(mocks["profile_learn"].call_count, 1)
+
+    def test_it_never_runs_when_generating_memory_is_off(self) -> None:
+        _, mocks = run("tell me about the petitioner", settings=MemorySettings(write_enabled=False))
+        mocks["profile_learn"].assert_not_called()
+
+    def test_a_failure_never_reaches_the_chat(self) -> None:
+        with harness() as mocks:
+            mocks["profile_learn"].side_effect = RuntimeError("db down")
+            report = run_post_turn(turn("tell me about the petitioner"), today=TODAY)
+        self.assertNotEqual(report.skipped_reason, "writer_error")
 
 
 class ExtractorThinkingTests(unittest.TestCase):
