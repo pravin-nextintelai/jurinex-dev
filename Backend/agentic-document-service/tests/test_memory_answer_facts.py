@@ -113,7 +113,12 @@ class SearchAndPageTests(unittest.TestCase):
         self.assertIn("%balkrushna%", af._search_patterns("Hitesh Balkrushna Lahoti is the petitioner"))
 
     def test_the_page_is_the_chunks_own_when_it_has_one(self) -> None:
-        self.assertEqual(af.page_of("Gat No. 111/3", {"page_start": 7, "window": SALE_CHUNK}), 7)
+        unstamped = SALE_CHUNK.replace("[PAGE 22] ", "")
+        self.assertEqual(af.page_of("Gat No. 111/3", {"page_start": 7, "window": unstamped}), 7)
+
+    def test_a_page_stamp_before_the_fact_is_more_exact_than_the_chunks_first_page(self) -> None:
+        # A chunk that starts on page 21 and holds the fact after "[PAGE 22]" is on page 22.
+        self.assertEqual(af.page_of("Gat No. 111/3", {"page_start": 21, "window": SALE_CHUNK}), 22)
 
     def test_otherwise_the_last_page_marker_before_the_fact(self) -> None:
         window = "[PAGE 21] parties listed here. [PAGE 22] the Agreement of Sale dated 25/11/2004 for Gat No. 111/3"

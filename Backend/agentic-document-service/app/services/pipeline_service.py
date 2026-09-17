@@ -107,6 +107,29 @@ def _json_placeholder(column: str) -> str:
     return "%s"
 
 
+def _page_number(value: Any) -> int | None:
+    """A chunk's page from its metadata (app/services/chunk_pages.py), or None."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def assign_chunk_pages(chunk_rows: list[ChunkRecord]) -> None:
+    """Record each chunk's pages in its metadata, from the [PAGE n] stamps in document order.
+
+    A stamp survives only in the chunk where its page begins, so pages are carried from
+    one chunk to the next. Text without stamps leaves the pages unset.
+    """
+    from app.services.chunk_pages import page_spans
+
+    for row, (page_start, page_end) in zip(chunk_rows, page_spans([row.text for row in chunk_rows])):
+        if page_start is not None:
+            row.metadata["page_start"] = str(page_start)
+            row.metadata["page_end"] = str(page_end if page_end is not None else page_start)
+
+
 def _get_user_role_from_db(uid: int) -> str | None:
     if not is_db_available():
         return None
@@ -622,6 +645,9 @@ class LegalCasePipelineService:
                     )
                 )
 
+        if not is_audio:
+            assign_chunk_pages(chunk_rows)
+
         logger.info("[Pipeline] Step 3/4: done — %d vectors stored in bundle", len(chunk_rows))
 
         # Join the background side-writes; the extracted-text URI goes into the
@@ -809,8 +835,8 @@ class LegalCasePipelineService:
                             start + offset,
                             chunk.text,
                             max(1, int(len(chunk.text.split()) * 1.3)),
-                            None,
-                            None,
+                            _page_number(chunk.metadata.get("page_start")),
+                            _page_number(chunk.metadata.get("page_end")),
                             chunk.metadata.get("heading") or None,
                         ])
                     cur.execute(

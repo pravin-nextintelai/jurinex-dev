@@ -210,6 +210,8 @@ The extractor sees: your message, the previous answer, the case's memory with li
 
 Nothing is translated, so an English line from a Marathi message is traceable only through its names, numbers and borrowed words. In a Marathi document, English words for what a document is ("Registration", "Village") cannot be looked up; there a fact rests on its numbers and names.
 
+**Pages.** A fact read from a cited answer carries the page it is on in the document. Extraction stamps the text with `[PAGE n]` before each page, and a stamp survives only in the chunk where its page begins, so each chunk's pages are worked out in document order when it is saved (`app/services/chunk_pages.py`) and stored in `file_chunks.page_start` / `page_end`. A fact's page is the last stamp before it in the chunk it is in, else that chunk's first page, else the last page reached before it. Documents extracted before the stamping existed (uploads before late August) have no stamps and no pages; they get pages only when processed again. Checked on the nine stamped documents stored without pages: all 1,252 chunks with a unique passage got their true page.
+
 **Restated facts.** Answers repeat the same facts in new words ("Sale Deed No. 4401/2006 was executed on 25/08/2006", "the sale deed dated 25.08.2006 …"). A fact from an answer is kept only if it adds a number, a whole date or a name that memory does not already hold; years alone do not count. Measured on a real case read from the start: 101 lines without this check, 33 with it.
 
 ### 2.3 Earlier chats — reading them again

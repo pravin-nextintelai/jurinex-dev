@@ -32,7 +32,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from app.core.config import get_settings
 from app.services.db import get_db_connection, is_db_available
@@ -472,6 +472,7 @@ def _candidate_chunks(file_id: str, patterns: Sequence[str], name_patterns: Sequ
 
     A fact often straddles a chunk boundary (a date at the end of one, the deed it dates
     at the start of the next), so each candidate is read with the chunk before and after.
+    `parts` keeps the three apart with their pages, so the page is the one the fact is on.
     """
     if not patterns and not name_patterns:
         return []
@@ -488,44 +489,116 @@ def _candidate_chunks(file_id: str, patterns: Sequence[str], name_patterns: Sequ
             return []
         wanted = sorted({hit["chunk_index"] + step for hit in hits for step in (-1, 0, 1) if hit.get("chunk_index") is not None})
         cur.execute(
-            "SELECT chunk_index, content FROM file_chunks WHERE file_id::text = %s AND chunk_index = ANY(%s)",
+            "SELECT chunk_index, content, page_start, page_end FROM file_chunks "
+            "WHERE file_id::text = %s AND chunk_index = ANY(%s)",
             (file_id, wanted),
         )
-        text_at = {row["chunk_index"]: str(row["content"] or "") for row in cur.fetchall()}
+        stored = {row["chunk_index"]: dict(row) for row in cur.fetchall()}
     for hit in hits:
         index = hit.get("chunk_index")
         if index is None:
             hit["window"] = str(hit.get("content") or "")
             hit["before"] = ""
             continue
-        hit["before"] = text_at.get(index - 1, "")
-        hit["window"] = "\n".join(part for part in (hit["before"], text_at.get(index, ""), text_at.get(index + 1, "")) if part)
+        parts = [
+            {
+                "index": at,
+                "text": str(stored[at].get("content") or ""),
+                "page_start": stored[at].get("page_start"),
+                "page_end": stored[at].get("page_end"),
+                "own": at == index,
+            }
+            for at in (index - 1, index, index + 1)
+            if at in stored and str(stored[at].get("content") or "")
+        ]
+        hit["parts"] = parts
+        hit["before"] = str((stored.get(index - 1) or {}).get("content") or "")
+        hit["window"] = "\n".join(part["text"] for part in parts)
     return hits
 
 
-def page_of(fact_text: str, hit: dict[str, Any]) -> int | None:
-    """The page a fact is on: the chunk's own page, or the last "[PAGE n]" marker before it."""
-    page = hit.get("page_start")
-    if isinstance(page, int):
-        return page
-    window = str(hit.get("window") or hit.get("content") or "")
+def _anchor_position(fact_text: str, text: str) -> int:
+    """Where in (normalised) text the fact's most distinctive number or name is, or -1."""
     anchors = sorted({run for run in _DIGITS_RE.findall(_normalise(fact_text)) if len(run) >= 3}, key=len, reverse=True)
     anchors += sorted(_names(fact_text), key=len, reverse=True)
-    normalised = _normalise(window)
-    position = -1
     for anchor in anchors:
-        found = re.search(re.escape(anchor), normalised, re.IGNORECASE)
+        found = re.search(re.escape(anchor), text, re.IGNORECASE)
         if found:
-            position = found.start()
-            break
-        spelt = None if anchor.isdigit() else script.find_alike(anchor, normalised)
+            return found.start()
+        spelt = None if anchor.isdigit() else script.find_alike(anchor, text)
         if spelt is not None:
-            position = spelt
-            break
-    markers = list(_PAGE_MARKER_RE.finditer(normalised))
-    before = [marker for marker in markers if position < 0 or marker.start() <= position]
-    chosen = before[-1] if before else (markers[0] if markers and position < 0 else None)
-    return int(chosen.group(1)) if chosen else None
+            return spelt
+    return -1
+
+
+def _last_marker(text: str) -> int | None:
+    markers = list(_PAGE_MARKER_RE.finditer(text))
+    return int(markers[-1].group(1)) if markers else None
+
+
+def page_of(fact_text: str, hit: dict[str, Any], *, earlier: Callable[[], int | None] | None = None) -> int | None:
+    """The page a fact is on, or None.
+
+    Found from the part of the window the fact is in: the last "[PAGE n]" before it in
+    that part, else that part's first page, else the last marker in the parts before it,
+    else (`earlier`) the last page stamped anywhere before the window. A page stamp is only
+    kept in the chunk where its page begins, so most chunks carry none.
+    """
+    parts = hit.get("parts") or [
+        {"text": str(hit.get("window") or hit.get("content") or ""), "page_start": hit.get("page_start"), "own": True}
+    ]
+    texts = [_normalise(str(part.get("text") or "")) for part in parts]
+    offsets, total = [], 0
+    for text in texts:
+        offsets.append(total)
+        total += len(text) + 1
+    position = _anchor_position(fact_text, "\n".join(texts))
+    if position >= 0:
+        at = max(i for i, offset in enumerate(offsets) if offset <= position)
+        local = position - offsets[at]
+    else:
+        at = next((i for i, part in enumerate(parts) if part.get("own")), 0)
+        local = 0
+    markers = [marker for marker in _PAGE_MARKER_RE.finditer(texts[at]) if marker.start() <= local]
+    if markers:
+        return int(markers[-1].group(1))
+    start = parts[at].get("page_start")
+    if isinstance(start, int):
+        return start
+    for text in reversed(texts[:at]):
+        page = _last_marker(text)
+        if page is not None:
+            return page
+    if position < 0 and at == 0 and len(parts) == 1:
+        # Nothing located and nothing before: the first page the text names, if any.
+        found = _PAGE_MARKER_RE.search(texts[0])
+        if found:
+            return int(found.group(1))
+    return earlier() if earlier is not None else None
+
+
+_PAGE_BEFORE_SQL = r"""
+SELECT content, page_end FROM file_chunks
+WHERE file_id::text = %s AND chunk_index < %s
+  AND (page_end IS NOT NULL OR content ~ '\[PAGE\s+\d+\]')
+ORDER BY chunk_index DESC
+LIMIT 1
+"""
+
+
+def _page_before(file_id: str, chunk_index: int) -> int | None:
+    """The page the document had reached before this chunk: its last stamp or stored page."""
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            cur.execute(_PAGE_BEFORE_SQL, (file_id, int(chunk_index)))
+            row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[Memory] page before chunk %s unknown file_id=%s: %s", chunk_index, file_id, exc)
+        return None
+    if not row:
+        return None
+    page = _last_marker(str(row.get("content") or ""))
+    return page if page is not None else row.get("page_end")
 
 
 def find_support(fact: AnswerFact, documents: Sequence[CitedDocument]) -> Support | None:
@@ -535,10 +608,17 @@ def find_support(fact: AnswerFact, documents: Sequence[CitedDocument]) -> Suppor
         return None
     for hit in _candidate_chunks(doc.file_id, _search_patterns(fact.text), _name_patterns(fact.text)):
         if supports(fact.text, str(hit.get("window") or "")):
-            return Support(
-                document=doc.name,
-                file_id=doc.file_id,
-                chunk_id=str(hit.get("id") or ""),
-                page=page_of(fact.text, hit),
+            parts = hit.get("parts") or []
+            first = min((part["index"] for part in parts), default=None)
+            page = page_of(
+                fact.text,
+                hit,
+                earlier=(lambda: _page_before(doc.file_id, first)) if first is not None else None,
             )
+            if any(part.get("own") and part.get("page_start") is None for part in parts):
+                # Stored before pages were kept: fill this document's pages for next time.
+                from app.services import chunk_pages
+
+                chunk_pages.schedule_file(doc.file_id)
+            return Support(document=doc.name, file_id=doc.file_id, chunk_id=str(hit.get("id") or ""), page=page)
     return None
