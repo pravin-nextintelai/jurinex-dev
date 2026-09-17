@@ -244,15 +244,19 @@ def ask_model(request: str, case_keys: Sequence[str]) -> list[SharedRule]:
 # ── Putting it together ──────────────────────────────────────────────────────
 
 def _already_offered(text: str, rows: Sequence[dict[str, Any]], *, target: str | None) -> bool:
-    """Suggested before under this key, in any state: pending, accepted or dismissed."""
-    from app.services.memory.validator import find_duplicate
+    """Suggested before under this key, in any state: pending, accepted or dismissed.
+
+    Checked in the same direction only: having dismissed "Use tables" does not stop
+    "Do not use tables" from being offered.
+    """
+    from app.services.memory.validator import find_same_rule
 
     same_kind = [
         row
         for row in rows
         if ((row.get("source_ref") or {}).get("target") if isinstance(row.get("source_ref"), dict) else None) == target
     ]
-    return find_duplicate(text, same_kind) is not None
+    return find_same_rule(text, same_kind) is not None
 
 
 def learn(user_id: str, *, force: bool = False, now: datetime | None = None) -> LearnReport:
@@ -264,7 +268,12 @@ def learn(user_id: str, *, force: bool = False, now: datetime | None = None) -> 
     from app.services.memory.instructions import user_proposal_key
     from app.services.memory.parties import party_names_for_user
     from app.services.memory.synthesis import is_manner
-    from app.services.memory.validator import find_duplicate, validate_advocate_line, validate_instruction_item
+    from app.services.memory.validator import (
+        find_duplicate,
+        find_same_rule,
+        validate_advocate_line,
+        validate_instruction_item,
+    )
 
     report = LearnReport()
     uid = str(user_id or "").strip()
@@ -337,7 +346,7 @@ def learn(user_id: str, *, force: bool = False, now: datetime | None = None) -> 
                     if validate_instruction_item(rule.text, scope_type="user", party_names=party_names):
                         report.refused.append(rule.text)
                         continue
-                    if find_duplicate(rule.text, [{"text": text} for text in universal]) is not None:
+                    if find_same_rule(rule.text, [{"text": text} for text in universal]) is not None:
                         continue
                     if _already_offered(rule.text, offered, target=None):
                         continue
@@ -378,11 +387,16 @@ def cases_backing(rule: SharedRule, rules: Sequence[dict[str, Any]]) -> set[str]
     """The cases whose own rules ask for the same way of writing. Checked without a model."""
     from app.services.memory.synthesis import _manner_terms
 
+    from app.services.memory.validator import same_polarity
+
     wanted = _manner_terms(rule.text)
     if not wanted:
         return set()
+    # "Use tables" in one case and "No tables" in another share a word, not a rule.
     return {
         str(item.get("case_key"))
         for item in rules
-        if str(item.get("case_key")) in rule.case_keys and wanted & _manner_terms(str(item.get("text") or ""))
+        if str(item.get("case_key")) in rule.case_keys
+        and wanted & _manner_terms(str(item.get("text") or ""))
+        and same_polarity(rule.text, str(item.get("text") or ""))
     }

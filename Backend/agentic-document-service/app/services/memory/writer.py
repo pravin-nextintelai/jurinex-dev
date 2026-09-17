@@ -89,8 +89,10 @@ from app.services.memory.validator import (
     advocate_set_room,
     case_over_cap,
     find_duplicate,
+    find_same_rule,
     instruction_set_room,
     redact_or_reject_pii,
+    repeats_rule,
     validate_advocate_line,
     validate_instruction_item,
     validate_line,
@@ -989,7 +991,7 @@ def _learn_from_answer(
 
 def _already_saved(text: str, items: Sequence[dict[str, Any]]) -> bool:
     """Whether an instruction with this meaning is already in the set."""
-    return find_duplicate(text, list(items)) is not None
+    return find_same_rule(text, list(items)) is not None
 
 
 def _is_auto(row: dict[str, Any]) -> bool:
@@ -1030,7 +1032,7 @@ def _seen_in_other_cases(scope: CaseScope, text: str) -> list[str]:
         return []
     keys: list[str] = []
     for row in rows:
-        if find_duplicate(text, [row]) is not None:
+        if find_same_rule(text, [row]) is not None:
             key = str(row.get("case_key") or "")
             if key and key not in keys:
                 keys.append(key)
@@ -1142,15 +1144,21 @@ class _Rulebook:
         return rows[:MAX_CONTEXT_RULES]
 
     def find_pending(self, text: str, scope_type: str, repeats: str | None) -> dict[str, Any] | None:
-        """The noticed rule a request repeats: by the id the extractor gave, else by its wording."""
+        """The noticed rule a request repeats: by the id the extractor gave, else by its wording.
+
+        The extractor's id is checked, not trusted. It once filed "give me the summary in
+        text and a table" as a repeat of "do not ask for tabular output", so the two were
+        counted as one rule and suggested with the table request's wording under the
+        no-tables rule. A claimed repeat must point the same way and say much the same.
+        """
         rows = self.pending[scope_type]
         wanted = str(repeats or "").strip()
         if wanted:
             for row in rows:
-                if str(row.get("id") or "") == wanted:
+                if str(row.get("id") or "") == wanted and repeats_rule(text, str(row.get("text") or "")):
                     return row
         for row in rows:
-            if find_duplicate(text, [row]) is not None:
+            if find_same_rule(text, [row]) is not None:
                 return row
         return None
 
@@ -1373,7 +1381,7 @@ def _store_request(
 
 def _suggest_universal(book: _Rulebook, text: str, source_extra: dict[str, Any], report: WriteReport) -> bool:
     """Suggest for every case a rule asked for in more than one case, unless one is already shown."""
-    match = next((row for row in book.pending["user"] if find_duplicate(text, [row]) is not None), None)
+    match = next((row for row in book.pending["user"] if find_same_rule(text, [row]) is not None), None)
     try:
         if match is not None:
             if not _is_hidden(match):
@@ -1455,7 +1463,7 @@ def _handle_proposals(
         if not explicit and not describes_manner(text):
             report.reject("proposal_not_a_way_of_working")
             continue
-        if not explicit and find_duplicate(text, book.dismissed[scope_type]) is not None:
+        if not explicit and find_same_rule(text, book.dismissed[scope_type]) is not None:
             report.reject("proposal_dismissed_before")
             continue
 
@@ -1473,7 +1481,7 @@ def _handle_proposals(
             settings.instructions_enabled
             and threshold > 0
             and request.count >= threshold
-            and find_duplicate(text, book.undone[scope_type]) is None
+            and find_same_rule(text, book.undone[scope_type]) is None
         )
         will_show = stated_rule or request.count >= suggest_after
         # Tidy the wording once, only when the advocate is about to see it or it is
@@ -1498,8 +1506,8 @@ def _handle_proposals(
             scope_type == "case"
             and not book.problems(text, "user")
             and not _already_saved(text, book.items["user"])
-            and find_duplicate(text, book.dismissed["user"]) is None
-            and find_duplicate(text, book.undone["user"]) is None
+            and find_same_rule(text, book.dismissed["user"]) is None
+            and find_same_rule(text, book.undone["user"]) is None
         ):
             elsewhere = _seen_in_other_cases(scope, text)
             if elsewhere:
@@ -2158,7 +2166,7 @@ def _suggest_pattern(
         return
     if book.problems(text, "case") or _already_saved(text, book.items["case"]) or _already_saved(text, book.items["user"]):
         return
-    if find_duplicate(text, book.dismissed["case"]) is not None or book.find_pending(text, "case", None) is not None:
+    if find_same_rule(text, book.dismissed["case"]) is not None or book.find_pending(text, "case", None) is not None:
         return
     polished = polished_rule(book, text, "case")
     ref = {

@@ -29,6 +29,7 @@ from app.services.memory.scope import CaseScope
 from app.services.memory.seed import dedupe_threshold
 from app.services.memory.validator import (
     find_duplicate,
+    find_same_rule,
     normalize_for_compare,
     split_instruction_text,
     strip_tag_prefix,
@@ -308,7 +309,9 @@ def import_case(
             current = list(repository.get_instruction_set("case", key).get("items") or [])
             fresh: list[dict[str, Any]] = []
             for item in parsed.instructions:
-                if find_duplicate(item["text"], current + fresh) is not None:
+                # A rule's opposite is not a duplicate: "Do not use tables" still imports
+                # into a case that says "Use tables".
+                if find_same_rule(item["text"], current + fresh) is not None:
                     duplicates += 1
                     continue
                 fresh.append(item)

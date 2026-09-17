@@ -356,8 +356,13 @@ def shows_pattern(preference: str, messages: Sequence[str]) -> bool:
     "Give detailed answers" is not backed by "give me a simple answer" merely because
     both say "answer".
     """
+    from app.services.memory.validator import same_polarity
+
     wanted = _manner_terms(preference)
     if not wanted:
         return False
-    backing = [message for message in messages if wanted & _manner_terms(message)]
+    # "give it in a table" and "no tables please" share a word, not a preference.
+    backing = [
+        message for message in messages if wanted & _manner_terms(message) and same_polarity(preference, message)
+    ]
     return len(backing) >= 2

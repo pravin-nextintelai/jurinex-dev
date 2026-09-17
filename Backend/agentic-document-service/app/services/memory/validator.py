@@ -565,6 +565,63 @@ def find_duplicate(
     return None
 
 
+# ── Rules: the same meaning, in the same direction ───────────────────────────
+# `find_duplicate` compares spelling, so "Give answers in Marathi" and "Do not give
+# answers in Marathi" score 0.87 and count as one. For a fact that is acceptable — the
+# later statement replaces the earlier and the change is kept in the line. For a rule it
+# is not: the opposite rule was dropped as "already saved", a dismissed rule blocked its
+# opposite, and two opposite requests were counted as one rule and suggested together.
+
+# "no" as in "No. 45" or "no 12" is an abbreviation, not a negation.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|don'?t|doesn'?t|do\s+not|does\s+not|without|avoid|stop|skip|"
+    r"instead\s+of|rather\s+than|neither|nor|no(?!\s*\.)(?!\s*\d))\b",
+    re.IGNORECASE,
+)
+
+
+def is_negative(text: str | None) -> bool:
+    """Whether a rule asks for something NOT to be done."""
+    return bool(_NEGATION_RE.search(str(text or "")))
+
+
+def same_polarity(first: str | None, second: str | None) -> bool:
+    """Whether two rules point the same way: both ask for something, or both forbid it."""
+    return is_negative(first) == is_negative(second)
+
+
+def find_same_rule(
+    text: str,
+    rules: Sequence[dict[str, Any]],
+    threshold: float = DEDUPE_NEAR,
+) -> dict[str, Any] | None:
+    """`find_duplicate` for rules: never matches one that asks for the opposite."""
+    return find_duplicate(text, [rule for rule in rules if same_polarity(text, str(rule.get("text") or ""))], threshold)
+
+
+def _rule_words(text: str) -> set[str]:
+    words = {word for word in normalize_for_compare(text).split() if len(word) >= 4}
+    return {word[:-1] if word.endswith("s") and len(word) > 4 else word for word in words}
+
+
+def repeats_rule(text: str | None, rule_text: str | None) -> bool:
+    """Whether a new request plausibly asks for the same rule as an earlier one.
+
+    Used to check, not trust, a model's claim that a request repeats a noticed rule. The
+    two must point the same way, and share either close wording or at least half of the
+    shorter one's words.
+    """
+    new, old = str(text or ""), str(rule_text or "")
+    if not new.strip() or not old.strip() or not same_polarity(new, old):
+        return False
+    if find_duplicate(new, [{"text": old}], 0.6) is not None:
+        return True
+    first, second = _rule_words(new), _rule_words(old)
+    if not first or not second:
+        return False
+    return len(first & second) / min(len(first), len(second)) >= 0.5
+
+
 def merge_with_history(new_text: str, old_text: str, *, today: date | None = None) -> str:
     """Keep the superseded fact in-line rather than overwriting it.
 
