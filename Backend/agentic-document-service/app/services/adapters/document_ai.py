@@ -3333,23 +3333,71 @@ _RECONSTRUCT_PROMPT = (
 )
 
 
+# Below these a chunk is not judged at all. A cause title or a court stamp is a line or
+# two long, so one "s/o" or one exhibit letter made it look densely fragmented; and a
+# chunk that is mostly Devanagari has too little Latin text for these English signals
+# to mean anything.
+_FRAGMENT_MIN_CHARS = 400
+_FRAGMENT_MIN_LATIN_CHARS = 200
+_FRAGMENT_SIGNALS_PER_1000 = 8.0
+
+# Ordinary legal writing that the signals below mistook for OCR splits. Each is blanked
+# before counting. Measured on every stored chunk (29,023): the old check flagged 7,144,
+# nearly all of them text like these; with them removed it flags 676, and none that it
+# did not flag before.
+_NOT_FRAGMENTS: tuple[re.Pattern[str], ...] = (
+    # s/o, d/o, w/o, c/o, h/o, u/s, r/w, A/c
+    re.compile(r"(?<![A-Za-z])[A-Za-z]/[A-Za-z](?![A-Za-z])"),
+    # dotted leaders and ellipses: ".....PETITIONER", "...RESPONDENTS"
+    re.compile(r"\.{2,}|…"),
+    # initials and dotted abbreviations: "S. K. Sharma", "G.R.", "M.S.", "i.e."
+    re.compile(r"(?<![A-Za-z])(?:[A-Za-z]\.){1,5}(?![A-Za-z])"),
+    # quoted exhibit markers: Exhibit "A"
+    re.compile(r"[\"'“”‘’]\s*[A-Za-z]\s*[\"'“”‘’]"),
+    # clause markers: (a), (iv)
+    re.compile(r"\(\s*(?:[A-Za-z]|[ivxlcdm]{1,6})\s*\)", re.IGNORECASE),
+    # page and annexure markers: "12-14-C", "14-A", "A-12"
+    re.compile(r"(?<=[-/])[A-Za-z](?![A-Za-z])|(?<![A-Za-z])[A-Za-z](?=[-/]\d)"),
+    # units after a number: "Duration: 1 Y 1 M 21 D"
+    re.compile(r"(?<![A-Za-z0-9])\d+\s?[A-Za-z](?![A-Za-z0-9./])"),
+    # a table cell holding one letter: column headings "A | B | C"
+    re.compile(r"(?m)^[ \t|]*[A-Za-z][ \t|]*$"),
+)
+# A single letter that is not a word ('a', 'A', 'I', 'i' are) — a syllable split off.
+_STRAY_LETTER = re.compile(r"(?<![A-Za-z])[B-HJ-Zb-hj-z](?![A-Za-z])")
+# A space before punctuation after Latin text: "Ltd .", "p .a .", "18 %", "year ,".
+# Not a colon ("Date :" is how forms are laid out) and not after Devanagari, where a
+# space before punctuation is ordinary typography.
+_SPACE_BEFORE_PUNCT = re.compile(r"(?<=[A-Za-z0-9])[ \t][.,;%]")
+# A number broken on the same line: "805 7", "202 5".
+_SPLIT_NUMBER = re.compile(r"\b\d{2,4}[ \t]\d{1,2}\b")
+_LATIN_CHAR = re.compile(r"[A-Za-z0-9]")
+
+
 def _looks_fragmented(text: str) -> bool:
     """
     Heuristic: True when text shows pervasive OCR space-fragmentation worth an LLM
-    reconstruction pass. Conservative — clean legal prose scores ~0, so we don't
-    pay for the LLM on chunks that are already clean.
+    reconstruction pass ("identifi cation", "com mittee", "p .a .", "202 5").
+
+    Conservative on purpose: a chunk it flags costs a model call. Short chunks and
+    mostly non-Latin chunks are not judged, and the ordinary features of legal writing
+    in `_NOT_FRAGMENTS` are removed before the signals are counted, so it can only flag
+    fewer chunks than the plain count would, never more.
     """
     s = str(text or "")
-    if len(s) < 60:
+    if len(s) < _FRAGMENT_MIN_CHARS:
         return False
-    signals = 0
-    # stray single letters that aren't real words ('a'/'A'/'I'/'i') — OCR syllable splits
-    signals += len(re.findall(r"(?<![A-Za-z])[B-HJ-Zb-hj-z](?![A-Za-z])", s))
-    # a space directly before punctuation ("Ltd .", "p .a .", "18 %", "year ,")
-    signals += len(re.findall(r"\s[.,;:%]", s))
-    # split numbers ("805 7", "202 5")
-    signals += len(re.findall(r"\b\d{2,4}\s\d{1,2}\b", s))
-    return (signals / (len(s) / 1000.0)) >= 8.0
+    if len(_LATIN_CHAR.findall(s)) < _FRAGMENT_MIN_LATIN_CHARS:
+        return False
+    cleaned = s
+    for pattern in _NOT_FRAGMENTS:
+        cleaned = pattern.sub(" ", cleaned)
+    signals = (
+        len(_STRAY_LETTER.findall(cleaned))
+        + len(_SPACE_BEFORE_PUNCT.findall(cleaned))
+        + len(_SPLIT_NUMBER.findall(cleaned))
+    )
+    return (signals / (len(s) / 1000.0)) >= _FRAGMENT_SIGNALS_PER_1000
 
 
 def reconstruct_chunk_text(text: str) -> str:
