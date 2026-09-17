@@ -2294,6 +2294,38 @@ def list_assembly_log(case_key: str, limit: int = 20, *, conn: Any = None) -> li
         return [_out(row) or {} for row in cur.fetchall()]
 
 
+def list_turn_activity(case_key: str, user_id: str, limit: int = 30, *, conn: Any = None) -> list[dict[str, Any]]:
+    """One advocate's turns in one case, newest first, with the message each one was about.
+
+    Only this advocate's own turns: in a firm several people can open the same case,
+    and one advocate's questions are not another's to read. A preset turn gives its
+    label and never its text, because the text of a saved prompt can be private.
+    """
+    key = _require_case_key(case_key)
+    uid = str(user_id or "").strip()
+    if not uid:
+        return []
+    details = "l.details" if _details_column else "NULL::jsonb AS details"
+    with _conn(conn) as connection, connection.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT l.id::text AS id, l.created_at, l.chat_id::text AS chat_id, l.mode,
+                   l.writes, l.rejected, l.proposals, l.skipped_reason, l.sections_loaded,
+                   {details},
+                   CASE WHEN fc.secret_id IS NULL THEN left(fc.question, 400) END AS question,
+                   fc.prompt_label,
+                   (fc.secret_id IS NOT NULL) AS preset
+              FROM memory_assembly_log l
+              LEFT JOIN folder_chats fc ON fc.id = l.chat_id
+             WHERE l.case_key = %s AND l.user_id = %s
+             ORDER BY l.created_at DESC
+             LIMIT %s
+            """,
+            (key, uid, max(1, min(int(limit or 30), 100))),
+        )
+        return [_out(row) or {} for row in cur.fetchall()]
+
+
 def get_turn_log(case_key: str, chat_id: str, *, conn: Any = None) -> dict[str, Any] | None:
     """The log row for one chat turn, which exists once the post-turn writer has finished."""
     key = _require_case_key(case_key)

@@ -1108,6 +1108,25 @@ def get_assembly_log(
     return {"case_key": scope.case_key, "entries": repository.list_assembly_log(scope.case_key, limit)}
 
 
+@router.get("/cases/{folder_name}/activity")
+def get_memory_activity(
+    folder_name: str,
+    limit: int = Query(default=30, ge=1, le=100),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """What memory did with each of the advocate's recent turns in this case, and why.
+
+    The answer to "I chatted all day and memory is empty": each turn says whether it
+    saved, suggested or counted something, or why there was nothing to keep.
+    """
+    from app.services.memory import activity
+
+    scope = _scope_or_404(folder_name, user)
+    rows = repository.list_turn_activity(scope.case_key, _actor(user), limit)
+    entries = [activity.describe(row) for row in rows]
+    return {"case_key": scope.case_key, "summary": activity.summarise(entries), "entries": entries}
+
+
 @router.get("/cases/{folder_name}/turns/{chat_id}")
 def get_turn(
     folder_name: str,
