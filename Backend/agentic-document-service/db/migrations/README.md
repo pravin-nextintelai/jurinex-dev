@@ -47,6 +47,11 @@ These migrations align the new Python `agentic-document-service` with the shared
     of stopping at "full"; the merge adds nothing that is not already stored, every
     merged line faces the rules a typed one faces, and this column is what makes it
     undoable. Added on first use too.
+13. remembers which chunks have been through OCR repair (migration `178`): `healed_at`
+    on `file_chunks`. Retrieval queues fragmented-looking chunks for background repair
+    (`app/services/chunk_autoheal.py`); a chunk with `healed_at` set is never queued
+    again, so a false alarm costs one model call in total instead of one per question.
+    A failed repair leaves it null to be retried. Added on first use too.
 
 ## Suggested Run Order
 

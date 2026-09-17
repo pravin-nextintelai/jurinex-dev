@@ -11,17 +11,25 @@ threads. The question that found a fragmented chunk is answered from the text as
 stands; the cleaned text is written back, so the next question that retrieves that
 chunk reads it clean.
 
-Three properties this holds:
+Four properties this holds:
 
 * **It never blocks and never raises into retrieval.** Scheduling is a queue put.
 * **It never mutates the caller's rows.** The repair works on copies of the text.
 * **It never overwrites newer text.** A chunk is saved only if its content is still
   what was read, so a concurrent repair or a manual re-clean is not clobbered.
+* **Each chunk is repaired once.** `file_chunks.healed_at` (migration 178) is set when
+  a chunk has been through repair, whether the text changed or not, and a marked chunk
+  is never queued again. The fragmentation check is a heuristic, so some chunks it
+  flags are ordinary legal text the repair cannot change; without the mark those were
+  re-sent to the model on every question. A repair that *failed* is left unmarked, so
+  it is tried again later.
 """
 from __future__ import annotations
 
 import logging
 import threading
+import uuid
+from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
@@ -43,6 +51,15 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="chunk-au
 _in_flight: set[str] = set()
 _in_flight_lock = threading.Lock()
 
+# Whether file_chunks has `healed_at` (migration 178): None until first checked.
+_healed_column: bool | None = None
+_healed_column_lock = threading.Lock()
+# Without the column, chunks already repaired are remembered in this process instead,
+# so a false alarm still costs one call per restart rather than one per question.
+_FALLBACK_LIMIT = 20_000
+_healed_in_process: "OrderedDict[str, None]" = OrderedDict()
+_healed_in_process_lock = threading.Lock()
+
 
 @dataclass(frozen=True)
 class Target:
@@ -58,6 +75,7 @@ class HealReport:
     unchanged: int = 0
     failed: int = 0
     skipped_stale: int = 0
+    already_healed: int = 0
     chunk_ids: list[str] = field(default_factory=list)
 
 
@@ -109,15 +127,138 @@ def _release(chunk_ids: Iterable[str]) -> None:
         _in_flight.difference_update(chunk_ids)
 
 
-def _save(target: Target, fixed: str) -> bool:
-    """Write the repaired text, only if the chunk still holds what was read. True when saved."""
+# ── Healed once ──────────────────────────────────────────────────────────────
+
+def _uuid_ids(chunk_ids: Iterable[str]) -> list[str]:
+    """The ids that are real UUIDs, so they can be matched against the primary key."""
+    valid: list[str] = []
+    for value in chunk_ids:
+        try:
+            valid.append(str(uuid.UUID(str(value))))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return valid
+
+
+def healed_column_available() -> bool:
+    """Whether file_chunks has `healed_at`, adding it if it can. Settled once per process.
+
+    Always uses its own connection. A caller about to write chunks inside a transaction
+    should call this first: adding the column needs a table lock that the caller's own
+    row locks would otherwise make it wait for.
+    """
+    global _healed_column
+    if _healed_column is not None:
+        return _healed_column
+    with _healed_column_lock:
+        if _healed_column is not None:
+            return _healed_column
+        try:
+            with get_db_connection() as connection:
+                with connection.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'file_chunks' AND column_name = 'healed_at' LIMIT 1"
+                    )
+                    if cur.fetchone() is None:
+                        cur.execute("SET LOCAL lock_timeout = '2s'")
+                        cur.execute("ALTER TABLE file_chunks ADD COLUMN IF NOT EXISTS healed_at TIMESTAMPTZ")
+                connection.commit()
+            _healed_column = True
+        except Exception as exc:  # noqa: BLE001
+            _healed_column = False
+            logger.warning(
+                "[Autoheal] repaired chunks are remembered in memory only until migration 178 is applied: %s", exc
+            )
+    return _healed_column
+
+
+def _remember_in_process(chunk_ids: Iterable[str]) -> None:
+    with _healed_in_process_lock:
+        for chunk_id in chunk_ids:
+            _healed_in_process[chunk_id] = None
+            _healed_in_process.move_to_end(chunk_id)
+        while len(_healed_in_process) > _FALLBACK_LIMIT:
+            _healed_in_process.popitem(last=False)
+
+
+def unhealed(targets: Sequence[Target]) -> list[Target]:
+    """The targets that have never been through repair."""
+    if not targets:
+        return []
+    with _healed_in_process_lock:
+        fresh = [target for target in targets if target.chunk_id not in _healed_in_process]
+    if not fresh or not is_db_available() or not healed_column_available():
+        return fresh
+    ids = _uuid_ids(target.chunk_id for target in fresh)
+    if not ids:
+        return fresh
     with get_db_connection() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE file_chunks SET content = %s, updated_at = NOW() WHERE id::text = %s AND content = %s",
+            "SELECT id::text AS id FROM file_chunks WHERE id = ANY(%s::uuid[]) AND healed_at IS NOT NULL",
+            (ids,),
+        )
+        done = {str(row["id"] if hasattr(row, "keys") else row[0]) for row in cur.fetchall()}
+    return [target for target in fresh if target.chunk_id not in done]
+
+
+def mark_healed(chunk_ids: Iterable[str], *, cur: Any = None) -> int:
+    """Record that these chunks have been through repair. Returns rows marked. Never raises.
+
+    `cur` lets a caller that is already writing (the manual re-clean) mark inside its
+    own transaction; that caller must have settled `healed_column_available()` before
+    opening it, and nothing is marked in the database if it did not.
+    """
+    ids = [str(value) for value in chunk_ids if str(value or "").strip()]
+    if not ids:
+        return 0
+    _remember_in_process(ids)
+    valid = _uuid_ids(ids)
+    if not valid:
+        return 0
+    try:
+        if cur is not None:
+            if _healed_column is not True:
+                return 0
+            # A savepoint, so a failure here cannot abort the caller's own writes.
+            cur.execute("SAVEPOINT chunk_autoheal_mark")
+            try:
+                cur.execute("UPDATE file_chunks SET healed_at = NOW() WHERE id = ANY(%s::uuid[])", (valid,))
+                marked = int(cur.rowcount or 0)
+                cur.execute("RELEASE SAVEPOINT chunk_autoheal_mark")
+                return marked
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT chunk_autoheal_mark")
+                raise
+        if not is_db_available() or not healed_column_available():
+            return 0
+        with get_db_connection() as conn, conn.cursor() as own:
+            own.execute("UPDATE file_chunks SET healed_at = NOW() WHERE id = ANY(%s::uuid[])", (valid,))
+            marked = int(own.rowcount or 0)
+            conn.commit()
+        return marked
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Autoheal] repaired chunks not marked: %s", exc)
+        return 0
+
+
+def _save(target: Target, fixed: str) -> bool:
+    """Write the repaired text and mark it healed, only if the chunk still holds what was read.
+
+    True when saved.
+    """
+    marks = healed_column_available()
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE file_chunks SET content = %s, updated_at = NOW()"
+            + (", healed_at = NOW()" if marks else "")
+            + " WHERE id = %s::uuid AND content = %s",
             (fixed, target.chunk_id, target.content),
         )
         saved = (cur.rowcount or 0) > 0
         conn.commit()
+    if saved:
+        _remember_in_process([target.chunk_id])
     return saved
 
 
@@ -127,13 +268,25 @@ def heal(
     reconstruct: Callable[[str], str] | None = None,
     save: Callable[[Target, str], bool] | None = None,
 ) -> HealReport:
-    """Repair and save each target. Runs on the autoheal threads. Never raises."""
+    """Repair and save each target, once. Runs on the autoheal threads. Never raises.
+
+    A chunk already repaired is skipped before any model call. A chunk the model left
+    unchanged is marked too, so a false alarm is not paid for again. A failed repair is
+    left unmarked, to be tried on a later question.
+    """
     rebuild = reconstruct or _reconstruct
     persist = save or _save
     report = HealReport(attempted=len(targets), chunk_ids=[target.chunk_id for target in targets])
     can_save = is_db_available() if save is None else True
     try:
-        for target in targets:
+        try:
+            pending = unhealed(targets)
+        except Exception as exc:  # noqa: BLE001 — unknown means "try", not "skip"
+            logger.debug("[Autoheal] healed check unavailable: %s", exc)
+            pending = list(targets)
+        report.already_healed = len(targets) - len(pending)
+        left_unchanged: list[str] = []
+        for target in pending:
             try:
                 fixed = rebuild(target.content)
             except Exception as exc:  # noqa: BLE001
@@ -142,6 +295,7 @@ def heal(
                 continue
             if not fixed or fixed == target.content:
                 report.unchanged += 1
+                left_unchanged.append(target.chunk_id)
                 continue
             report.repaired += 1
             if not can_save:
@@ -154,11 +308,15 @@ def heal(
             except Exception as exc:  # noqa: BLE001
                 report.failed += 1
                 logger.warning("[Autoheal] repaired text not saved chunk=%s: %s", target.chunk_id, exc)
+        # Nothing to fix is an outcome too: mark it so the same false alarm is not re-sent.
+        if left_unchanged and can_save:
+            mark_healed(left_unchanged)
     finally:
         _release(report.chunk_ids)
     logger.info(
-        "[Autoheal] done attempted=%s repaired=%s saved=%s unchanged=%s stale=%s failed=%s",
+        "[Autoheal] done attempted=%s already_healed=%s repaired=%s saved=%s unchanged=%s stale=%s failed=%s",
         report.attempted,
+        report.already_healed,
         report.repaired,
         report.saved,
         report.unchanged,
@@ -176,7 +334,11 @@ def schedule(rows: Iterable[dict[str, Any]]) -> Future | None:
     try:
         if not enabled():
             return None
-        claimed = _claim(targets_in(rows)[:MAX_CHUNKS_PER_RETRIEVAL])
+        found = targets_in(rows)
+        with _healed_in_process_lock:
+            # Already repaired in this process: skip without even a database check.
+            found = [target for target in found if target.chunk_id not in _healed_in_process]
+        claimed = _claim(found[:MAX_CHUNKS_PER_RETRIEVAL])
         if not claimed:
             return None
         logger.info("[Autoheal] queued %d fragmented chunk(s) for background repair", len(claimed))

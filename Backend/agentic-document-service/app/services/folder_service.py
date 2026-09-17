@@ -2298,9 +2298,17 @@ class FolderWorkflowService:
         if not file_ids:
             return {"success": False, "message": "No documents found for this case.", "updated": 0}
 
+        from app.services import chunk_autoheal
+
+        # Settled before the transaction below: adding the column needs a table lock
+        # that this transaction's own row locks would otherwise make it wait for.
+        if use_llm:
+            chunk_autoheal.healed_column_available()
+
         scanned = 0
         updated = 0
         llm_reconstructed = 0
+        llm_checked: list[str] = []
         with get_db_connection() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT id, content FROM file_chunks WHERE file_id::text = ANY(%s)",
@@ -2316,6 +2324,7 @@ class FolderWorkflowService:
                 # Pass 2: LLM reconstruction only for chunks still fragmented.
                 if use_llm and _looks_fragmented(cleaned):
                     reconstructed = reconstruct_chunk_text(cleaned)
+                    llm_checked.append(str(chunk_id))
                     if reconstructed and reconstructed != cleaned:
                         cleaned = reconstructed
                         llm_reconstructed += 1
@@ -2325,6 +2334,9 @@ class FolderWorkflowService:
                         [cleaned, chunk_id],
                     )
                     updated += 1
+            # A chunk this pass sent to the model has been repaired as far as it can be;
+            # background repair on later questions leaves it alone.
+            chunk_autoheal.mark_healed(llm_checked, cur=cur)
             conn.commit()
 
         logger.info(
