@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Iterable, Sequence
 
-from app.services.memory import repository
+from app.services.memory import repository, same_fact
 from app.services.memory.schemas import MAX_LINE_CHARS, SECTIONS
 from app.services.memory.validator import (
     DEDUPE_NEAR,
@@ -451,7 +451,11 @@ def plan_seed(
         if prior is not None:
             section, line = prior
             old_text = str(line.get("text") or "")
-            if normalize_for_compare(_current_fact(old_text)) == normalize_for_compare(text):
+            ref = line.get("source_ref") if isinstance(line.get("source_ref"), dict) else {}
+            # A seeded line merged with a fact from an answer reads differently now, but
+            # remembers what seeding wrote: the same value is not written back over it.
+            seeded_text = str(ref.get("seed_text") or "") or _current_fact(old_text)
+            if normalize_for_compare(seeded_text) == normalize_for_compare(text):
                 plan.skipped.append(_skip(candidate, "already_seeded"))
             else:
                 # The fact changed. Update, do not duplicate — and keep what it was.
@@ -476,6 +480,22 @@ def plan_seed(
         pool = list(existing.get(candidate.section, [])) + plan.additions.get(candidate.section, [])
         if find_duplicate(text, pool, dedupe_threshold(candidate.section)) is not None:
             plan.skipped.append(_skip(candidate, "duplicate"))
+            continue
+        # The same fact in other words, anywhere in memory: "25 Aug 2006: Registered sale
+        # deed executed" when "Registered Sale Deed No. 4401/2006 was executed on
+        # 25/08/2006" is already there. Checked without a model, so only a line that holds
+        # all its dates, numbers and names counts.
+        everywhere = [
+            {**line, "section": name}
+            for source in (existing, plan.additions)
+            for name, lines in source.items()
+            for line in lines
+        ]
+        if any(
+            same_fact.covers(str(line.get("text") or ""), text)
+            for line in same_fact.candidates(text, everywhere, section=candidate.section)
+        ):
+            plan.skipped.append(_skip(candidate, "same_fact"))
             continue
 
         plan.additions.setdefault(candidate.section, []).append(

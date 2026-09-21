@@ -1090,6 +1090,86 @@ def append_lines(
     return {"section": name, "version": version, "added": added}
 
 
+def rewrite_lines(
+    case_key: str,
+    *,
+    updates: Sequence[dict[str, Any]] = (),
+    deletes: Sequence[dict[str, Any]] = (),
+    moves: Sequence[dict[str, Any]] = (),
+    actor: str | None = None,
+    folder_name: str | None = None,
+    conn: Any = None,
+) -> dict[str, int]:
+    """Merge, delete and move lines of one case in a single transaction.
+
+    `updates`: {"id", "expected_text", "text", "source_ref"}; `deletes`: {"id",
+    "expected_text"}; `moves`: {"id", "section"}. A line whose text is no longer the
+    expected text was changed after the plan was made, and is left alone. Every section
+    touched gets a new version. Returns `{updated, deleted, moved, skipped}`.
+    """
+    key = _require_case_key(case_key)
+    counts = {"updated": 0, "deleted": 0, "moved": 0, "skipped": 0}
+    touched: set[str] = set()
+    with _conn(conn) as connection, connection.cursor() as cur:
+        try:
+            for item in updates:
+                cur.execute(
+                    "UPDATE case_memory_lines SET text = %s, source_ref = %s::jsonb, updated_at = NOW() "
+                    "WHERE id = %s::uuid AND case_key = %s AND text = %s RETURNING section",
+                    (str(item["text"]), _json(item.get("source_ref") or {}), str(item["id"]), key, str(item["expected_text"])),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    counts["skipped"] += 1
+                    continue
+                counts["updated"] += 1
+                touched.add(str(row["section"]))
+            for item in deletes:
+                cur.execute(
+                    "DELETE FROM case_memory_lines WHERE id = %s::uuid AND case_key = %s AND text = %s RETURNING section",
+                    (str(item["id"]), key, str(item["expected_text"])),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    counts["skipped"] += 1
+                    continue
+                counts["deleted"] += 1
+                touched.add(str(row["section"]))
+            for item in moves:
+                section = str(item["section"])
+                if section not in SECTIONS:
+                    raise ValueError(f"Unknown memory section '{section}'.")
+                cur.execute(
+                    "SELECT section FROM case_memory_lines WHERE id = %s::uuid AND case_key = %s",
+                    (str(item["id"]), key),
+                )
+                row = cur.fetchone()
+                if row is None or str(row["section"]) == section:
+                    counts["skipped"] += 1
+                    continue
+                _ensure_section(cur, key, section, folder_name)
+                cur.execute(
+                    "UPDATE case_memory_lines SET section = %s, ord = %s, updated_at = NOW() "
+                    "WHERE id = %s::uuid AND case_key = %s",
+                    (section, _next_ord(cur, key, section), str(item["id"]), key),
+                )
+                counts["moved"] += 1
+                touched.update({str(row["section"]), section})
+            if touched:
+                cur.execute(
+                    "UPDATE case_memory_sections SET version = version + 1, updated_at = NOW() "
+                    "WHERE case_key = %s AND section = ANY(%s::text[])",
+                    (key, sorted(touched)),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+    if any(counts[name] for name in ("updated", "deleted", "moved")):
+        logger.info("[Memory] lines rewritten case_key=%s actor=%s %s", key, actor, counts)
+    return counts
+
+
 def replace_case_memory(
     case_key: str,
     sections: dict[str, Sequence[dict[str, Any]]],

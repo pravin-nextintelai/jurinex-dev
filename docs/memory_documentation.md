@@ -214,6 +214,24 @@ Nothing is translated, so an English line from a Marathi message is traceable on
 
 **Restated facts.** Answers repeat the same facts in new words ("Sale Deed No. 4401/2006 was executed on 25/08/2006", "the sale deed dated 25.08.2006 …"). A fact from an answer is kept only if it adds a number, a whole date or a name that memory does not already hold; years alone do not count. Measured on a real case read from the start: 101 lines without this check, 33 with it.
 
+**One fact, one line.** A fact that does add something (a deed number, an amount, a court) is still the same fact as the line memory holds, and is merged into that line rather than kept beside it (`app/services/memory/same_fact.py`):
+
+```text
+  saved:   25 Aug 2006: Registered sale deed executed in favour of petitioner
+  answer:  Registered Sale Deed No. 4401/2006 was executed on 25/08/2006.
+  kept:    25 Aug 2006: Registered Sale Deed No. 4401/2006 executed in favour of petitioner
+```
+
+| Step | How | What it stops |
+|---|---|---|
+| 1. Candidates | No model. A saved line is compared only when both name the same whole date, or the same deed, suit or survey number, and share a word about what happened; among Parties, when they name the same people or office | Different dates are different events: "suit instituted" (12/07/2005) and "suit decreed" (02/09/2006) are never compared. Words that only name a numbered thing ("Special Civil Suit" in "Special Civil Suit No. 17/2005") do not count, so another event in the same suit is not a candidate |
+| 2. Judgement | `gemini-3.1-flash-lite`, one short call, only when step 1 found a candidate | Says whether it is the same fact, and writes one line that says both |
+| 3. Check | No model. The merged line must keep every date, number and name of both lines, add none, add no "not", and keep most of their words | A merge that fails is not written, and neither is the repeat |
+
+A line you stated is never rewritten: a fact from a document that repeats it is dropped. Something that happened on a whole date is filed under Dates, not Documents or Facts; a document only named by its date ("the Gazette dated 01/01/2016") stays under Documents. The merged line keeps its first source and lists the others (`source_ref.also`). Seeding recognises its own line under the fuller wording (`source_ref.seed_text`) and does not write the short form back, and a chronology line that memory already says in fuller words is not added (`same_fact` skip in the seed log).
+
+What a case held before this existed is combined the same way by `same_fact.tidy_case`: oldest line first, two document facts become one line where the older one was, a document fact that repeats a stated line is removed, and a dated fact from an answer moves to Dates. Each run shows in Activity as "Combined facts memory held more than once".
+
 ### 2.3 Earlier chats — reading them again
 
 Memory reads each turn as it is answered. Turns saved before memory could read them, or read by an older writer (before facts from answers, Marathi, or reviews), are read again by `app/services/memory/reread.py`: oldest first, each with the turns that came before it, and then chats that were never reviewed. Each turn read is recorded with the writer's version (`memory_turn_reads`), so it is read once per version; a turn whose reading failed is left to be read later.
@@ -370,6 +388,7 @@ Each turn appears in exactly one of those rows. Folding holds back `CHAT_HISTORY
 | Merge facts about you | `gemini-3.8-flash` | Only at 80% of the ceiling, at most once an hour | The stored facts in, a shorter set out; at most 2,048 output |
 | Index the turn for recall | `gemini-embedding-001` | After every answer, while past-chat search is on | About 5 short texts (your words and answer passages); no output |
 | Embed a question that refers back | `gemini-embedding-001` | Only on a backward reference, before the answer | One short text; about 0.5 s, capped at 1 s |
+| Compare a fact with the line it may repeat | `gemini-3.1-flash-lite` (`MEMORY_ANSWER_FACTS_MODEL`) | Only for a fact from an answer that shares a date or number, and what happened, with a saved line | The fact and up to 3 saved lines in, one line out; one retry |
 
 Choosing which facts a question carries costs **nothing**: it is term matching, no model call and no embedding service, so it adds neither tokens nor latency to a turn.
 
@@ -584,3 +603,5 @@ Every turn also writes a row to `memory_assembly_log`: which versions were loade
 - The first question after a restart may be searched by words only, while the connection to the embedding service warms up.
 - Case memory is never used as a citation source, by design. Citations come from documents.
 - Of Indian scripts, only Devanagari (Marathi, Hindi) is matched against English. Gujarati, Tamil and other scripts are compared as written.
+- A restated fact is recognised only through a shared whole date or number (or, among Parties, shared names). "Sale Deed No. 4401/2006 is in the petitioner's name" with no date is not matched to "25 Aug 2006: Registered sale deed executed", which has no number, so both are kept.
+- When two lines are judged the same fact but no merged line passes the check, both are kept rather than risk losing a detail. A fact from a document that repeats a line you stated is dropped, with any detail it added (an age, an address).

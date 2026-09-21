@@ -91,6 +91,7 @@ from app.services.memory.validator import (
     find_duplicate,
     find_same_rule,
     instruction_set_room,
+    normalize_for_compare,
     redact_or_reject_pii,
     repeats_rule,
     validate_advocate_line,
@@ -852,15 +853,21 @@ def screen_ops(ops: Sequence[MemoryOp], message: str, report: WriteReport) -> li
     return kept
 
 
-def _remember(snapshot: dict[str, list[dict[str, Any]]], op: ResolvedOp, result: dict[str, Any]) -> None:
+def _remember(
+    snapshot: dict[str, list[dict[str, Any]]],
+    op: ResolvedOp,
+    result: dict[str, Any],
+    source_extra: dict[str, Any] | None = None,
+) -> None:
     """Keep the local snapshot current so later ops in the turn dedupe against it."""
     lines = snapshot.setdefault(op.section, [])
+    source_ref = {**(op.source_ref or {}), **(source_extra or {})}
     if op.op == "replace_line" and op.line_id:
         for line in lines:
             if str(line.get("id")) == str(op.line_id):
-                line["text"], line["tag"] = op.text, op.tag
+                line["text"], line["tag"], line["source_ref"] = op.text, op.tag, source_ref
                 return
-    lines.append({"id": result.get("line_id"), "tag": op.tag, "text": op.text})
+    lines.append({"id": result.get("line_id"), "tag": op.tag, "text": op.text, "source_ref": source_ref})
 
 
 def _write_one(
@@ -915,7 +922,7 @@ def _write_one(
         return False
 
     versions[section] = result.get("version", versions.get(section))
-    _remember(snapshot, op, result)
+    _remember(snapshot, op, result, source_extra)
     if guard is not None and op.op == "append_line" and result.get("line_id"):
         guard.added_ids.add(str(result["line_id"]))
     return True
@@ -949,7 +956,8 @@ def _apply_ops(
     *,
     today: date | None,
     guard: RereadGuard | None = None,
-) -> None:
+) -> dict[str, list[dict[str, Any]]]:
+    """Validate and write ops one at a time. Returns the sections as they stand after the writes."""
     snapshot = {name: [dict(line) for line in lines] for name, lines in existing.items()}
     for memory_op in ops:
         # One op at a time, against the snapshot as it stands after earlier writes,
@@ -972,6 +980,7 @@ def _apply_ops(
                 if source_extra.get("document"):
                     note.update({"document": source_extra.get("document"), "page": source_extra.get("page")})
                 report.note("lines", note)
+    return snapshot
 
 
 # ── Facts from the answer ────────────────────────────────────────────────────
@@ -1009,10 +1018,13 @@ def _learn_from_answer(
     """Keep the facts the answer read out of its cited documents. Returns how many. Never raises.
 
     Each fact is kept only if the stored text of the document it names backs it
-    (app/services/memory/answer_facts.py), and only as an addition: a fact memory already
-    holds, above all one the advocate stated, is never replaced by one from an answer.
+    (app/services/memory/answer_facts.py). A fact memory already holds in other words is
+    not added again (app/services/memory/same_fact.py): it is merged into the saved line
+    when that line also came from a document, and dropped when the advocate stated it,
+    since their line is never rewritten by an answer. Something that happened on a whole
+    date is kept with the dates.
     """
-    from app.services.memory import answer_facts
+    from app.services.memory import answer_facts, same_fact
 
     documents = answer_facts.cited_documents(turn.citations)
     known = [dict(line) for lines in existing.values() for line in lines]
@@ -1025,11 +1037,16 @@ def _learn_from_answer(
 
     kept = 0
     for fact in facts:
+        # Memory as it stands now, with what earlier facts of this answer added or merged.
+        known = [dict(line) for lines in existing.values() for line in lines]
         if find_duplicate(fact.text, known) is not None:
             continue  # already remembered, in the same words
         if not answer_facts.adds_to(fact.text, [str(line.get("text") or "") for line in known]):
             report.reject("answer_fact_known")
             continue  # already remembered, in other words: no number, date or name is new
+        if fact.sensitive and not settings.sensitive_enabled:
+            report.reject("sensitive_disabled")
+            continue
         try:
             support = answer_facts.find_support(fact, documents)
         except Exception as exc:  # noqa: BLE001
@@ -1039,9 +1056,29 @@ def _learn_from_answer(
         if support is None:
             report.reject("answer_fact_not_in_document")
             continue
+        source = {
+            **source_extra,
+            "kind": "answer",
+            "document": support.document,
+            "file_id": support.file_id,
+            "chunk_id": support.chunk_id,
+            "page": support.page,
+        }
+        section = same_fact.dated_section(fact.section, fact.text)
+        saved = [{**line, "section": name} for name, lines in existing.items() for line in lines]
+        try:
+            match = same_fact.find_same(fact.text, saved, section=section)
+        except Exception as exc:  # noqa: BLE001 — unchecked, it could be a repeat: better not kept
+            logger.warning("[Memory] answer fact not compared with memory case_key=%s: %s", scope.case_key, exc)
+            report.reject("answer_fact_not_merged")
+            continue
+        if match is not None:
+            if _merge_answer_fact(scope, match, fact.text, source, existing, versions, report):
+                kept += 1
+            continue
         op = MemoryOp(
             op="append_line",
-            section=fact.section,
+            section=section,
             reason="read from a cited document",
             line=MemoryLine(
                 tag="extracted",
@@ -1051,25 +1088,102 @@ def _learn_from_answer(
                 sensitive=fact.sensitive,
             ),
         )
-        source = {
-            **source_extra,
-            "kind": "answer",
-            "document": support.document,
-            "file_id": support.file_id,
-            "chunk_id": support.chunk_id,
-            "page": support.page,
-        }
         before = report.writes
-        _apply_ops(scope, [op], existing, versions, settings, source, report, today=today, guard=turn.reread)
+        existing.update(
+            _apply_ops(scope, [op], existing, versions, settings, source, report, today=today, guard=turn.reread)
+        )
         if report.writes > before:
             kept += 1
-            known.append({"text": fact.text})
-            existing.setdefault(fact.section, []).append({"text": fact.text, "tag": "extracted"})
     if facts:
         logger.info(
             "[Memory] answer facts case_key=%s found=%s kept=%s", scope.case_key, len(facts), kept
         )
     return kept
+
+
+def _merge_answer_fact(
+    scope: CaseScope,
+    match: Any,
+    fact_text: str,
+    source: dict[str, Any],
+    existing: dict[str, list[dict[str, Any]]],
+    versions: dict[str, int | None],
+    report: WriteReport,
+) -> bool:
+    """Fold a fact from an answer into the saved line that records the same fact. True when it changed.
+
+    Nothing is written when the saved line is the advocate's (or a review's) own, when it
+    already says everything, or when no merge passed the check; in each case keeping the
+    fact as a line of its own would be the repeat. A line changed by someone else meanwhile
+    is left alone. Never raises.
+    """
+    from app.services.memory import same_fact
+
+    line = match.line
+    section = str(line.get("section") or "")
+    old_text = str(line.get("text") or "")
+    if str(line.get("tag") or "") != "extracted":
+        report.reject("answer_fact_known")
+        return False
+    if match.merged is None:
+        report.reject("answer_fact_not_merged")
+        return False
+    if normalize_for_compare(match.merged) == normalize_for_compare(old_text):
+        report.reject("answer_fact_known")
+        return False
+    ref = same_fact.merged_source_ref(line.get("source_ref"), source, saved_text=old_text)
+    problem = validate_line(
+        "extracted", match.merged, section=section, source="document", document=ref.get("document") or source.get("document")
+    )
+    if problem is not None:
+        report.reject(problem.code)
+        return False
+    op = ResolvedOp(
+        op="replace_line",
+        section=section,
+        tag="extracted",
+        text=match.merged,
+        line_id=str(line.get("id")),
+        source_ref=ref,
+        reason=same_fact.MERGE_REASON,
+    )
+    for attempt in (1, 2):
+        try:
+            result = repository.apply_op(
+                scope.case_key, op, versions.get(section), actor=WRITER_ACTOR, folder_name=scope.folder_name
+            )
+            break
+        except VersionConflict as conflict:
+            now = next(
+                (item for item in conflict.current_lines or [] if str(item.get("id")) == str(line.get("id"))), None
+            )
+            if attempt == 2 or now is None or str(now.get("text") or "") != old_text:
+                report.reject("version_conflict")
+                return False
+            versions[section] = conflict.current_version  # another line of the section changed; this one did not
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Memory] merge failed case_key=%s section=%s: %s", scope.case_key, section, exc)
+            report.reject("write_failed")
+            return False
+    versions[section] = result.get("version", versions.get(section))
+    for item in existing.get(section) or []:
+        if str(item.get("id")) == str(line.get("id")):
+            item.update({"text": match.merged, "source_ref": ref})
+    report.writes += 1
+    report.note(
+        "lines",
+        {
+            "section": section,
+            "tag": "extracted",
+            "text": match.merged,
+            "updated": True,
+            "merged_from": same_fact.current(old_text),
+            "document": source.get("document"),
+            "page": source.get("page"),
+        },
+    )
+    logger.info("[Memory] merged a repeated fact case_key=%s section=%s fact=%r", scope.case_key, section, fact_text[:80])
+    return True
 
 
 def _already_saved(text: str, items: Sequence[dict[str, Any]]) -> bool:

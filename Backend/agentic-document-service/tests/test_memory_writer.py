@@ -11,6 +11,7 @@ from app.services.memory import answer_facts as answer_facts_mod
 from app.services.memory import consolidate as consolidate_mod
 from app.services.memory import profile as profile_mod
 from app.services.memory import reread as reread_mod
+from app.services.memory import same_fact as same_fact_mod
 from app.services.memory import synthesis as synthesis_mod
 from app.services.memory import writer as writer_mod
 from app.services.memory.consolidate import ConsolidationResult
@@ -163,6 +164,7 @@ def harness(
     answer_support=None,
     answer_facts_error=None,
     answer_facts_enabled=True,
+    same_judge=None,
     review_turns=None,
     review_other_session=None,
     review_state=None,
@@ -286,6 +288,15 @@ def harness(
         )
         mocks["answer_support"] = stack.enter_context(
             patch.object(answer_facts_mod, "find_support", return_value=answer_support)
+        )
+        # Whether a fact repeats a saved line is a model call: never from a test. Unless a
+        # test says otherwise, nothing is the same fact.
+        mocks["same_judge"] = stack.enter_context(
+            patch.object(
+                same_fact_mod,
+                "judge",
+                side_effect=same_judge or (lambda items: [same_fact_mod.Judgement() for _ in items]),
+            )
         )
         repo("record_advocate_use", return_value=len(advocate_lines or []))
         repo("least_useful_advocate_lines", return_value=[dict(line) for line in advocate_evictable or []])

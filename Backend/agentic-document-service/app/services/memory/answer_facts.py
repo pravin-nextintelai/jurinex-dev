@@ -17,8 +17,10 @@ steps:
    every number in the fact and most of its words. The page comes from that chunk.
    A date the answer misread, or a name it misspelt, finds no chunk and is dropped.
 
-Kept facts are tagged `[extracted]`, carry the document and page, and are only ever
-added: a fact already in memory, above all one the advocate stated, is never replaced.
+Kept facts are tagged `[extracted]` and carry the document and page. A fact memory
+already holds in other words is never added a second time: it is merged into the line
+from a document that holds it, and dropped when the advocate stated it, whose line an
+answer never rewrites (app/services/memory/same_fact.py).
 
 Many case documents are in Marathi. There the answer's "Document No. 4144/2011 … Ramesh
 Jadhav" is "दस्त क्र. ४१४४/२०११ … रमेश जाधव": digits are compared in either script, and
@@ -73,8 +75,9 @@ Each fact is one plain sentence of at most 200 characters, such as
 "Sale Deed No. 4401/2006 was executed on 25.08.2006". Copy every name, date, number and
 amount exactly as the answer writes it.
 
-section: "parties" (who someone is in the case), "dates" (an event and its date),
-"documents" (what a document is or records), "facts" (anything else).
+section: "parties" (who someone is in the case), "dates" (anything that happened on a
+stated date: a deed executed, a suit filed, an order passed, a letter issued, a payment
+made), "documents" (what a document is or records), "facts" (anything else).
 document: the listed document the fact comes from, written exactly as listed.
 sensitive: true for health, family, financial or criminal-record details.
 
@@ -201,7 +204,7 @@ def parse_facts(payload: Any, documents: Sequence[CitedDocument]) -> list[Answer
     return facts
 
 
-def _config(model: str, level: str) -> Any:
+def _config(model: str, level: str, prompt: str = PROMPT) -> Any:
     from google.genai import types
 
     from app.services.adapters.document_ai import _build_gemini_config
@@ -212,7 +215,7 @@ def _config(model: str, level: str) -> Any:
         model_name=model,
     )
     try:
-        config.system_instruction = PROMPT
+        config.system_instruction = prompt
         config.response_mime_type = "application/json"
         config.http_options = types.HttpOptions(timeout=TIMEOUT_MS)
     except Exception:  # noqa: BLE001 — a plain-dict config from an older SDK

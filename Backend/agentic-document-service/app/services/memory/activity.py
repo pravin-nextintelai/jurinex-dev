@@ -61,6 +61,9 @@ REJECTIONS: dict[str, str] = {
     "case_full": "This case's memory is full",
     "advocate_full": "What JuriNex knows about you is full",
     "answer_fact_known": "A fact in the answer is already in memory in other words, so it was not added again",
+    "answer_fact_not_merged": (
+        "A fact in the answer repeats one in memory, but the two could not be combined safely, so it was not added"
+    ),
     "reread_keeps_newer": "Memory already holds something newer, so this earlier message did not change it",
     "reread_written_before": (
         "This was in memory before and was deleted or replaced since, so the earlier message did not bring it back"
@@ -131,7 +134,27 @@ def _items(details: dict[str, Any], needed: int) -> list[dict[str, Any]]:
         if line.get("document"):
             # Read out of a cited document by the answer, and found there.
             item.update({"document": line.get("document"), "page": line.get("page")})
+        if line.get("merged_from"):
+            # The same fact was already in memory in other words; the two became one line.
+            item["merged_from"] = line.get("merged_from")
         items.append(item)
+    # Memory tidied of facts it held more than once (app/services/memory/same_fact.py).
+    for merge in details.get("merged") or []:
+        sources = [str(text) for text in merge.get("from") or [] if str(text or "").strip()]
+        items.append(
+            {
+                "kind": "merged",
+                "section_label": SECTION_LABELS.get(str(merge.get("section") or ""), "Memory"),
+                "text": merge.get("text"),
+                "count": len(sources),
+            }
+        )
+    for repeat in details.get("removed") or []:
+        items.append({"kind": "removed_repeat", "text": repeat.get("text"), "kept": repeat.get("kept")})
+    for move in details.get("moved") or []:
+        items.append(
+            {"kind": "moved", "text": move.get("text"), "to_label": SECTION_LABELS.get(str(move.get("to") or ""), "Memory")}
+        )
     for rule in details.get("instructions") or []:
         items.append({"kind": "instruction", "scope": rule.get("scope") or "case", "text": rule.get("text")})
     # A rule that was shown is logged twice under one id: under "requests" in the
@@ -217,6 +240,10 @@ def _headline(items: Sequence[dict[str, Any]], rejections: Sequence[str]) -> tup
         return "suggested", "Suggested a rule for you to review" if count == 1 else f"Suggested {count} rules to review"
     if "noticed" in kinds:
         return "noticed", "Noticed a request and started counting it"
+    if "merged" in kinds or "removed_repeat" in kinds:
+        return "saved", "Combined facts memory held more than once"
+    if "moved" in kinds:
+        return "saved", "Moved dated facts to Dates"
     if "uploaded" in kinds:
         return "saved", "Added your newly processed documents to memory"
     if "filled_in" in kinds and "tidied" not in kinds and "made_room" not in kinds:
