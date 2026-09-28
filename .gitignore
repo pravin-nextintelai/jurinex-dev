@@ -173,7 +173,7 @@ wheels/
 .installed.cfg
 *.egg
 skills/
-Frontend/
+# (removed 'Frontend/': on Windows git ignores case, so it also hid every new file under frontend/)
 OcrViewer/
 # Keep the frontend OCR viewer source tracked.
 !frontend/src/components/OcrViewer/
