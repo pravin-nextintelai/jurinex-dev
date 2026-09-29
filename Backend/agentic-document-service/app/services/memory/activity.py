@@ -59,6 +59,10 @@ REJECTIONS: dict[str, str] = {
     "not_in_advocate_message": "A fact was not in your own words, so it was dropped",
     "extracted_from_chat": "A fact came from JuriNex's answer rather than from you, so it was dropped",
     "case_full": "This case's memory is full",
+    "section_full": (
+        "A part of this case's memory is full and could not be shortened, so a new fact was not saved — "
+        "delete a line there to make room"
+    ),
     "advocate_full": "What JuriNex knows about you is full",
     "answer_fact_known": "A fact in the answer is already in memory in other words, so it was not added again",
     "answer_fact_not_merged": (

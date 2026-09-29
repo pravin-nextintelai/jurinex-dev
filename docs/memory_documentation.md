@@ -232,6 +232,8 @@ A line you stated is never rewritten: a fact from a document that repeats it is 
 
 What a case held before this existed is combined the same way by `same_fact.tidy_case`: oldest line first, two document facts become one line where the older one was, a document fact that repeats a stated line is removed, and a dated fact from an answer moves to Dates. Each run shows in Activity as "Combined facts memory held more than once".
 
+The same tidy runs by itself when a section has no room left for the next fact, so a busy case keeps learning instead of stopping at "full" — see §6.1.
+
 ### 2.3 Earlier chats — reading them again
 
 Memory reads each turn as it is answered. Turns saved before memory could read them, or read by an older writer (before facts from answers, Marathi, or reviews), are read again by `app/services/memory/reread.py`: oldest first, each with the turns that came before it, and then chats that were never reviewed. Each turn read is recorded with the writer's version (`memory_turn_reads`), so it is read once per version; a turn whose reading failed is left to be read later.
@@ -389,6 +391,7 @@ Each turn appears in exactly one of those rows. Folding holds back `CHAT_HISTORY
 | Index the turn for recall | `gemini-embedding-001` | After every answer, while past-chat search is on | About 5 short texts (your words and answer passages); no output |
 | Embed a question that refers back | `gemini-embedding-001` | Only on a backward reference, before the answer | One short text; about 0.5 s, capped at 1 s |
 | Compare a fact with the line it may repeat | `gemini-3.1-flash-lite` (`MEMORY_ANSWER_FACTS_MODEL`) | Only for a fact from an answer that shares a date or number, and what happened, with a saved line | The fact and up to 3 saved lines in, one line out; one retry |
+| Make room in a full section | the same call as above | Only when a section is at its cap and a fact has nowhere to go — once per section until that section changes | One call per line in the section that has a candidate; nothing when there are none |
 
 Choosing which facts a question carries costs **nothing**: it is term matching, no model call and no embedding service, so it adds neither tokens nor latency to a turn.
 
@@ -429,6 +432,28 @@ Migrations `170`–`182` in `db/migrations/`. Most tables are also created on fi
 | Per turn | 8 memory writes, 3 rule suggestions, 3 facts about the advocate |
 
 **Concurrency:** every write carries the version it last read. A stale write is rejected with the current content, so an edit in another window is never silently overwritten; the writer reloads, re-checks and retries once.
+
+### 6.1 When a section fills up
+
+A section at its cap used to refuse every new fact, so a busy case stopped learning exactly when it was busiest. It no longer stops there. When a fact finds no room, the section it belongs to is tidied once by the same rules as §2.2 — facts it holds in more than one wording become one line, a document fact that repeats a line you typed goes, and dated facts move to Dates — and the fact is written into the room that frees:
+
+```text
+  Facts (60 of 60)                                  Facts (58 of 60)
+  Suit filed on 12/03/2019 by the tenant   ---->    Suit filed on 12/03/2019 by the tenant
+  Suit filed on 12/03/2019                          (moved to Dates)
+  ...                                               ...
+                                                    + the new fact
+```
+
+The same happens when the case as a whole reaches its 40,000-character cap, except that every section is read.
+
+Three rules keep this cheap and safe:
+
+* **Only when a write is actually blocked.** A turn that fits tidies nothing.
+* **Once per section until that section changes.** A section that could not be shortened is remembered by its version, so the next turn does not ask the model the same question again; an outage is retried after `MEMORY_ROOM_RETRY_AFTER_S`.
+* **Nothing is thrown away to make room.** Only merges, repeats of your own lines, and moves. If nothing can be shortened, the fact is not saved and the Activity tab says the part is full and asks you to delete a line — you are never left guessing.
+
+`MEMORY_ROOM_ENABLED=false` restores the old behaviour: a full section refuses new facts.
 
 ---
 
@@ -555,6 +580,8 @@ All read from `.env`.
 | `ADVOCATE_CONSOLIDATE_AT` | `0.8` | How full before a merge is worth its call |
 | `ADVOCATE_CONSOLIDATE_MODEL` | `gemini-3.8-flash` | The merge model |
 | `ADVOCATE_CONSOLIDATE_MIN_INTERVAL_S` | `3600` | Quiet time between merges, per advocate |
+| `MEMORY_ROOM_ENABLED` | `true` | Tidy a full section so a new fact has room; `false` refuses the fact instead |
+| `MEMORY_ROOM_RETRY_AFTER_S` | `600` | How long after an outage a full section is tried again |
 | `CHARS_PER_TOKEN_ESTIMATE` | `3.0` | Characters per token for budgets |
 | `CHAT_PASSAGE_BUDGET_TOKENS` | `24000` | Passages for a specific question |
 | `CHAT_PASSAGE_TOP_K` | `36` | Passages retrieved |
@@ -581,6 +608,7 @@ Memory never fails a chat. Each path returns empty and records why.
 | `too_short`, `greeting`, `saved_prompt` | Not worth reading |
 | `nothing_durable` | The extractor found nothing to keep |
 | `extractor_error` | The extraction call failed; the answer is unaffected |
+| `section_full`, `case_full` | That part of the case's memory is at its cap and could not be shortened (§6.1); delete a line to make room |
 | `advocate_*` | A fact about the advocate was refused, with the rule appended |
 
 Useful log lines:
@@ -605,3 +633,4 @@ Every turn also writes a row to `memory_assembly_log`: which versions were loade
 - Of Indian scripts, only Devanagari (Marathi, Hindi) is matched against English. Gujarati, Tamil and other scripts are compared as written.
 - A restated fact is recognised only through a shared whole date or number (or, among Parties, shared names). "Sale Deed No. 4401/2006 is in the petitioner's name" with no date is not matched to "25 Aug 2006: Registered sale deed executed", which has no number, so both are kept.
 - When two lines are judged the same fact but no merged line passes the check, both are kept rather than risk losing a detail. A fact from a document that repeats a line you stated is dropped, with any detail it added (an age, an address).
+- Making room (§6.1) can only merge, remove repeats and move dated facts. A section of 60 unrelated facts cannot be shortened, so the fact that found no room is refused and you are asked to delete a line; nothing you stored is ever dropped to make space.

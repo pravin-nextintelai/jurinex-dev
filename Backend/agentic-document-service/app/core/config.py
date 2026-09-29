@@ -949,6 +949,20 @@ class Settings(BaseSettings):
         default=3600.0,
         validation_alias=AliasChoices("ADVOCATE_CONSOLIDATE_MIN_INTERVAL_S"),
     )
+    # Making room (app/services/memory/room.py): the same idea for one case. A section at
+    # its line cap, or a case at its character cap, is tidied once — facts it holds in
+    # more than one wording become one line and dated facts move to Dates — and the fact
+    # that found no room is written into what frees. Off means a full section refuses new
+    # facts, as it did before. A section that could not be shortened is not asked about
+    # again until it changes; an outage is retried after MEMORY_ROOM_RETRY_AFTER_S.
+    memory_room_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("MEMORY_ROOM_ENABLED"),
+    )
+    memory_room_retry_after_s: float = Field(
+        default=600.0,
+        validation_alias=AliasChoices("MEMORY_ROOM_RETRY_AFTER_S"),
+    )
     # Instructions from chat (app/services/memory/writer.py) are counted, not saved on sight.
     # A rule the advocate words as one ("always", "from now on") is shown as a suggestion at
     # once and saved after MEMORY_RULE_SAVE_AFTER separate requests. A way of working asked

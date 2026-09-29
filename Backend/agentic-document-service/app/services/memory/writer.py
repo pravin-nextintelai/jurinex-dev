@@ -85,6 +85,7 @@ from app.services.memory.scope import CaseScope, is_real_user
 from app.services.memory.seed import refresh_seed
 from app.services.memory.validator import (
     DEDUPE_SAME,
+    Rejection,
     ResolvedOp,
     advocate_set_room,
     case_over_cap,
@@ -945,6 +946,59 @@ def _guard_blocks(guard: RereadGuard | None, op: ResolvedOp, report: WriteReport
     return False
 
 
+def _make_case_room(
+    scope: CaseScope,
+    section: str | None,
+    snapshot: dict[str, list[dict[str, Any]]],
+    versions: dict[str, int | None],
+    report: WriteReport,
+    *,
+    asked: set[str],
+) -> bool:
+    """Tidy what the case holds so a fact that found no room has somewhere to go.
+
+    True when something changed, in which case the snapshot and the version tokens are
+    current again and the op can be validated a second time. Asked at most once per
+    section per turn; see app/services/memory/room.py for the rest of the cost rules.
+    """
+    from app.services.memory import room
+
+    key = section or room.WHOLE_CASE
+    if key in asked:
+        return False
+    asked.add(key)
+    result = room.make_room(scope.case_key, section=section, folder_name=scope.folder_name)
+    if not result.changed:
+        return False
+    for name, data in result.sections.items():
+        snapshot[name] = [dict(line) for line in data.get("lines") or []]
+        versions[name] = data.get("version")
+    # Read in the Activity tab exactly like any other tidy: what became one line, what
+    # was a repeat of the advocate's own line, and what moved to Dates.
+    for kind in ("merged", "removed", "moved"):
+        for item in result.described.get(kind) or []:
+            report.note(kind, item)
+    return True
+
+
+def _no_room(
+    memory_op: MemoryOp,
+    resolved: Sequence[ResolvedOp],
+    rejections: Sequence[Rejection],
+    snapshot: dict[str, list[dict[str, Any]]],
+) -> tuple[str | None, str | None]:
+    """What is stopping this op for want of room: (the reason, the full section).
+
+    ("section_full", section) when that section is at its line cap, ("case_full", None)
+    when the case as a whole is at its character cap, (None, None) when the op fits.
+    """
+    if any(rejection.code == "section_full" for rejection in rejections):
+        return "section_full", str(memory_op.section or "")
+    if any(op.op == "append_line" for op in resolved) and case_over_cap(snapshot):
+        return "case_full", None
+    return None, None
+
+
 def _apply_ops(
     scope: CaseScope,
     ops: Sequence[MemoryOp],
@@ -959,18 +1013,29 @@ def _apply_ops(
 ) -> dict[str, list[dict[str, Any]]]:
     """Validate and write ops one at a time. Returns the sections as they stand after the writes."""
     snapshot = {name: [dict(line) for line in lines] for name, lines in existing.items()}
-    for memory_op in ops:
+    # Sections already tidied for room this turn, so one turn asks the model once.
+    asked: set[str] = set()
+
+    def check(memory_op: MemoryOp) -> tuple[list[ResolvedOp], list[Rejection], tuple[str | None, str | None]]:
         # One op at a time, against the snapshot as it stands after earlier writes,
         # so two ops for the same fact in one turn cannot both land.
         resolved, rejections = validate_ops(
             [memory_op], snapshot, allow_sensitive=settings.sensitive_enabled, today=today
         )
+        return resolved, rejections, _no_room(memory_op, resolved, rejections, snapshot)
+
+    for memory_op in ops:
+        resolved, rejections, (no_room, section) = check(memory_op)
+        if no_room and _make_case_room(scope, section, snapshot, versions, report, asked=asked):
+            # Memory was tidied, so this op is checked again against what is there now:
+            # the fact may fit, or the line it would have joined may have merged away.
+            resolved, rejections, (no_room, _section) = check(memory_op)
         for rejection in rejections:
             report.reject(rejection.code)
+        if no_room == "case_full":
+            report.reject("case_full")
+            continue
         for op in resolved:
-            if op.op == "append_line" and case_over_cap(snapshot):
-                report.reject("case_full")
-                continue
             if _write_one(
                 scope, memory_op, op, snapshot, versions, settings, source_extra, report,
                 retry=True, today=today, guard=guard,
