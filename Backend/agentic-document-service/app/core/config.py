@@ -144,6 +144,51 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("EMBEDDING_MODEL"),
     )
     gemini_api_key: str = Field(default="", validation_alias=AliasChoices("GEMINI_API_KEY"))
+    # ── Personalization (prompt-pattern profile + generated chat instruction) ──
+    # Every document-chat prompt is logged; each `personalization_batch_size`
+    # prompts the Profile Builder updates the user's cumulative profile in the
+    # background. `personalization_model` runs both the builder and the
+    # instruction generator (falls back to gemini-2.5-flash / -pro / 2.0-flash).
+    personalization_enabled: bool = Field(
+        default=True, validation_alias=AliasChoices("PERSONALIZATION_ENABLED")
+    )
+    personalization_batch_size: int = Field(
+        default=10, validation_alias=AliasChoices("PERSONALIZATION_BATCH_SIZE")
+    )
+    personalization_model: str = Field(
+        default="gemini-2.5-flash", validation_alias=AliasChoices("PERSONALIZATION_MODEL")
+    )
+    personalization_max_prompt_chars: int = Field(
+        default=4000, validation_alias=AliasChoices("PERSONALIZATION_MAX_PROMPT_CHARS")
+    )
+    # Claude-style memory: how much retrieved topic text is injected per chat turn.
+    # Only matching / pinned notes are loaded (just-in-time), never the whole store.
+    personalization_memory_max_inject_chars: int = Field(
+        default=2800, validation_alias=AliasChoices("PERSONALIZATION_MEMORY_MAX_INJECT_CHARS")
+    )
+    personalization_memory_max_retrieve: int = Field(
+        default=4, validation_alias=AliasChoices("PERSONALIZATION_MEMORY_MAX_RETRIEVE")
+    )
+    # Project (case) memory: before answering, a cheap router call sees the project's
+    # "- slug: description" listing and replies READ_MEMORY: <slug> or NONE. On a
+    # directive that one file is read and injected, then the normal answer call runs.
+    # Only chats that HAVE a project pay for this; set false to keep the deterministic
+    # listing-only retrieval.
+    personalization_memory_directive_enabled: bool = Field(
+        default=True, validation_alias=AliasChoices("PERSONALIZATION_MEMORY_DIRECTIVE_ENABLED")
+    )
+    personalization_memory_directive_model: str = Field(
+        default="gemini-2.5-flash",
+        validation_alias=AliasChoices("PERSONALIZATION_MEMORY_DIRECTIVE_MODEL"),
+    )
+    personalization_memory_directive_timeout_s: float = Field(
+        default=6.0, validation_alias=AliasChoices("PERSONALIZATION_MEMORY_DIRECTIVE_TIMEOUT_S")
+    )
+    # Post-turn extraction: the reply is already streamed, then a background job folds
+    # durable facts from (last user message + assistant reply) into project memory.
+    personalization_memory_turn_extract_enabled: bool = Field(
+        default=True, validation_alias=AliasChoices("PERSONALIZATION_MEMORY_TURN_EXTRACT_ENABLED")
+    )
     # Single-pass Research mode model. gemini-3.6-flash (grounded, thinking_level="low")
     # replaced gemini-2.5-pro — cheaper and faster while keeping live Google Search grounding.
     research_model_name: str = Field(

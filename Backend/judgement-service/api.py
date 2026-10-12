@@ -101,6 +101,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ./errorlog ──
+import os as _os  # noqa: E402
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(app, service_name="judgement-service", own_code_root=_os.path.dirname(_os.path.abspath(__file__)))
+
 
 @app.on_event("startup")
 async def _log_agent_configuration() -> None:

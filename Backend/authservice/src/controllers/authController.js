@@ -78,6 +78,7 @@ const crypto = require('crypto');
 const { collectDeviceInfo, lookupGeoLocation } = require('../utils/deviceInfo');
 const { createAndSendOTP, verifyOTP, sendPasswordSetEmail } = require('../services/otpService');
 const { syncContactToBrevo } = require('../services/brevoService');
+const referralService = require('../services/referralCodes.service');
 
 // ⚠️ TEMPORARY: skips email OTP on regular login (username/password only).
 // Set to false (or BYPASS_LOGIN_OTP=false in env) to restore OTP verification.
@@ -223,6 +224,10 @@ const registerSoloLawyer = async (req, res) => {
       role_id: role_id || null,
     });
 
+    // Sales Referrals: a solo user has no firm, so the attribution row goes to user_referrals
+    // (same shape as tenant_referrals, keyed on users.id). Never fails the signup.
+    const soloReferral = await referralService.recordUserSignupReferral(user.id, req.body.referralCode);
+
     await UserProfessionalProfile.findOrCreate(user.id);
     const profileUpdate = { is_profile_completed: false };
     if (bar_enrollment_number) profileUpdate.bar_enrollment_number = bar_enrollment_number;
@@ -243,6 +248,8 @@ const registerSoloLawyer = async (req, res) => {
       success: true,
       message: 'Solo lawyer registered successfully',
       token,
+      // Sales Referrals: lets the signup page show "Referred by <owner>" (owner name comes from the status API)
+      referral: { code: soloReferral.code, status: soloReferral.result },
       user: {
         id: activeUser.id,
         username: activeUser.username,
@@ -320,8 +327,15 @@ const registerFirm = async (req, res) => {
       ? domain_role.toUpperCase()
       : 'LEGAL_PROFESSIONAL';
 
+    // One transaction: admin user, firm, firm_user link and the tenant_referrals row.
+    // If anything after the firms insert fails, everything is rolled back (no orphan rows).
+    const client = await pool.connect();
     let adminUser = null;
+    let firm = null;
+    let referral = null;
     try {
+      await client.query('BEGIN');
+
       adminUser = await User.create({
         username: registering_advocate_name,
         email,
@@ -335,10 +349,10 @@ const registerFirm = async (req, res) => {
         location: city && state ? `${city}, ${state}` : null,
         domain_role: firmDomainRole,
         role_id: role_id || null,
-      });
+      }, client);
 
       // Create firm record (address/PAN optional — simplified registration form)
-      const firm = await Firm.create({
+      firm = await Firm.create({
         firm_name,
         firm_type,
         establishment_date: establishment_date || null,
@@ -358,52 +372,58 @@ const registerFirm = async (req, res) => {
         gst_number: gst_number || null,
         approval_status: 'PENDING',
         admin_user_id: adminUser.id
-      });
+      }, client);
 
       // Create firm_user relationship
       await FirmUser.create({
         firm_id: firm.id,
         user_id: adminUser.id,
         role: 'ADMIN'
-      });
+      }, client);
 
-      // Assign free plan to firm admin (non-blocking)
-      assignFreePlanToUser(adminUser.id).catch(() => {});
+      // Sales Referrals: one tenant_referrals row for every new workspace (code_id NULL = Direct),
+      // inside this same transaction, under a savepoint so it can never fail the signup.
+      referral = await referralService.attributeSignup(client, firm.id, req.body.referralCode);
 
-      // Sync contact to Brevo list (non-blocking — triggers Welcome Email automation)
-      syncContactToBrevo(email, registering_advocate_name);
-
-      // TODO: Send email to admin with credentials (tempPassword)
-      // For now, we'll return it in response (remove in production)
-      console.log(`[Firm Registration] Admin credentials for ${email}: Password: ${tempPassword}`);
-
-      return res.status(201).json({
-        success: true,
-        message: 'Firm registration submitted successfully. Your application is under review. You will receive access within 24 hours after verification.',
-        firm: {
-          id: firm.id,
-          firm_name: firm.firm_name,
-          email: firm.email,
-          approval_status: firm.approval_status
-        },
-        // Remove admin_credentials in production - send via email instead
-        admin_credentials: {
-          email: adminUser.email,
-          temporary_password: tempPassword,
-          note: 'Please change your password on first login'
-        }
-      });
+      await client.query('COMMIT');
     } catch (createError) {
-      // Roll back orphaned admin user if firm/link creation failed
-      if (adminUser?.id) {
-        try {
-          await pool.query('DELETE FROM users WHERE id = $1', [adminUser.id]);
-        } catch (cleanupError) {
-          console.error('Failed to clean up orphaned firm admin user:', cleanupError);
-        }
-      }
+      try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
       throw createError;
+    } finally {
+      client.release();
     }
+
+    // Assign free plan to firm admin (non-blocking)
+    assignFreePlanToUser(adminUser.id).catch(() => {});
+
+    // Sync contact to Brevo list (non-blocking — triggers Welcome Email automation)
+    syncContactToBrevo(email, registering_advocate_name);
+
+    // TODO: Send email to admin with credentials (tempPassword)
+    // For now, we'll return it in response (remove in production)
+    console.log(`[Firm Registration] Admin credentials for ${email}: Password: ${tempPassword}`);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Firm registration submitted successfully. Your application is under review. You will receive access within 24 hours after verification.',
+      firm: {
+        id: firm.id,
+        firm_name: firm.firm_name,
+        email: firm.email,
+        approval_status: firm.approval_status
+      },
+      // Sales Referrals: lets the signup page show "Referred by <owner>" (owner name comes from the status API)
+      referral: {
+        code: referral ? referral.code : null,
+        status: referral ? referral.result : 'DIRECT'
+      },
+      // Remove admin_credentials in production - send via email instead
+      admin_credentials: {
+        email: adminUser.email,
+        temporary_password: tempPassword,
+        note: 'Please change your password on first login'
+      }
+    });
   } catch (error) {
     console.error('Error during firm registration:', error);
     res.status(500).json({ 
@@ -450,6 +470,9 @@ const register = async (req, res) => {
       role_id: role_id || null,
     });
 
+    // Sales Referrals: every self-signup gets a row (code_id NULL = Direct). Never fails the signup.
+    const legacyReferral = await referralService.recordUserSignupReferral(user.id, req.body.referralCode);
+
     // Assign free plan (non-blocking)
     assignFreePlanToUser(user.id).catch(() => {});
 
@@ -461,6 +484,7 @@ const register = async (req, res) => {
     res.status(201).json({
       message: 'User registered successfully',
       token,
+      referral: { code: legacyReferral.code, status: legacyReferral.result },
       user: {
         id: user.id,
         username: user.username,
@@ -713,6 +737,9 @@ const firebaseGoogleSignIn = async (req, res) => {
       });
 
       console.log(`[GoogleSignIn] ✅ New Google user created: ${userEmail}`);
+
+      // Sales Referrals: a Google signup is a self-signup too → user_referrals row (Direct unless a ref was sent)
+      await referralService.recordUserSignupReferral(user.id, req.body.referralCode);
 
       // Sync contact to Brevo list (non-blocking — triggers Welcome Email automation)
       syncContactToBrevo(userEmail, username);

@@ -12,7 +12,7 @@ const {
   legacyCreateProxyMiddleware,
 } = require("http-proxy-middleware");
 const axios = require("axios");
-const { authMiddleware } = require("./middlewares/authMiddleware");
+const { authMiddleware, injectProxyUserHeaders } = require("./middlewares/authMiddleware");
 const authProxy = require("./routes/authProxy");
 const fileProxy = require("./routes/fileProxy");
 // const paymentProxy = require("./routes/paymentProxy");
@@ -28,6 +28,10 @@ const draftingAiProxy = require("./routes/draftingAiProxy");
 const templateAnalyzerProxy = require("./routes/templateAnalyzerProxy");
 
 const app = express();
+
+// Central error capture (docs/error-logging.md). Vendored copy: ../errorlog
+const errorlog = require("../errorlog");
+errorlog.install(app, { serviceName: "gateway-service", root: require("path").resolve(__dirname, "..") });
 
 // Global JSON parsing removed to prevent breaking proxies. Applied to specific direct routes.
 // Target URL for auth service
@@ -217,15 +221,7 @@ app.use("/api/drafts", authMiddleware, createProxyMiddleware({
     return rewrittenPath;
   },
   onProxyReq: (proxyReq, req) => {
-    // Forward Authorization header
-    if (req.headers.authorization) {
-      proxyReq.setHeader("Authorization", req.headers.authorization);
-    }
-    // Inject user ID from JWT into header if available
-    if (req.user && req.user.id) {
-      proxyReq.setHeader("x-user-id", req.user.id);
-    }
-    // Forward firm ID if present
+    injectProxyUserHeaders(proxyReq, req);
     if (req.headers["x-firm-id"]) {
       proxyReq.setHeader("x-firm-id", req.headers["x-firm-id"]);
     }
@@ -253,6 +249,9 @@ app.use((req, res, next) => {
   console.log(`[Gateway] 404 Not Found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({ error: `Cannot ${req.method} ${req.originalUrl}` });
 });
+
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 
 // General error handler
 app.use((err, req, res, next) => {

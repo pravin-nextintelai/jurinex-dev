@@ -5,8 +5,8 @@ class FirmUser {
     firm_id,
     user_id,
     role = 'STAFF'
-  }) {
-    const result = await pool.query(
+  }, db = pool) {
+    const result = await db.query(
       `INSERT INTO firm_users (
         firm_id, user_id, role, created_at
       ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)

@@ -250,6 +250,8 @@ class FolderChatRequest(BaseModel):
     secret_id: str | None = None
     learning_mode: bool = False
     research_mode: bool = False
+    # This conversation neither reads nor writes Memory files.
+    incognito: bool = False
     # Deep Research: bounded agentic web-research loop (plan → search rounds → synthesize)
     # with a hard rupee budget. Supersedes research_mode/learning_mode when set.
     deep_research: bool = False

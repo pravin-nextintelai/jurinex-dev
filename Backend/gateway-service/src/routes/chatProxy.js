@@ -1,7 +1,7 @@
 // src/routes/chatProxy.js
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
-const { authMiddleware } = require("../middlewares/authMiddleware");
+const { authMiddleware, injectProxyUserHeaders } = require("../middlewares/authMiddleware");
 const { resolveChatServiceTarget } = require("../utils/chatServiceTarget");
 
 const router = express.Router();
@@ -30,14 +30,7 @@ router.use(
     },
     logLevel: "debug",
     onProxyReq: (proxyReq, req) => {
-      // Forward Authorization header to ChatModel service
-      if (req.headers.authorization) {
-        proxyReq.setHeader("Authorization", req.headers.authorization);
-      }
-      // Inject user ID from JWT into header if available
-      if (req.user && req.user.id) {
-        proxyReq.setHeader("x-user-id", req.user.id);
-      }
+      injectProxyUserHeaders(proxyReq, req);
       console.log(`[Gateway] Proxying to ChatModel: ${proxyReq.path}`);
     },
     proxyTimeout: 120000, // 2 minutes for LLM responses

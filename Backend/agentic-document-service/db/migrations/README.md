@@ -74,6 +74,16 @@ These migrations align the new Python `agentic-document-service` with the shared
     unread turns again, oldest first, and reviews chats never reviewed, without
     overwriting anything newer or bringing back what was deleted. Purged with the case.
     Created on first use too.
+18. keeps the central error log shared by every backend service (migration `183`):
+    `error_logs`. One row per error a user actually hit, with the exact message the
+    user saw and the exact internal error and stack behind it, plus the failed Gemini
+    or external call where there was one. Written by the vendored `errorlog` package
+    (Python) and module (Node), or through this service's `POST /internal/error-logs`.
+    See `docs/error-logging.md`. Created on first use too.
+19. keeps the audit log of API usage (migration `184`): `api_audit_logs`, one row per
+    request with the user, service, endpoint, method, status, duration and, when the
+    request failed, the id of its `error_logs` row. Written by the same `errorlog`
+    module, or through `POST /internal/audit-logs`. Created on first use too.
 
 ## Suggested Run Order
 

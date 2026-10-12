@@ -671,3 +671,117 @@
   }
 }
 
+
+/* ---------- Referral code (optional) ---------- */
+.referral-code {
+  margin-top: 8px;
+}
+.referral-code--collapsed {
+  margin: 4px 0 12px;
+}
+.referral-code__link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #1AA49B;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.referral-code__link:hover {
+  color: #168f87;
+}
+.referral-code__optional {
+  color: #888;
+  font-weight: 400;
+  font-size: 13px;
+}
+.referral-code__control {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.referral-code__control input {
+  width: 100%;
+  padding-right: 36px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.referral-code__control--valid input {
+  border-color: #16a34a;
+}
+.referral-code__control--invalid input {
+  border-color: #dc2626;
+}
+.referral-code__clear {
+  position: absolute;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+}
+.referral-code__clear:hover {
+  background: #f1f5f9;
+  color: #333;
+}
+.referral-code__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 20px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.referral-code__msg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.referral-code__msg--checking {
+  color: #666;
+}
+.referral-code__msg--valid {
+  color: #16a34a;
+}
+.referral-code__owner {
+  color: #444;
+  font-weight: 500;
+}
+.referral-code__owner::before {
+  content: "\00b7";
+  margin: 0 4px;
+  color: #999;
+}
+.referral-code__msg--invalid {
+  color: #dc2626;
+}
+.referral-code__msg--warn {
+  color: #b45309;
+}
+.referral-code__remove {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #dc2626;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.referral-code__spin {
+  animation: spin 1s linear infinite;
+}
+@media (max-width: 480px) {
+  .referral-code__status {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

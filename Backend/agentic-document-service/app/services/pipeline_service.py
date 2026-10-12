@@ -1,11 +1,13 @@
 import hashlib
 import json
 import logging
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import re
-from typing import Any
+from typing import Any, Callable
 
 from app.core.config import Settings, get_settings
 from app.schemas.contracts import (
@@ -128,6 +130,103 @@ def assign_chunk_pages(chunk_rows: list[ChunkRecord]) -> None:
         if page_start is not None:
             row.metadata["page_start"] = str(page_start)
             row.metadata["page_end"] = str(page_end if page_end is not None else page_start)
+
+
+# ── Chunk persistence helpers ────────────────────────────────────────────────
+# Rows per multi-row INSERT: 250 rows of 768-dim vectors are ~2 MB of SQL text.
+_CHUNK_ROWS_PER_STATEMENT = 250
+# Connections one document may use at once for its slices, and the process-wide
+# cap shared by every document finalising concurrently (the DB is remote, and
+# each slice opens its own connection).
+_PERSIST_WORKERS_PER_DOCUMENT = 4
+_persist_connection_gate = threading.BoundedSemaphore(8)
+
+
+def _vector_literal(values: list[float]) -> str:
+    """pgvector text literal with 6-decimal floats: ~40% of the bytes of repr()
+    for a unit-norm 768-dim vector, and far below what cosine similarity can
+    tell apart."""
+    return "[" + ",".join(f"{float(v):.6f}" for v in values) + "]"
+
+
+def _run_db_slices(task: Callable[[int], Any], count: int) -> list[Any]:
+    """task(i) for i in range(count), each on its own connection, a few at once.
+
+    Results come back in index order; the first failure is re-raised once the
+    slices already running have finished. Each slice is its own transaction, so
+    a retry of the whole document is idempotent (the statements upsert).
+    """
+    if count <= 1:
+        return [task(index) for index in range(count)]
+
+    def _gated(index: int) -> Any:
+        with _persist_connection_gate:
+            return task(index)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(
+        max_workers=min(_PERSIST_WORKERS_PER_DOCUMENT, count), thread_name_prefix="chunk-persist"
+    ) as pool:
+        return list(pool.map(_gated, range(count)))
+
+
+def _insert_chunk_rows(file_id: str, base_index: int, batch: list[ChunkRecord]) -> dict[int, str]:
+    """One multi-row upsert into file_chunks; returns {chunk_index: id}."""
+    row_placeholders: list[str] = []
+    values: list[Any] = []
+    for offset, chunk in enumerate(batch):
+        row_placeholders.append("(%s::uuid, %s, %s, %s, %s, %s, %s)")
+        values.extend([
+            file_id,
+            base_index + offset,
+            chunk.text,
+            max(1, int(len(chunk.text.split()) * 1.3)),
+            _page_number(chunk.metadata.get("page_start")),
+            _page_number(chunk.metadata.get("page_end")),
+            chunk.metadata.get("heading") or None,
+        ])
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO file_chunks (file_id, chunk_index, content, token_count, page_start, page_end, heading)
+            VALUES {", ".join(row_placeholders)}
+            ON CONFLICT (file_id, chunk_index) DO UPDATE
+              SET content = EXCLUDED.content,
+                  token_count = EXCLUDED.token_count,
+                  page_start = EXCLUDED.page_start,
+                  page_end = EXCLUDED.page_end,
+                  heading = EXCLUDED.heading
+            RETURNING id, chunk_index
+            """,
+            values,
+        )
+        mapping = {int(row.get("chunk_index")): str(row.get("id")) for row in cur.fetchall()}
+        conn.commit()
+    return mapping
+
+def _insert_chunk_vectors(file_id: str, records: list[ChunkRecord]) -> None:
+    """One multi-row upsert into chunk_vectors for chunk rows that already exist."""
+    if not records:
+        return
+    row_placeholders: list[str] = []
+    values: list[Any] = []
+    for record in records:
+        row_placeholders.append("(%s::uuid, %s::vector, %s::uuid)")
+        values.extend([record.chunk_id, _vector_literal(record.embedding), file_id])
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO chunk_vectors (chunk_id, embedding, file_id)
+            VALUES {", ".join(row_placeholders)}
+            ON CONFLICT (chunk_id) DO UPDATE
+              SET embedding = EXCLUDED.embedding,
+                  file_id = EXCLUDED.file_id,
+                  updated_at = NOW()
+            """,
+            values,
+        )
+        conn.commit()
 
 
 def _get_user_role_from_db(uid: int) -> str | None:
@@ -507,11 +606,16 @@ class LegalCasePipelineService:
                 len(text),
             )
 
-        # Side-writes (extracted-text upload → OCR-structure DB persist) don't
-        # feed chunking/embedding, so they run in the background OVERLAPPING
-        # those stages instead of adding several seconds of remote I/O to the
-        # critical path. Joined below before the URI is needed for metadata.
-        def _side_writes() -> str:
+        # Side-writes don't feed chunking/embedding, so they run in the background
+        # OVERLAPPING those stages instead of adding remote I/O to the critical path:
+        #   1. extracted-text upload to the output bucket — joined below, because
+        #      its URI goes into the stored-document metadata;
+        #   2. OCR-structure persist (document_ai_extractions) — NOT joined. For a
+        #      2,000-page file that JSON is tens of MB and takes longer to write than
+        #      the rest of the pipeline; every reader of the row (OCR viewer,
+        #      chronology page stamps) reads it lazily or already holds the
+        #      [PAGE n]-stamped text, so completion never waits for it.
+        def _upload_extracted_text() -> str:
             uri = ""
             if text and document.document_uri and document.document_uri.startswith("gs://"):
                 try:
@@ -533,8 +637,15 @@ class LegalCasePipelineService:
                         document.document_name,
                         exc,
                     )
+            return uri
+
+        def _persist_structure() -> None:
             # _persist_ocr_extraction stores extracted_text_uri in its metadata,
-            # so it must run after the upload — chained here, off the hot path.
+            # so it waits for the upload — chained here, off the hot path.
+            try:
+                uri = _text_future.result(timeout=180)
+            except Exception:
+                uri = ""
             self._persist_ocr_extraction(
                 file_id=db_file_id,
                 document=document,
@@ -544,12 +655,23 @@ class LegalCasePipelineService:
                 quality_score=quality_score,
                 extracted_text_uri=uri,
             )
-            return uri
 
         from concurrent.futures import ThreadPoolExecutor as _SidePool
-        _side_pool = _SidePool(max_workers=1, thread_name_prefix="doc-side")
-        _side_future = _side_pool.submit(_side_writes)
+        _side_pool = _SidePool(max_workers=2, thread_name_prefix="doc-side")
+        _text_future = _side_pool.submit(_upload_extracted_text)
+        _structure_future = _side_pool.submit(_persist_structure)
         _side_pool.shutdown(wait=False)
+
+        def _log_structure_outcome(future) -> None:
+            exc = future.exception()
+            if exc is not None:
+                logger.warning(
+                    "[Pipeline] OCR structure persist failed document=%s error=%s",
+                    document.document_name,
+                    exc,
+                )
+
+        _structure_future.add_done_callback(_log_structure_outcome)
 
         doc_type = self._document_ai.classify(document, text)
         logger.info("[Pipeline] Document classified as %s", doc_type.value)
@@ -617,6 +739,7 @@ class LegalCasePipelineService:
                 progress_callback=progress_callback,
                 progress_start=65.0,
                 progress_end=78.0,
+                max_concurrent=max(1, int(getattr(self._settings, "embedding_max_concurrent_requests", 16) or 16)),
             )
 
             for (section_idx, section), chunk_text, chunk_embedding in zip(
@@ -650,14 +773,14 @@ class LegalCasePipelineService:
 
         logger.info("[Pipeline] Step 3/4: done — %d vectors stored in bundle", len(chunk_rows))
 
-        # Join the background side-writes; the extracted-text URI goes into the
-        # stored-document metadata below. Chunking + embedding usually take
-        # longer, so this normally returns immediately.
+        # Join the extracted-text upload only; its URI goes into the stored-document
+        # metadata below. Chunking + embedding usually take longer, so this normally
+        # returns immediately. The OCR-structure persist keeps running on its own.
         try:
-            extracted_text_uri = _side_future.result(timeout=180)
+            extracted_text_uri = _text_future.result(timeout=180)
         except Exception as exc:
             logger.warning(
-                "[Pipeline] side-writes failed/timed out document=%s error=%s",
+                "[Pipeline] extracted-text upload failed/timed out document=%s error=%s",
                 document.document_name,
                 exc,
             )
@@ -764,6 +887,22 @@ class LegalCasePipelineService:
                 if not insert_columns:
                     return
 
+                # Serialise the structured layout ONCE. raw_response used to get a
+                # second json.dumps of the same dict — double the CPU and double the
+                # bytes sent, for every document. Above ocr_structure_raw_copy_max_mb
+                # the copy is skipped: readers prefer structured_schema and only fall
+                # back to raw_response when that is empty.
+                structured_text = _json_for_db(structured_payload) if structured_payload is not None else None
+                raw_copy_limit = max(0, int(getattr(self._settings, "ocr_structure_raw_copy_max_mb", 4) or 0)) * 1024 * 1024
+                serialized_jsonb: dict[str, str | None] = {
+                    "structured_schema": structured_text,
+                    "raw_response": (
+                        structured_text
+                        if structured_text is not None and len(structured_text) <= raw_copy_limit
+                        else None
+                    ),
+                }
+
                 placeholders: list[str] = []
                 values: list[Any] = []
                 for column in insert_columns:
@@ -772,7 +911,10 @@ class LegalCasePipelineService:
                         placeholders.append("NOW()")
                         continue
                     placeholders.append(_json_placeholder(column))
-                    values.append(_json_for_db(value) if column in _JSONB_COLUMNS else value)
+                    if column in serialized_jsonb:
+                        values.append(serialized_jsonb[column])
+                    else:
+                        values.append(_json_for_db(value) if column in _JSONB_COLUMNS else value)
 
                 cur.execute(
                     f"""
@@ -816,86 +958,54 @@ class LegalCasePipelineService:
             file_id,
             len(chunks),
         )
-        persisted: list[ChunkRecord] = []
         # Multi-row statements in slices instead of 2 round-trips per chunk: the
-        # DB is remote, so per-chunk execute() was the dominant per-document cost
-        # (a 60-chunk doc = 120 sequential round-trips).
-        _BATCH_ROWS = 200
+        # DB is remote, so per-chunk execute() was the dominant per-document cost.
+        # The slices are independent, so a large document (a 2,000-page file is
+        # ~2,400 chunks = 10 slices per table) runs a few of them at once on
+        # separate connections — round-trip latency, not the server, was the cost.
+        started = time.monotonic()
+        slices = [
+            chunks[start:start + _CHUNK_ROWS_PER_STATEMENT]
+            for start in range(0, len(chunks), _CHUNK_ROWS_PER_STATEMENT)
+        ]
         try:
-            with get_db_connection() as conn, conn.cursor() as cur:
-                id_by_index: dict[int, str] = {}
-                for start in range(0, len(chunks), _BATCH_ROWS):
-                    batch = chunks[start:start + _BATCH_ROWS]
-                    row_placeholders: list[str] = []
-                    values: list[Any] = []
-                    for offset, chunk in enumerate(batch):
-                        row_placeholders.append("(%s::uuid, %s, %s, %s, %s, %s, %s)")
-                        values.extend([
-                            file_id,
-                            start + offset,
-                            chunk.text,
-                            max(1, int(len(chunk.text.split()) * 1.3)),
-                            _page_number(chunk.metadata.get("page_start")),
-                            _page_number(chunk.metadata.get("page_end")),
-                            chunk.metadata.get("heading") or None,
-                        ])
-                    cur.execute(
-                        f"""
-                        INSERT INTO file_chunks (file_id, chunk_index, content, token_count, page_start, page_end, heading)
-                        VALUES {", ".join(row_placeholders)}
-                        ON CONFLICT (file_id, chunk_index) DO UPDATE
-                          SET content = EXCLUDED.content,
-                              token_count = EXCLUDED.token_count,
-                              page_start = EXCLUDED.page_start,
-                              page_end = EXCLUDED.page_end,
-                              heading = EXCLUDED.heading
-                        RETURNING id, chunk_index
-                        """,
-                        values,
-                    )
-                    for row in cur.fetchall():
-                        id_by_index[int(row.get("chunk_index"))] = str(row.get("id"))
-
-                for start in range(0, len(chunks), _BATCH_ROWS):
-                    batch = chunks[start:start + _BATCH_ROWS]
-                    row_placeholders = []
-                    values = []
-                    for offset, chunk in enumerate(batch):
-                        db_chunk_id = id_by_index.get(start + offset) or chunk.chunk_id
-                        embedding_pg = f"[{','.join(str(float(v)) for v in chunk.embedding)}]"
-                        row_placeholders.append("(%s::uuid, %s::vector, %s::uuid)")
-                        values.extend([db_chunk_id, embedding_pg, file_id])
-                        persisted.append(
-                            ChunkRecord(
-                                chunk_id=db_chunk_id,
-                                case_id=chunk.case_id,
-                                document_id=file_id,
-                                document_name=chunk.document_name,
-                                doc_type=chunk.doc_type,
-                                text=chunk.text,
-                                embedding=chunk.embedding,
-                                metadata=chunk.metadata,
-                            )
-                        )
-                    cur.execute(
-                        f"""
-                        INSERT INTO chunk_vectors (chunk_id, embedding, file_id)
-                        VALUES {", ".join(row_placeholders)}
-                        ON CONFLICT (chunk_id) DO UPDATE
-                          SET embedding = EXCLUDED.embedding,
-                              file_id = EXCLUDED.file_id,
-                              updated_at = NOW()
-                        """,
-                        values,
-                    )
-                conn.commit()
+            id_by_index: dict[int, str] = {}
+            for mapping in _run_db_slices(
+                lambda index: _insert_chunk_rows(
+                    file_id, index * _CHUNK_ROWS_PER_STATEMENT, slices[index]
+                ),
+                len(slices),
+            ):
+                id_by_index.update(mapping)
+            persisted = [
+                ChunkRecord(
+                    chunk_id=id_by_index.get(index) or chunk.chunk_id,
+                    case_id=chunk.case_id,
+                    document_id=file_id,
+                    document_name=chunk.document_name,
+                    doc_type=chunk.doc_type,
+                    text=chunk.text,
+                    embedding=chunk.embedding,
+                    metadata=chunk.metadata,
+                )
+                for index, chunk in enumerate(chunks)
+            ]
+            _run_db_slices(
+                lambda index: _insert_chunk_vectors(
+                    file_id,
+                    persisted[index * _CHUNK_ROWS_PER_STATEMENT:(index + 1) * _CHUNK_ROWS_PER_STATEMENT],
+                ),
+                len(slices),
+            )
         except Exception as exc:
             logger.exception("[Pipeline] DB chunk/vector persistence failed file_id=%s error=%s", file_id, exc)
             return chunks
         logger.info(
-            "[Pipeline] Step 4/4: done — persisted %d chunk rows for file_id=%s",
+            "[Pipeline] Step 4/4: done — persisted %d chunk rows for file_id=%s in %.2fs (%d slices)",
             len(persisted),
             file_id,
+            time.monotonic() - started,
+            len(slices),
         )
         return persisted
 

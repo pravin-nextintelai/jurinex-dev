@@ -8,6 +8,10 @@ const logger = require('./utils/logger');
 
 const app = express();
 
+// Central error capture (docs/error-logging.md). Vendored copy: ./errorlog
+const errorlog = require('./errorlog');
+errorlog.install(app, { serviceName: 'translation-service', root: __dirname });
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -48,6 +52,9 @@ app.get('/', (req, res) => {
     },
   });
 });
+
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

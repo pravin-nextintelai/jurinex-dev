@@ -5,6 +5,8 @@ import ApiService from '../../services/api';
 import Swal from 'sweetalert2';
 import './LawFirmRegistrationPage.css';
 import { AUTH_SERVICE_URL } from '../../config/apiConfig';
+import useReferralCode from '../../hooks/useReferralCode';
+import ReferralCodeField from '../../components/auth/ReferralCodeField';
 
 const FIRM_TYPES = ['Registered', 'Not Registered'];
 
@@ -25,6 +27,8 @@ const LawFirmRegistrationPage = () => {
   const [errors, setErrors] = useState({});
   const [roles, setRoles] = useState([]);
   const [rolesLoading, setRolesLoading] = useState(false);
+  // Sales Referrals: optional code from ?ref= link, memory (30 days) or typed in.
+  const referral = useReferralCode();
 
   const [soloData, setSoloData] = useState({
     full_name: '',
@@ -102,6 +106,12 @@ const LawFirmRegistrationPage = () => {
     const isValid = registrationType === 'SOLO' ? validateSolo() : validateFirm();
     if (!isValid) return;
 
+    // Referral code: block on invalid / inactive / too short, wait for an in-flight check,
+    // send the code only when it is valid or the check could not be made.
+    const referralDecision = await referral.resolveForSubmit();
+    if (!referralDecision.allowed) return;
+    const referralPayload = referralDecision.referralCode ? { referralCode: referralDecision.referralCode } : {};
+
     setIsLoading(true);
     try {
       if (registrationType === 'SOLO') {
@@ -111,14 +121,20 @@ const LawFirmRegistrationPage = () => {
           email: soloData.email,
           mobile: soloData.mobile,
           password: soloData.password,
+          ...referralPayload,
         });
 
         if (response.token) localStorage.setItem('token', response.token);
+        referral.onSignupSuccess();
 
         await Swal.fire({
           icon: 'success',
           title: 'Registration Successful!',
-          text: 'You have been registered successfully. Redirecting to login...',
+          html: `<p>You have been registered successfully. Redirecting to login...</p>${
+            referral.ownerName && referralDecision.referralCode
+              ? `<p style="margin-top:10px;"><strong>Referred by:</strong> ${referral.ownerName}</p>`
+              : ''
+          }`,
           confirmButtonColor: '#1AA49B',
         });
         navigate('/login');
@@ -130,7 +146,9 @@ const LawFirmRegistrationPage = () => {
           role_id: firmData.role_id,
           email: firmData.email,
           mobile: firmData.mobile,
+          ...referralPayload,
         });
+        referral.onSignupSuccess();
 
         await Swal.fire({
           icon: 'info',
@@ -139,6 +157,7 @@ const LawFirmRegistrationPage = () => {
             <p style="text-align:left;margin:10px 0;">Your firm registration application has been submitted successfully.</p>
             <p style="text-align:left;margin:10px 0;"><strong>Status:</strong> Under Review</p>
             <p style="text-align:left;margin:10px 0;">You will receive admin credentials via email once approved (within 24 hours).</p>
+            ${referral.ownerName && referralDecision.referralCode ? `<p style="text-align:left;margin:10px 0;"><strong>Referred by:</strong> ${referral.ownerName}</p>` : ''}
           `,
           confirmButtonColor: '#1AA49B',
           width: '500px',
@@ -357,6 +376,9 @@ const LawFirmRegistrationPage = () => {
               </p>
             </div>
           )}
+
+          {/* Optional referral code (shown for both solo and firm signups) */}
+          <ReferralCodeField {...referral.fieldProps} />
 
           {/* Footer buttons */}
           <div className="form-footer">

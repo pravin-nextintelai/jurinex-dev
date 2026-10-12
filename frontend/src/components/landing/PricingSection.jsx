@@ -3,6 +3,7 @@ import PropTypes from "prop-types"
 import { motion as Motion } from "framer-motion"
 import { PAYMENT_SERVICE_URL } from "../../config/apiConfig"
 import apiService from "../../services/api"
+import { reportPaymentError } from "../../services/paymentErrorReport"
 import { buildPlanLimitSections, toDisplayString } from "../../utils/planDisplayConfig"
 import { PLAN_FEATURES } from "../../utils/landingConstants"
 import PlanLimitsDisplay from "../PlanLimitsDisplay"
@@ -180,6 +181,7 @@ const PricingSection = ({ onNavigateLogin, onNavigateContact }) => {
         throw new Error(startData?.message || "Invalid subscription response.")
       }
 
+      const subscriptionOrder = { id: startData.subscription.id }
       const options = {
         key: startData.subscription.key,
         subscription_id: startData.subscription.id,
@@ -212,17 +214,22 @@ const PricingSection = ({ onNavigateLogin, onNavigateContact }) => {
             alert("Payment successful. Subscription activated.")
             setProcessingPlanId(null)
           } catch (err) {
+            reportPaymentError({ flow: "subscription", kind: "verify-failed", token, error: err, order: subscriptionOrder, plan: uiPlan })
             setPaymentError(err.message || "Payment verification failed.")
             setProcessingPlanId(null)
           }
         },
         modal: {
-          ondismiss: () => setProcessingPlanId(null),
+          ondismiss: () => {
+            reportPaymentError({ flow: "subscription", kind: "cancelled", token, message: "Payment cancelled", order: subscriptionOrder, plan: uiPlan })
+            setProcessingPlanId(null)
+          },
         },
       }
 
       const instance = new window.Razorpay(options)
       instance.on("payment.failed", (failed) => {
+        reportPaymentError({ flow: "subscription", kind: "failed", token, razorpay: failed, order: subscriptionOrder, plan: uiPlan })
         setPaymentError(
           toDisplayString(failed?.error?.description, "Payment failed. Please try again.")
         )
@@ -230,6 +237,7 @@ const PricingSection = ({ onNavigateLogin, onNavigateContact }) => {
       })
       instance.open()
     } catch (error) {
+      reportPaymentError({ flow: "subscription", kind: "error", token, error, plan: uiPlan })
       setPaymentError(error.message || "Payment initiation failed.")
       setProcessingPlanId(null)
     }

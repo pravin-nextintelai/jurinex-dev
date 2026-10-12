@@ -1,6 +1,6 @@
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
-const { authMiddleware } = require("../middlewares/authMiddleware");
+const { authMiddleware, injectProxyUserHeaders } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
@@ -49,14 +49,7 @@ router.use(
     proxyTimeout: 60000,
     timeout: 60000,
     onProxyReq: (proxyReq, req) => {
-      // Forward Authorization header to Drafting Service
-      if (req.headers.authorization) {
-        proxyReq.setHeader("Authorization", req.headers.authorization);
-      }
-      // Inject user ID from JWT into header if available
-      if (req.user && req.user.id) {
-        proxyReq.setHeader("x-user-id", req.user.id);
-      }
+      injectProxyUserHeaders(proxyReq, req);
       console.log(`[Gateway Draft Proxy] Forward: ${req.method} ${req.originalUrl} → ${finalTarget}${proxyReq.path}`);
     },
     onProxyRes: (proxyRes, req, res) => {

@@ -33,6 +33,10 @@ function authMiddleware(req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
+    if (decoded.id != null) req.headers["x-user-id"] = String(decoded.id);
+    if (typeof decoded.email === "string" && decoded.email) {
+      req.headers["x-user-email"] = decoded.email;
+    }
     console.log(`[Gateway Auth] Token verified successfully for user: ${decoded.id || decoded.userId}`);
     next();
   } catch (err) {
@@ -54,8 +58,20 @@ function errorHandler(err, req, res, next) {
   res.status(500).json({ error: "Something went wrong at API Gateway" });
 }
 
+function injectProxyUserHeaders(proxyReq, req) {
+  const user = req.user || {};
+  const id = user.id != null ? user.id : (user.userId != null ? user.userId : req.headers["x-user-id"]);
+  const email = user.email || req.headers["x-user-email"];
+  if (id != null && id !== "") proxyReq.setHeader("x-user-id", String(id));
+  if (email) proxyReq.setHeader("x-user-email", String(email));
+  if (req.headers.authorization && !proxyReq.getHeader("Authorization")) {
+    proxyReq.setHeader("Authorization", req.headers.authorization);
+  }
+}
+
 module.exports = {
   requestLogger,
   authMiddleware,
   errorHandler,
+  injectProxyUserHeaders,
 };

@@ -13,6 +13,9 @@ const newsletterRoutes = require("./src/routes/newsletterRoutes");
 const pool = require("./src/config/db.js");
 
 const app = express();
+// Central error capture (docs/error-logging.md). Vendored copy: ./errorlog
+const errorlog = require("./errorlog");
+errorlog.install(app, { serviceName: "authservice", root: __dirname });
 // Behind the gateway / Cloud Run, the client IP arrives via X-Forwarded-For —
 // trust it so req.ip resolves to the real device address for session tracking.
 app.set('trust proxy', true);
@@ -61,13 +64,23 @@ const { ensureFirmActiveColumn } = require("./src/utils/ensureFirmActiveColumn")
 const { initializeDeviceSessionSchema } = require("./src/utils/deviceSessionDb");
 const { initializeContactEnquirySchema } = require("./src/utils/contactEnquiryDb");
 const { initializeNewsletterSubscriberSchema } = require("./src/utils/newsletterSubscriberDb");
+const { initializeUserReferralSchema } = require("./src/utils/userReferralDb");
 
 app.use("/api/auth/contact-enquiries", contactEnquiryRoutes); // Public: landing page "Contact us" form
 app.use("/api/auth/newsletter-subscribers", newsletterRoutes); // Public: landing page newsletter form
 app.use("/api/auth/marketing-promos", require("./src/routes/marketingPromoRoutes"));
 app.use("/api/auth", authRoutes);
+// Sales Referrals: public referral-code status check (no auth, rate-limited per IP)
+app.get(
+  "/api/public/referrals/:code/status",
+  require("./src/middleware/referralRateLimit").referralStatusRateLimit,
+  require("./src/controllers/referralController").getPublicReferralStatus
+);
 app.use("/api/auth/internal", internalRoutes); // Internal service-to-service routes
 app.use("/api/rbac", rbacRoutes);
+
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
@@ -86,4 +99,5 @@ app.listen(PORT, async () => {
   await initializeDeviceSessionSchema();
   await initializeContactEnquirySchema();
   await initializeNewsletterSubscriberSchema();
+  await initializeUserReferralSchema();
 });

@@ -17,6 +17,10 @@ const { handleGoogleDriveWebhook } = require('./controllers/webhookController');
 
 const app = express();
 
+// Central error capture (docs/error-logging.md). Vendored copy: ./errorlog
+const errorlog = require('./errorlog');
+errorlog.install(app, { serviceName: 'drafting-service', root: __dirname });
+
 /* ===============================
    MIDDLEWARE
 ================================= */
@@ -123,6 +127,9 @@ app.get('/api/test-route', (req, res) => {
 /* ===============================
    ERROR HANDLER
 ================================= */
+
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 
 app.use((err, req, res, next) => {
   console.error('❌ ERROR:', err.stack);

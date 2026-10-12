@@ -1,6 +1,6 @@
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
-const { authMiddleware } = require("../middlewares/authMiddleware");
+const { authMiddleware, injectProxyUserHeaders } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 const supportTarget = process.env.SUPPORT_SERVICE_URL || "http://localhost:5004";
@@ -35,6 +35,7 @@ router.use(
     },
     logLevel: "debug",
     onProxyReq: (proxyReq, req) => {
+      injectProxyUserHeaders(proxyReq, req);
       console.log("[Gateway][SupportProxy] Forwarding request", {
         method: req.method,
         originalUrl: req.originalUrl,

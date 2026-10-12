@@ -1,4 +1,5 @@
 import React from 'react';
+import { reportClientError } from '../../services/clientErrorReporter';
 
 /**
  * ReportErrorBoundary — prevents a render error in the citation report (e.g. an
@@ -18,6 +19,7 @@ export default class ReportErrorBoundary extends React.Component {
   componentDidCatch(error, info) {
     // Surface to the console for debugging; never swallow silently.
     console.error('[CitationReport] render error:', error, info?.componentStack);
+    reportClientError({ kind: 'render', flow: 'citation-report', error, details: { componentStack: String(info?.componentStack || '').slice(0, 1500) } });
   }
 
   reset = () => this.setState({ error: null });

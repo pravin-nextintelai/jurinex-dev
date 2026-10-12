@@ -161,6 +161,13 @@ async def _global_error_handler(request: Request, exc: Exception) -> JSONRespons
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ./errorlog ──
+import os as _os  # noqa: E402
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(app, service_name="ai-chatbot", own_code_root=_os.path.dirname(_os.path.abspath(__file__)))
+
+
 # ── routes ─────────────────────────────────────────────────────────────────────
 app.include_router(health.router)
 app.include_router(chat.router)

@@ -374,6 +374,19 @@ app.add_middleware(
 )
 app.middleware("http")(structured_request_logging)
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ./errorlog ──
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(
+    app,
+    service_name="citation-service",
+    own_code_root=os.path.dirname(os.path.abspath(__file__)),
+    parse_helpers=(
+        "integrations.gemini._jsonsafe:loads_lenient",
+        "agents.autonomous_citation_agent.runner:_parse_json_loose",
+    ),
+)
+
 
 @app.exception_handler(RequestValidationError)
 async def request_validation_error_handler(request: Request, exc: RequestValidationError):

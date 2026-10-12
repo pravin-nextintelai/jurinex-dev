@@ -666,10 +666,16 @@ def _merge_split_numbers(text: str) -> str:
 # Known multi-fragment legal/place terms that PDF extraction commonly splits.
 # Applied as whole-token, case-insensitive joins ONLY — never alters valid text.
 # Extend this tuple as new fragmented terms are observed in the corpus.
-_OCR_PHRASE_FIXES: tuple[tuple["re.Pattern[str]", str], ...] = tuple(
+# Each entry carries its last fragment (lower-cased) as a literal "needle": a
+# pattern can only match text that contains that literal, so the regex pass is
+# skipped when a plain substring test says it cannot match. On a 2,000-page file
+# this cleaner runs five times over ~6 MB of text; skipping the ~30 passes that
+# never match is what keeps it off the critical path.
+_OCR_PHRASE_FIXES: tuple[tuple["re.Pattern[str]", str, str], ...] = tuple(
     (
         re.compile(r"\b" + r"\s+".join(re.escape(part) for part in fragments) + r"\b", re.IGNORECASE),
         replacement,
+        fragments[-1].lower(),
     )
     for fragments, replacement in (
         (("Con", "stitution"), "Constitution"),
@@ -786,6 +792,17 @@ _PROPER_NAME_SET: frozenset[str] = frozenset(
 # The rejoiner accepts a word if its joined form is a known legal word OR name.
 _REJOIN_WORD_SET: frozenset[str] = _LEGAL_WORD_SET | _PROPER_NAME_SET
 
+# Every prefix of every accepted word, the words themselves and "". A join
+# starting at fragment i can only succeed when the candidate starts with that
+# fragment — and the candidate can equal the fragment itself when the fragments
+# after it are empty strings (a run of spaces splits into empties, which the
+# joiner has always swallowed after a known word). This gate lets the loop skip
+# the four candidate joins for the overwhelming majority of ordinary words
+# without changing any outcome; tests/test_ocr_cleaner_fast.py holds it to that.
+_REJOIN_PREFIXES: frozenset[str] = frozenset(
+    {""} | {word[:k] for word in _REJOIN_WORD_SET for k in range(1, len(word) + 1)}
+)
+
 _LEGAL_WORD_BOUNDARY_RE = re.compile(r"(?<!\w)([A-Za-z]+(?:\s+[A-Za-z]+){0,19})(?!\w)")
 
 
@@ -815,6 +832,11 @@ def _rejoin_split_words(text: str) -> str:
         # repaired ("The St amps were" -> "The Stamps were"), not just at the start.
         while i < n:
             merged: str | None = None
+            if parts[i].lower() not in _REJOIN_PREFIXES:
+                # Cannot begin any accepted word — no join starting here can succeed.
+                out.append(parts[i])
+                i += 1
+                continue
             for span in (5, 4, 3, 2):
                 if i + span <= n:
                     cand = "".join(parts[i : i + span])
@@ -848,26 +870,41 @@ def normalize_ocr_artifacts(text: str) -> str:
     if not text:
         return text
     result = _merge_split_numbers(str(text))
-    for pattern, replacement in _OCR_PHRASE_FIXES:
-        result = pattern.sub(replacement, result)
+    # Number merging only touches digits, so the letters a phrase pattern needs are
+    # unchanged by it: one lower-cased copy answers "can this pattern match at all?"
+    lowered = result.lower()
+    for pattern, replacement, needle in _OCR_PHRASE_FIXES:
+        if needle in lowered:
+            result = pattern.sub(replacement, result)
     # Tighten spaced dates (DD / MM / YYYY or DD - MM - YYYY) -> DD/MM/YYYY.
-    result = re.sub(
-        r"\b(\d{1,2})\s*([/\-])\s*(\d{1,2})\s*([/\-])\s*(\d{2,4}(?:\s+\d)?)\b",
-        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{m.group(4)}{m.group(5).replace(' ', '')}",
-        result,
-    )
-    # Fix common merged words
-    result = re.sub(r"\bwithdrawalcanbe\b", "withdrawal can be", result, flags=re.IGNORECASE)
-    result = re.sub(r"\bissuednotice\b", "issued notice", result, flags=re.IGNORECASE)
-    result = re.sub(r"\binitiallyrefused\b", "initially refused", result, flags=re.IGNORECASE)
-    result = re.sub(r"\binitiallyref\s+used\b", "initially refused", result, flags=re.IGNORECASE)
-    result = re.sub(r"\bcourtre\s+jected\b", "court rejected", result, flags=re.IGNORECASE)
-    result = re.sub(r"\bArticle\s+227filed\b", "Article 227 filed", result, flags=re.IGNORECASE)
-    result = re.sub(r"\bdefendon\b", "defend on", result, flags=re.IGNORECASE)
-    result = re.sub(r"(\d{1,2})\s*\)se\s+eking", r"\1) seeking", result, flags=re.IGNORECASE)
+    if "/" in result or "-" in result:
+        result = re.sub(
+            r"\b(\d{1,2})\s*([/\-])\s*(\d{1,2})\s*([/\-])\s*(\d{2,4}(?:\s+\d)?)\b",
+            lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{m.group(4)}{m.group(5).replace(' ', '')}",
+            result,
+        )
+    # Fix common merged words. Same literal gate as above; the copy is refreshed
+    # because the phrase fixes may have rewritten letters.
+    lowered = result.lower()
+    for needle, pattern, replacement in _MERGED_WORD_FIXES:
+        if needle in lowered:
+            result = pattern.sub(replacement, result)
 
     result = _rejoin_split_words(result)
     return result
+
+
+# (literal that must be present, pattern, replacement) — see normalize_ocr_artifacts.
+_MERGED_WORD_FIXES: tuple[tuple[str, "re.Pattern[str]", str], ...] = (
+    ("withdrawalcanbe", re.compile(r"\bwithdrawalcanbe\b", re.IGNORECASE), "withdrawal can be"),
+    ("issuednotice", re.compile(r"\bissuednotice\b", re.IGNORECASE), "issued notice"),
+    ("initiallyrefused", re.compile(r"\binitiallyrefused\b", re.IGNORECASE), "initially refused"),
+    ("initiallyref", re.compile(r"\binitiallyref\s+used\b", re.IGNORECASE), "initially refused"),
+    ("courtre", re.compile(r"\bcourtre\s+jected\b", re.IGNORECASE), "court rejected"),
+    ("227filed", re.compile(r"\bArticle\s+227filed\b", re.IGNORECASE), "Article 227 filed"),
+    ("defendon", re.compile(r"\bdefendon\b", re.IGNORECASE), "defend on"),
+    ("eking", re.compile(r"(\d{1,2})\s*\)se\s+eking", re.IGNORECASE), r"\1) seeking"),
+)
 
 
 # ── HTML stripping (enforce pure Markdown output) ─────────────────────────────

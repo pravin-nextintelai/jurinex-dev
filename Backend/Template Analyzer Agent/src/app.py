@@ -65,6 +65,16 @@ async def startup():
 app.include_router(analysis.router)
 app.include_router(generate_router.router)
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ../errorlog ──
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(
+    app,
+    service_name="template-analyzer-agent",
+    own_code_root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    parse_helpers=("src.services.agent_service:AgentService._parse_json",),
+)
+
 @app.get("/")
 async def root():
     return {"message": "User Template Analyzer Agent is active."}

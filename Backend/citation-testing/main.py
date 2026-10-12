@@ -91,6 +91,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ./errorlog ──
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(app, service_name="citation-testing", own_code_root=os.path.dirname(os.path.abspath(__file__)))
+
 
 async def _fetch_user_cases(auth_header: Optional[str]) -> List[Dict[str, Any]]:
     """Fetch case list from agentic-document-service /api/files/cases."""

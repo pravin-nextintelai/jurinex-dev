@@ -22,8 +22,8 @@ class Firm {
     approval_status = 'PENDING',
     admin_user_id = null,
     is_active = true,
-  }) {
-    const result = await pool.query(
+  }, db = pool) {
+    const result = await db.query(
       `INSERT INTO firms (
         firm_name, firm_type, establishment_date,
         registering_advocate_name, bar_enrollment_number, enrollment_date, state_bar_council,

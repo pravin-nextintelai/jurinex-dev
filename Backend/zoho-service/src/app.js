@@ -14,6 +14,10 @@ const { PROCESS_INSTANCE_ID } = require('./utils/logger');
 
 const app = express();
 
+// Central error capture (docs/error-logging.md). Vendored copy: ../errorlog
+const errorlog = require('../errorlog');
+errorlog.install(app, { serviceName: 'zoho-service', root: require('path').resolve(__dirname, '..') });
+
 // CORS configuration
 const allowedOrigins = [
     'https://jurinex.netlify.app',
@@ -63,6 +67,9 @@ app.use('/drafting/oi', oiRoutes);
 
 // 404 handler
 app.use(notFound);
+
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 
 // Error handler
 app.use(errorHandler);

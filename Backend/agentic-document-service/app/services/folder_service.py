@@ -2737,23 +2737,25 @@ class FolderWorkflowService:
                 )
                 self._update_document(job_id, document_id, ProcessingState.processing, 20.0, step1_op)
 
-                # Build a real-time progress callback for audio STT polling.
-                # Captures db_file_id / document_id / job_id by closure.
-                def _make_progress_callback(_db_file_id=db_file_id, _doc_id=document_id, _job_id=job_id):
+                # Build a real-time progress callback (audio STT polling, OCR page
+                # batches, embedding sub-batches). Captures db_file_id / document_id /
+                # job_id — and the step label, so a PDF mid-OCR reports
+                # "ocr_and_validation", not "transcribing_audio".
+                def _make_progress_callback(_db_file_id=db_file_id, _doc_id=document_id, _job_id=job_id, _op=step1_op):
                     def _cb(pct: float) -> None:
                         try:
                             self._update_db_file_processing_state(
                                 file_id=_db_file_id,
                                 status=ProcessingState.processing.value,
                                 processing_progress=round(pct, 1),
-                                current_operation="transcribing_audio",
+                                current_operation=_op,
                             )
                             self._update_document(
                                 _job_id,
                                 _doc_id,
                                 ProcessingState.processing,
                                 round(pct, 1),
-                                "transcribing_audio",
+                                _op,
                             )
                         except Exception:
                             pass  # progress update is best-effort

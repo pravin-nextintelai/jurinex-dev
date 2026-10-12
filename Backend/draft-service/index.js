@@ -14,6 +14,10 @@ const wordRoutes = require('./routes/word.routes');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Central error capture (docs/error-logging.md). Vendored copy: ./errorlog
+const errorlog = require('./errorlog');
+errorlog.install(app, { serviceName: 'draft-service', root: __dirname });
+
 // Middleware
 app.use(cors({
   origin: function (origin, callback) {
@@ -91,10 +95,13 @@ app.get('/word', (req, res) => {
   });
 });
 
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err);
-  
+
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ message: 'Invalid JSON payload' });
   }

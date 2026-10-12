@@ -115,6 +115,11 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ./errorlog ──
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(app, service_name="agentic-chat-service", own_code_root=_ROOT)
+
 if __name__ == "__main__":
     import uvicorn
 

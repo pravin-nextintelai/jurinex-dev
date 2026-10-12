@@ -17,6 +17,7 @@ import { CaseMemoryModal, MemoryButton } from "../components/CaseMemory";
 import useMemorySettings from "../hooks/useMemorySettings";
 import useMemoryTurnWatcher from "../hooks/useMemoryTurnWatcher";
 import { describeTurnActivity, turnActivityTab } from "../utils/memoryLabels";
+import PersonalizationSections from "../components/Personalization/PersonalizationSections";
 
 const FolderDetailPage = () => {
   const { folderName } = useParams();
@@ -193,7 +194,16 @@ const FolderDetailPage = () => {
             <ChatInterface />
           </div>
 
-          <div className="w-full max-w-[360px] min-w-[280px] flex flex-col h-full overflow-hidden flex-shrink-0">
+          <div className="w-full max-w-[360px] min-w-[280px] flex flex-col gap-2 h-full overflow-hidden flex-shrink-0">
+            {/* Instructions + Memory (project-sidebar style). Files below act as the
+                "Context" section. Scrolls on its own so the Files card keeps its height. */}
+            <div
+              className="bg-white rounded-xl border border-gray-100 flex-shrink-0 max-h-[52%] overflow-y-auto cpb-scroll"
+              style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}
+            >
+              <PersonalizationSections showContext={false} compact folderName={folderName || selectedFolder} />
+            </div>
+
             <div
               className="bg-white rounded-xl border border-gray-100 flex-1 flex flex-col overflow-hidden p-3 min-h-0"
               style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}

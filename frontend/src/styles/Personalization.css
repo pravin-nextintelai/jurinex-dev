@@ -1,0 +1,27 @@
+/* Personalization drawer — slide-in motion + line clamps Tailwind can't express
+   without the line-clamp plugin. Animations collapse under prefers-reduced-motion. */
+
+@keyframes pz-drawer-in {
+  from { opacity: 0; transform: translateX(28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.pz-drawer {
+  animation: pz-drawer-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pz-clamp-3,
+.pz-clamp-4 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.pz-clamp-3 { -webkit-line-clamp: 3; }
+.pz-clamp-4 { -webkit-line-clamp: 4; }
+
+/* Markdown inside a clamped card: kill trailing margins so the clamp is tidy. */
+.pz-clamp-4 > :last-child { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pz-drawer { animation: none; }
+}

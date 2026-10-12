@@ -4,6 +4,13 @@ const { protect, softProtect } = require('../middleware/auth');
 
 const { register, registerSoloLawyer, registerFirm, login, verifyOtpAndLogin, updateProfile, deleteAccount, logout, fetchProfile, getUserById, updateRazorpayCustomerId , firebaseGoogleSignIn, getUserInfo, getProfessionalProfile, updateProfessionalProfile, changePassword, setPassword, getAllActiveUsers, getAllUsers, createFirmStaff, getFirmStaff, getFirmInfo, pingActivity } = require('../controllers/authController');
 const googleDriveRoutes = require('./googleDriveRoutes');
+const { getReferralCodeStatus, getPublicReferralStatus } = require('../controllers/referralController');
+const { referralStatusRateLimit } = require('../middleware/referralRateLimit');
+
+// Sales Referrals (public): is this referral code valid? Rate-limited per IP, this route only.
+router.get('/referral-codes/:code/status', referralStatusRateLimit, getReferralCodeStatus);
+// Same check, mounted at /api/auth/public/referrals/:code/status as well (see index.js for /api/public/...)
+router.get('/public/referrals/:code/status', referralStatusRateLimit, getPublicReferralStatus);
 
 // Registration routes
 router.post('/register', register); // Legacy endpoint

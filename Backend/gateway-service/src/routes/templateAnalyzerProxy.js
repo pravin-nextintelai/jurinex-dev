@@ -6,7 +6,7 @@
 
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
-const { authMiddleware } = require("../middlewares/authMiddleware");
+const { authMiddleware, injectProxyUserHeaders } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
@@ -35,13 +35,11 @@ router.use("/", (req, res, next) => {
     if (req.user) {
         const userId = req.user.id || req.user.userId || req.user.sub;
         if (userId) {
-            req.headers["x-user-id"] = userId;
-            console.log(`[Gateway] Injected x-user-id via middleware: ${userId}`);
-        } else {
-            console.warn("[Gateway] User found but no ID field in token payload:", req.user);
+            req.headers["x-user-id"] = String(userId);
         }
-    } else {
-        console.warn("[Gateway] No req.user found in middleware, skipping x-user-id injection");
+        if (req.user.email) {
+            req.headers["x-user-email"] = req.user.email;
+        }
     }
     next();
 });
@@ -68,6 +66,9 @@ router.use(
             return newPath;
         },
         logLevel: "debug",
+        onProxyReq: (proxyReq, req) => {
+            injectProxyUserHeaders(proxyReq, req);
+        },
         onError: (err, req, res) => {
             console.error(`[Gateway] Analyzer proxy error: ${err.message}`);
             res.status(502).json({

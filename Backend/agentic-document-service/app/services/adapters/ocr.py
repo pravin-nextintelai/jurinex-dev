@@ -23,11 +23,16 @@ from typing import Any, Callable
 
 logger = logging.getLogger("agentic_document_service.document_ai_ocr")
 
-# Document AI online-processing page limit per request.
-# Override with DOCUMENT_AI_PAGE_LIMIT env var.
-_DEFAULT_PAGE_LIMIT = 15
-# Workers used to send page batches to Document AI in parallel.
-_DEFAULT_OCR_WORKERS = 4
+# Document AI online-processing page limit per request: 15 pages with page images,
+# 30 in imageless mode (verified live against pretrained-ocr-v2.1: a 30-page
+# imageless request is accepted, and the response shrinks ~20x — 17.8 MB -> 0.8 MB
+# for 15 scanned pages — because page images are left out). Override with the
+# DOCUMENT_AI_PAGE_LIMIT setting / env var.
+_DEFAULT_PAGE_LIMIT = 30
+_PAGE_LIMIT_WITH_IMAGES = 15
+# Workers used to send page batches to Document AI in parallel. A 2,000-page scan
+# is 67 imageless requests of ~14 s each; 24 in flight finishes it in ~3 waves.
+_DEFAULT_OCR_WORKERS = 24
 # Hard per-request deadline for one Document AI process call (a batch is ≤15
 # pages). Without it a stalled RPC blocks its worker thread indefinitely and the
 # whole upload batch reads as stuck; with it the batch fails fast and the pypdf
@@ -35,20 +40,69 @@ _DEFAULT_OCR_WORKERS = 4
 _DOCAI_REQUEST_TIMEOUT_S = 240.0
 
 
-def _get_page_limit() -> int:
+def _settings():
     try:
-        return int(os.environ.get("DOCUMENT_AI_PAGE_LIMIT", _DEFAULT_PAGE_LIMIT))
-    except (TypeError, ValueError):
-        return _DEFAULT_PAGE_LIMIT
+        from app.core.config import get_settings
+        return get_settings()
+    except Exception:
+        return None
+
+
+def _imageless_mode() -> bool:
+    """Ask Document AI to omit page images from responses (DOCUMENT_AI_IMAGELESS_MODE)."""
+    s = _settings()
+    return bool(getattr(s, "document_ai_imageless_mode", True)) if s is not None else True
+
+
+def _get_page_limit() -> int:
+    s = _settings()
+    limit = _DEFAULT_PAGE_LIMIT
+    if s is not None:
+        try:
+            limit = int(getattr(s, "document_ai_page_limit", limit) or limit)
+        except (TypeError, ValueError):
+            pass
+    env_value = os.environ.get("DOCUMENT_AI_PAGE_LIMIT")
+    if env_value:
+        try:
+            limit = int(env_value)
+        except (TypeError, ValueError):
+            pass
+    if not _imageless_mode():
+        # With page images in the response the online limit is 15 pages.
+        limit = min(limit, _PAGE_LIMIT_WITH_IMAGES)
+    return max(1, limit)
 
 
 def _get_ocr_workers() -> int:
+    s = _settings()
     try:
-        from app.core.config import get_settings
-        s = get_settings()
-        return int(getattr(s, "ocr_parallel_workers", _DEFAULT_OCR_WORKERS))
+        return max(1, int(getattr(s, "ocr_parallel_workers", _DEFAULT_OCR_WORKERS)))
     except Exception:
         return _DEFAULT_OCR_WORKERS
+
+
+def _text_layer_mode() -> str:
+    """'hybrid' (default): read born-digital pages locally, OCR only scanned pages. 'off': OCR every page."""
+    s = _settings()
+    mode = str(getattr(s, "pdf_text_layer_mode", "hybrid") or "hybrid").strip().lower() if s is not None else "hybrid"
+    return "off" if mode in ("off", "false", "0", "no", "none") else "hybrid"
+
+
+def _text_layer_min_chars() -> int:
+    s = _settings()
+    try:
+        return max(0, int(getattr(s, "pdf_text_layer_min_chars", 40)))
+    except Exception:
+        return 40
+
+
+def _text_layer_image_ratio() -> float:
+    s = _settings()
+    try:
+        return max(0.0, min(1.0, float(getattr(s, "pdf_text_layer_image_area_ratio", 0.5))))
+    except Exception:
+        return 0.5
 
 
 # ── Global Document AI concurrency gate ────────────────────────────────────────
@@ -164,11 +218,9 @@ def _clean_extracted_text(text: str) -> str:
 
 def _pdf_page_count(data: bytes) -> int:
     """Return the number of pages in a PDF without loading all content."""
-    try:
-        from pypdf import PdfReader  # type: ignore
-        return len(PdfReader(io.BytesIO(data)).pages)
-    except Exception:
-        return 0
+    from app.services.adapters.pdf_pages import count_pages
+
+    return count_pages(data)
 
 
 def _split_pdf_into_page_batches(data: bytes, max_pages: int) -> list[bytes]:
@@ -176,22 +228,12 @@ def _split_pdf_into_page_batches(data: bytes, max_pages: int) -> list[bytes]:
     Split PDF bytes into sequential batches of at most max_pages pages.
     Returns a list of PDF bytes (one entry per batch), in page order.
     """
-    from pypdf import PdfReader, PdfWriter  # type: ignore
+    from app.services.adapters.pdf_pages import chunk_ranges, count_pages, split_ranges
 
-    reader = PdfReader(io.BytesIO(data))
-    total = len(reader.pages)
-    batches: list[bytes] = []
-
-    for start in range(0, total, max_pages):
-        end = min(start + max_pages, total)
-        writer = PdfWriter()
-        for i in range(start, end):
-            writer.add_page(reader.pages[i])
-        buf = io.BytesIO()
-        writer.write(buf)
-        batches.append(buf.getvalue())
-
-    return batches
+    total = count_pages(data)
+    if total <= 0:
+        return []
+    return split_ranges(data, chunk_ranges([(0, total)], max_pages))
 
 
 def _merge_structured_json(results: list[OcrResult], merged_text: str) -> dict[str, Any] | None:
@@ -436,6 +478,7 @@ def _document_to_structured_json(
     page_offset: int = 0,
     processor_name: str = "",
     include_tokens: bool = False,
+    cleaned_text: str | None = None,
 ) -> dict[str, Any]:
     document_text = str(getattr(doc, "text", "") or "")
     pages: list[dict[str, Any]] = []
@@ -475,8 +518,10 @@ def _document_to_structured_json(
         "provider": "google_document_ai",
         "processorName": processor_name,
         # Cleaned on the way OUT only — `document_text` itself must stay raw above, because every
-        # text_anchor offset indexes it.
-        "text": _clean_extracted_text(document_text),
+        # text_anchor offset indexes it. The caller usually has the cleaned copy already
+        # (_call_document_ai cleans doc.text for OcrResult.text); reuse it rather than
+        # paying for the same pass twice per batch.
+        "text": cleaned_text if cleaned_text is not None else _clean_extracted_text(document_text),
         "pageCount": len(pages),
         "pages": pages,
     }
@@ -552,6 +597,13 @@ def _build_ocr_process_options():
         return None
 
 
+def _looks_like_rejected_options(exc: BaseException) -> bool:
+    """True for InvalidArgument-style failures a plain request could avoid; False for
+    quota/timeout/network failures, where a second attempt would only double the wait."""
+    msg = str(exc).lower()
+    return any(k in msg for k in ("invalid", "not supported", "unsupported", "400", "argument"))
+
+
 def _call_document_ai(
     batch_bytes: bytes,
     mime_type: str,
@@ -560,26 +612,32 @@ def _call_document_ai(
     page_offset: int = 0,
     process_options=None,
     include_tokens: bool = False,
+    imageless: bool | None = None,
 ) -> OcrResult:
     """Send a single batch to Document AI and return OcrResult."""
     from google.cloud import documentai  # type: ignore
 
+    if imageless is None:
+        imageless = _imageless_mode()
     raw_doc = documentai.RawDocument(content=batch_bytes, mime_type=mime_type)
-    request = documentai.ProcessRequest(
-        name=processor_name,
-        raw_document=raw_doc,
-        process_options=process_options,
-    )
+    request_kwargs: dict[str, Any] = {"name": processor_name, "raw_document": raw_doc}
+    if process_options is not None:
+        request_kwargs["process_options"] = process_options
+    if imageless:
+        # No page images in the response: ~20x smaller payload per request and a
+        # 30-page online limit instead of 15. Nothing downstream reads the images.
+        request_kwargs["imageless_mode"] = True
+    request = documentai.ProcessRequest(**request_kwargs)
     with _get_docai_semaphore():
         try:
             result = _process_document_with_retry(client, request)
         except Exception as exc:
-            # A processor version that doesn't support a chosen OCR option (e.g.
-            # premium math OCR) raises InvalidArgument. Never drop the batch over a
+            # A processor version that doesn't support a chosen option (premium math
+            # OCR, imageless mode) raises InvalidArgument. Never drop the batch over a
             # config mismatch — retry once with a plain request.
-            if process_options is not None:
+            if (process_options is not None or imageless) and _looks_like_rejected_options(exc):
                 logger.warning(
-                    "[DocumentAI OCR] process_options rejected (%s) — retrying without options",
+                    "[DocumentAI OCR] request options rejected (%s) — retrying without options",
                     exc,
                 )
                 plain = documentai.ProcessRequest(name=processor_name, raw_document=raw_doc)
@@ -596,6 +654,7 @@ def _call_document_ai(
         page_offset=page_offset,
         processor_name=processor_name,
         include_tokens=include_tokens,
+        cleaned_text=text,
     )
     return OcrResult(
         text=text,
@@ -690,6 +749,105 @@ def _build_document_ai_client(location: str, project_id: str, processor_id: str)
     return client, processor_name
 
 
+def _empty_page_json(index: int, source: str) -> dict[str, Any]:
+    return {
+        "pageNumber": index + 1,
+        "dimension": {"width": None, "height": None, "unit": ""},
+        "text": "",
+        "blocks": [],
+        "paragraphs": [],
+        "lines": [],
+        "tables": [],
+        "source": source,
+    }
+
+
+def _assemble_routed_result(
+    page_count: int,
+    ocr_pages: dict[int, dict[str, Any]],
+    text_pages: dict[int, Any],
+    *,
+    processor_name: str,
+    routing: dict[str, Any],
+) -> OcrResult:
+    """Interleave Document AI pages and text-layer pages back into document order."""
+    pages_json: list[dict[str, Any]] = []
+    texts: list[str] = []
+    missing = 0
+    for index in range(page_count):
+        page = ocr_pages.get(index)
+        if page is None:
+            local = text_pages.get(index)
+            page = local.structured if local is not None else None
+        if page is None:
+            missing += 1
+            page = _empty_page_json(index, "missing")
+        pages_json.append(page)
+        body = str(page.get("text") or "")
+        if body.strip():
+            texts.append(body)
+    merged_text = "\n\n".join(texts)
+    avg_chars = len(merged_text) / max(page_count, 1)
+    any_ocr = bool(ocr_pages)
+    structured = {
+        "schemaVersion": 1,
+        "source": "document_ai_ocr" if any_ocr else "pdf_text_layer",
+        "provider": "google_document_ai" if any_ocr else "pymupdf",
+        "processorName": processor_name if any_ocr else "",
+        "text": merged_text,
+        "pageCount": page_count,
+        "pages": pages_json,
+        "routing": {**routing, "missing_pages": missing},
+    }
+    return OcrResult(
+        text=merged_text,
+        page_count=page_count,
+        quality_score=min(1.0, avg_chars / 500.0),
+        structured_json=structured,
+    )
+
+
+def _text_layer_result(
+    data: bytes,
+    *,
+    progress_callback: Callable[[float], None] | None = None,
+    progress_start: float = 22.0,
+    progress_end: float = 63.0,
+) -> OcrResult | None:
+    """The whole PDF read from its text layer with PyMuPDF — no Document AI.
+
+    Used when Document AI is not configured or has failed. None when PyMuPDF is
+    unavailable or the file is unreadable, so the caller can fall back to pypdf.
+    """
+    from app.services.adapters import pdf_pages
+
+    if not pdf_pages.mupdf_available():
+        return None
+
+    def _progress(done: int, total: int) -> None:
+        if progress_callback and total:
+            try:
+                progress_callback(round(progress_start + (progress_end - progress_start) * done / total, 1))
+            except Exception:
+                pass
+
+    scan = pdf_pages.scan_text_layer(data, force_all=True, clean=_clean_extracted_text, progress=_progress)
+    if scan is None:
+        return None
+    return _assemble_routed_result(
+        scan.page_count,
+        {},
+        scan.pages,
+        processor_name="",
+        routing={
+            "text_layer_pages": scan.page_count,
+            "ocr_pages": 0,
+            "ocr_requests": 0,
+            "reasons": dict(scan.reasons),
+        },
+    )
+
+
 def _parallel_ocr_bytes(
     data: bytes,
     mime_type: str,
@@ -703,20 +861,29 @@ def _parallel_ocr_bytes(
     include_tokens: bool = False,
 ) -> OcrResult:
     """
-    Run Document AI OCR with parallel page batching and real-time progress reporting.
+    Extract a document, sending to Document AI only the pages that need OCR.
 
-    Flow:
-      1. Count pages in the PDF.
-      2. If total_pages <= page_limit: send as one request (fast path).
-      3. Otherwise: split into page batches of at most `page_limit` pages,
-         submit every batch concurrently to a ThreadPoolExecutor,
-         report progress after each batch completes, merge in page order.
+    Flow for a PDF:
+      1. Scan the text layer with PyMuPDF (a few seconds for 2,000 pages). Pages
+         with their own text are read locally; scanned pages (image-dominated,
+         even with a thin text stamp) are queued for OCR. PDF_TEXT_LAYER_MODE=off
+         sends every page to OCR as before.
+      2. Cut the OCR pages into contiguous ranges of at most `page_limit` pages
+         (30 in imageless mode), split them with MuPDF, and send every range to
+         Document AI concurrently (OCR_PARALLEL_WORKERS threads, gated globally by
+         DOCUMENT_AI_MAX_CONCURRENT_REQUESTS).
+      3. Interleave the results back into page order. A range whose request fails
+         after retries keeps whatever text layer it has instead of losing pages.
 
-    progress_callback is called with values in [progress_start, progress_end] as
-    batches complete so the UI can show real-time OCR progress.
+    Non-PDF media (images) go to Document AI in one request.
+
+    progress_callback receives values in [progress_start, progress_end]: the scan
+    reports the first ~3 points, OCR ranges the rest, as each completes.
     """
+    from app.services.adapters import pdf_pages
+
     page_limit = _get_page_limit()
-    num_workers = _get_ocr_workers()
+    imageless = _imageless_mode()
 
     def _report(pct: float) -> None:
         if progress_callback:
@@ -725,21 +892,11 @@ def _parallel_ocr_bytes(
             except Exception:
                 pass
 
-    # ── Single-batch fast path (non-PDF or small PDF) ─────────────────────────
     is_pdf = mime_type == "application/pdf" or mime_type.endswith("/pdf")
 
-    if is_pdf:
-        page_count = _pdf_page_count(data)
-    else:
-        page_count = 0
-
-    if not is_pdf or page_count == 0 or page_count <= page_limit:
+    def _single_request() -> OcrResult:
         _report(progress_start)
-        t0 = time.monotonic()
-        # Whole document in one request, so pages already start at 1 -> page_offset stays 0.
-        # Keyword args are load-bearing: _call_document_ai now takes BOTH page_offset (ours) and
-        # process_options (theirs), and page_offset comes first — passing process_options
-        # positionally here would bind it to page_offset.
+        t_single = time.monotonic()
         result = _call_document_ai(
             data,
             mime_type,
@@ -748,73 +905,155 @@ def _parallel_ocr_bytes(
             page_offset=0,
             process_options=process_options,
             include_tokens=include_tokens,
+            imageless=imageless,
         )
-        elapsed = time.monotonic() - t0
         logger.info(
-            "[DocumentAI OCR] single-batch pages=%d chars=%d elapsed=%.2fs quality=%.2f",
-            result.page_count, len(result.text), elapsed, result.quality_score,
+            "[DocumentAI OCR] single-request mime=%s pages=%d chars=%d elapsed=%.2fs quality=%.2f",
+            mime_type, result.page_count, len(result.text), time.monotonic() - t_single, result.quality_score,
         )
         _report(progress_end)
         return result
 
-    # ── Large PDF: split → parallel batches → merge in page order ─────────────
-    batches = _split_pdf_into_page_batches(data, page_limit)
-    n_batches = len(batches)
-    logger.info(
-        "[DocumentAI OCR] large PDF pages=%d batches=%d (limit=%d/batch) workers=%d",
-        page_count, n_batches, page_limit, num_workers,
-    )
-    _report(progress_start)
+    if not is_pdf:
+        return _single_request()
 
-    batch_results: list[OcrResult | None] = [None] * n_batches
-    completed_count = 0
+    # ── 1. Route pages: text layer locally, scanned pages to Document AI ─────
+    t_scan = time.monotonic()
+    scan = None
+    if _text_layer_mode() != "off" and pdf_pages.mupdf_available():
+        scan_end = progress_start + 3.0
+        scan = pdf_pages.scan_text_layer(
+            data,
+            min_chars=_text_layer_min_chars(),
+            image_area_ratio=_text_layer_image_ratio(),
+            clean=_clean_extracted_text,
+            progress=lambda done, total: _report(
+                progress_start + (scan_end - progress_start) * done / max(total, 1)
+            ),
+        )
+
+    if scan is not None:
+        page_count = scan.page_count
+        text_pages = scan.pages
+        ranges = pdf_pages.chunk_ranges(pdf_pages.contiguous_runs(scan.ocr_indices), page_limit)
+        reasons = dict(scan.reasons)
+        ocr_progress_start = progress_start + 3.0
+        logger.info(
+            "[DocumentAI OCR] routed pages=%d text_layer=%d ocr=%d requests=%d "
+            "(limit=%d/request imageless=%s) reasons=%s scan=%.2fs",
+            page_count, len(text_pages), len(scan.ocr_indices), len(ranges),
+            page_limit, imageless, reasons, time.monotonic() - t_scan,
+        )
+    else:
+        page_count = pdf_pages.count_pages(data)
+        if page_count <= 0:
+            # Unreadable page tree locally — let Document AI try the whole file.
+            return _single_request()
+        text_pages = {}
+        ranges = pdf_pages.chunk_ranges([(0, page_count)], page_limit)
+        reasons = {"ocr_all": page_count}
+        ocr_progress_start = progress_start
+        logger.info(
+            "[DocumentAI OCR] text-layer routing off: pages=%d requests=%d (limit=%d/request imageless=%s)",
+            page_count, len(ranges), page_limit, imageless,
+        )
+
+    if not ranges:
+        # Every page carried its own text layer: no OCR round trips at all.
+        _report(progress_end)
+        result = _assemble_routed_result(
+            page_count, {}, text_pages, processor_name=processor_name,
+            routing={"text_layer_pages": len(text_pages), "ocr_pages": 0, "ocr_requests": 0, "reasons": reasons},
+        )
+        logger.info(
+            "[DocumentAI OCR] text-layer only pages=%d chars=%d elapsed=%.2fs",
+            page_count, len(result.text), time.monotonic() - t_scan,
+        )
+        return result
+
+    # ── 2. Split only the OCR pages and send every range concurrently ───────
+    batches = pdf_pages.split_ranges(data, ranges)
+    n_batches = len(batches)
+    num_workers = max(1, min(_get_ocr_workers(), n_batches))
+    ocr_pages: dict[int, dict[str, Any]] = {}
+    ocr_lock = threading.Lock()
+    completed = 0
     t0 = time.monotonic()
+    _report(ocr_progress_start)
+
+    def _ocr_range(idx: int) -> OcrResult:
+        start, _end = ranges[idx]
+        # page_offset MUST be the range's first page index: every request's pages
+        # restart at 1, so without it every range would report pages 1..n.
+        return _call_document_ai(
+            batches[idx],
+            mime_type,
+            client,
+            processor_name,
+            page_offset=start,
+            process_options=process_options,
+            include_tokens=include_tokens,
+            imageless=imageless,
+        )
 
     with ThreadPoolExecutor(max_workers=num_workers, thread_name_prefix="ocr-batch") as pool:
-        # page_offset MUST be idx * page_limit: each batch is a separate Document AI request whose
-        # pages restart at 1, so without the offset every batch's structured JSON reports pages
-        # 1..n and the OCR viewer shows the same page numbers repeatedly. Keyword args are
-        # deliberate — page_offset and process_options are adjacent and both optional, so a
-        # positional call silently binds process_options to page_offset.
-        future_to_index = {
-            pool.submit(
-                _call_document_ai,
-                batch,
-                mime_type,
-                client,
-                processor_name,
-                page_offset=idx * page_limit,
-                process_options=process_options,
-                include_tokens=include_tokens,
-            ): idx
-            for idx, batch in enumerate(batches)
-        }
-
+        future_to_index = {pool.submit(_ocr_range, idx): idx for idx in range(n_batches)}
         for future in as_completed(future_to_index):
             idx = future_to_index[future]
+            start, end = ranges[idx]
             try:
-                batch_results[idx] = future.result()
+                result = future.result()
+                pages = (result.structured_json or {}).get("pages") or []
+                with ocr_lock:
+                    for page in pages:
+                        if not isinstance(page, dict):
+                            continue
+                        page.setdefault("source", "document_ai_ocr")
+                        try:
+                            number = int(page.get("pageNumber") or 0)
+                        except (TypeError, ValueError):
+                            continue
+                        if number >= 1:
+                            ocr_pages[number - 1] = page
             except Exception as exc:
+                # Keep the pages rather than dropping them: whatever text layer the
+                # range carries (often nothing for a scan) is better than a hole.
                 logger.warning(
-                    "[DocumentAI OCR] batch %d/%d failed: %s — using empty result",
-                    idx + 1, n_batches, exc,
+                    "[DocumentAI OCR] request %d/%d (pages %d-%d) failed: %s — keeping the text layer for those pages",
+                    idx + 1, n_batches, start + 1, end, exc,
                 )
-                batch_results[idx] = OcrResult(text="", page_count=0, quality_score=0.0)
+                fallback = pdf_pages.scan_text_layer(batches[idx], force_all=True, clean=_clean_extracted_text)
+                with ocr_lock:
+                    for offset in range(end - start):
+                        local = fallback.pages.get(offset) if fallback is not None else None
+                        if local is not None and local.text.strip():
+                            page = dict(local.structured)
+                            page["source"] = "ocr_failed_text_layer"
+                        else:
+                            page = _empty_page_json(start + offset, "ocr_failed")
+                        page["pageNumber"] = start + offset + 1
+                        ocr_pages[start + offset] = page
             finally:
-                completed_count += 1
-                # Report proportional progress as each batch finishes
-                progress_pct = progress_start + (completed_count / n_batches) * (progress_end - progress_start)
-                _report(progress_pct)
-                logger.debug(
-                    "[DocumentAI OCR] batch %d/%d done (%.0f%%)",
-                    completed_count, n_batches, progress_pct,
-                )
+                with ocr_lock:
+                    completed += 1
+                    done = completed
+                _report(ocr_progress_start + (done / n_batches) * (progress_end - ocr_progress_start))
+                logger.debug("[DocumentAI OCR] request %d/%d done", done, n_batches)
 
-    merged = _merge_ocr_results([r for r in batch_results if r is not None])
-    elapsed = time.monotonic() - t0
+    merged = _assemble_routed_result(
+        page_count, ocr_pages, text_pages, processor_name=processor_name,
+        routing={
+            "text_layer_pages": len(text_pages),
+            "ocr_pages": len(ocr_pages),
+            "ocr_requests": n_batches,
+            "reasons": reasons,
+        },
+    )
     logger.info(
-        "[DocumentAI OCR] parallel-batch done batches=%d pages=%d chars=%d elapsed=%.2fs quality=%.2f",
-        n_batches, merged.page_count, len(merged.text), elapsed, merged.quality_score,
+        "[DocumentAI OCR] parallel-batch done requests=%d workers=%d pages=%d (ocr=%d text_layer=%d) "
+        "chars=%d elapsed=%.2fs quality=%.2f",
+        n_batches, num_workers, page_count, len(ocr_pages), len(text_pages),
+        len(merged.text), time.monotonic() - t0, merged.quality_score,
     )
     return merged
 
@@ -1090,6 +1329,20 @@ def _fallback_extract_from_bytes(
                 pass
 
     if mime_type == "application/pdf" or mime_type.endswith("/pdf"):
+        # PyMuPDF first: C-speed, better word spacing than pypdf, and it yields the
+        # same structured-page schema the OCR viewer renders.
+        mupdf_result = _text_layer_result(
+            data,
+            progress_callback=progress_callback,
+            progress_start=progress_start,
+            progress_end=progress_end,
+        )
+        if mupdf_result is not None:
+            logger.info(
+                "[DocumentAI OCR] mupdf text-layer fallback pages=%d chars=%d",
+                mupdf_result.page_count, len(mupdf_result.text),
+            )
+            return mupdf_result
         try:
             from pypdf import PdfReader  # type: ignore
             reader = PdfReader(io.BytesIO(data))

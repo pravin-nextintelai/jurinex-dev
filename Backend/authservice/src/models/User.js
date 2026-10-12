@@ -28,8 +28,8 @@ class User {
     location = null,
     domain_role = 'OTHER',
     role_id = null
-  }) {
-    const result = await pool.query(
+  }, db = pool) {
+    const result = await db.query(
       `INSERT INTO users (
         username, email, password, google_uid,
         auth_type, profile_image, firebase_uid,

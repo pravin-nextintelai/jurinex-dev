@@ -1,7 +1,7 @@
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
 const axios = require("axios");
-const { authMiddleware } = require("../middlewares/authMiddleware");
+const { authMiddleware, injectProxyUserHeaders } = require("../middlewares/authMiddleware");
 const { resolveChatServiceTarget } = require("../utils/chatServiceTarget");
 
 const router = express.Router();
@@ -59,12 +59,7 @@ router.use(
       return `/api/chat/secrets${rest}`;
     },
     onProxyReq: (proxyReq, req) => {
-      if (req.user?.id) {
-        proxyReq.setHeader("x-user-id", String(req.user.id));
-      }
-      if (req.headers.authorization) {
-        proxyReq.setHeader("Authorization", req.headers.authorization);
-      }
+      injectProxyUserHeaders(proxyReq, req);
       if (req.headers["x-user-plan-id"]) {
         proxyReq.setHeader("x-user-plan-id", req.headers["x-user-plan-id"]);
       }
@@ -94,11 +89,7 @@ router.use(
       "^/": "/api/files/", // Rewrite /files/* to /api/files/*
     },
     onProxyReq: (proxyReq, req) => {
-      // Inject user ID from JWT into header for Document Service
-      if (req.user && req.user.id) {
-        proxyReq.setHeader("x-user-id", req.user.id);
-      }
-      // Forward plan id resolved by the plan-lookup middleware above
+      injectProxyUserHeaders(proxyReq, req);
       if (req.headers["x-user-plan-id"]) {
         proxyReq.setHeader("x-user-plan-id", req.headers["x-user-plan-id"]);
       }
@@ -123,14 +114,7 @@ router.use(
       "^/": "/api/files/", // Rewrite /docs/* to /api/files/*
     },
     onProxyReq: (proxyReq, req) => {
-      // Inject user ID from JWT into header for Document Service
-      if (req.user && req.user.id) {
-        proxyReq.setHeader("x-user-id", req.user.id);
-      }
-      // Forward Authorization header for Google Drive service-to-service calls
-      if (req.headers.authorization) {
-        proxyReq.setHeader("Authorization", req.headers.authorization);
-      }
+      injectProxyUserHeaders(proxyReq, req);
       console.log(`[Gateway] Proxying docs request to: /api/files${req.url}`);
     },
     logLevel: "debug", // shows proxy details
@@ -157,14 +141,7 @@ router.use(
       return rewritten;
     },
     onProxyReq: (proxyReq, req) => {
-      // Inject user ID from JWT into header for Document Service
-      if (req.user && req.user.id) {
-        proxyReq.setHeader("x-user-id", req.user.id);
-      }
-      // Forward Authorization header
-      if (req.headers.authorization) {
-        proxyReq.setHeader("Authorization", req.headers.authorization);
-      }
+      injectProxyUserHeaders(proxyReq, req);
       console.log(`[Gateway] Proxying mindmap request to: ${proxyReq.path}`);
     },
     logLevel: "debug", // shows proxy details

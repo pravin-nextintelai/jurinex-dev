@@ -9,6 +9,10 @@ const { initializeSupportSchema } = require("./services/supportService");
 
 const app = express();
 
+// Central error capture (docs/error-logging.md). Vendored copy: ./errorlog
+const errorlog = require("./errorlog");
+errorlog.install(app, { serviceName: "support-service", root: __dirname });
+
 function summarizeBody(body) {
   if (!body || typeof body !== "object") return body;
   const clone = { ...body };
@@ -81,6 +85,8 @@ app.get("/health", (req, res) => {
 });
 
 app.use("/api/support", supportRoutes);
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5004;

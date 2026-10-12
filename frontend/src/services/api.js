@@ -757,6 +757,9 @@ return this.request(`${AUTH_SERVICE_URL}/api/auth/professional-profile`, {
     if (typeof extraFetchParams.learning_mode === 'boolean') {
       body.learning_mode = extraFetchParams.learning_mode;
     }
+    if (typeof extraFetchParams.incognito === 'boolean') {
+      body.incognito = extraFetchParams.incognito;
+    }
     if (typeof extraFetchParams.document_context === 'string') {
       body.document_context = extraFetchParams.document_context;
     }

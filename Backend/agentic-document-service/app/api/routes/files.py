@@ -52,6 +52,8 @@ from app.services.llm_chat_config import (
     merge_folder_chat_request_llm_overrides,
 )
 from app.services.legal_system_prompt import build_document_qa_system_prompt, build_legal_system_prompt, fetch_full_profile
+from app.services import personalization_service
+from app.services import memory_service
 from app.services.learning_agent_controller import LearningAgentController
 from app.services.learning_folder_document_context import build_learning_folder_document_context
 from app.services.learning_question_validator import sanitize_public_popup
@@ -977,22 +979,30 @@ def _user_id_as_int(user_id: str | None) -> int | None:
 
 
 def _resolve_user_id(x_user_id: str | None, authorization: str | None) -> str | None:
-    if x_user_id:
-        return x_user_id
-    if not authorization or not authorization.lower().startswith("bearer "):
-        return None
-    token = authorization.split(" ", 1)[1].strip()
+    user_id = x_user_id
+    email = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        try:
+            parts = token.split(".")
+            if len(parts) == 3:
+                payload = parts[1]
+                payload += "=" * ((4 - len(payload) % 4) % 4)
+                decoded = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8"))
+                if not user_id:
+                    raw = decoded.get("id") or decoded.get("userId") or decoded.get("user_id") or decoded.get("sub")
+                    user_id = str(raw) if raw is not None else None
+                mail = decoded.get("email") or decoded.get("user_email")
+                if isinstance(mail, str) and "@" in mail:
+                    email = mail
+        except Exception:
+            pass
     try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None
-        payload = parts[1]
-        payload += "=" * ((4 - len(payload) % 4) % 4)
-        decoded = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8"))
-        user_id = decoded.get("id") or decoded.get("userId") or decoded.get("user_id") or decoded.get("sub")
-        return str(user_id) if user_id is not None else None
+        from errorlog import set_user
+        set_user(user_id, email)
     except Exception:
-        return None
+        pass
+    return str(user_id) if user_id else None
 
 
 def _normalize_internal_user_ids(values: list[int | str] | None) -> list[str]:
@@ -3657,6 +3667,24 @@ async def intelligent_chat_stream(
             )
             user_profile = {}
         system_instruction = build_document_qa_system_prompt(user_profile)
+        # Personalization: append the user's ACTIVE generated instruction (built from
+        # their own prompt patterns) so every answer follows their working style.
+        # Cached 30s per user in the service; a DB hiccup just skips it for this turn.
+        try:
+            _personal_block = await _run_blocking(
+                lambda: personalization_service.build_active_instruction_block(user_id, folder_name=folder_name),
+                timeout_s=2.0,
+                timeout_message="personalization_fetch",
+            )
+        except Exception as _personal_exc:
+            logger.warning(
+                "[Route:intelligent_chat_stream] personalization skipped user_id=%s err=%s",
+                user_id,
+                _personal_exc,
+            )
+            _personal_block = ""
+        if _personal_block:
+            system_instruction = f"{system_instruction}{_personal_block}"
         logger.info(
             "[Route:intelligent_chat_stream] system_prompt_chars=%s user_id=%s folder=%s",
             len(system_instruction),
@@ -3676,6 +3704,64 @@ async def intelligent_chat_stream(
         if not query_text:
             yield _sse({"type": "error", "message": "Please enter a question."})
             return
+        # Claude-style memory: just-in-time retrieve matching topic notes (and
+        # optional past-chat keyword hits). Never dumps the whole store.
+        #
+        # With a case (= project) this also runs the READ_MEMORY round-trip: a cheap
+        # router call sees that project's "- slug: description" listing and either names
+        # one file to read or says NONE. The named file is injected here, so the answer
+        # call below is the SECOND Gemini call and needs no change. A chat without a
+        # folder skips the router entirely and behaves exactly as it did before, so
+        # general chats are untouched.
+        try:
+            _q = query_text
+            _incognito = bool(getattr(chat_request, "incognito", False))
+            # NOTE: the local name `settings` is not bound until later in this
+            # generator, so read the settings object directly here.
+            _memory_settings = get_settings()
+            _memory_timeout_s = 2.0
+            if folder_name and bool(
+                getattr(_memory_settings, "personalization_memory_directive_enabled", True)
+            ):
+                _memory_timeout_s += float(
+                    getattr(_memory_settings, "personalization_memory_directive_timeout_s", 6.0)
+                    or 6.0
+                )
+            _memory_block = await _run_blocking(
+                lambda: memory_service.build_memory_block_with_directive(
+                    user_id, folder_name=folder_name, query=_q, incognito=_incognito
+                ),
+                timeout_s=_memory_timeout_s,
+                timeout_message="memory_fetch",
+            )
+        except Exception as _memory_exc:
+            logger.warning(
+                "[Route:intelligent_chat_stream] memory skipped user_id=%s err=%s",
+                user_id,
+                _memory_exc,
+            )
+            _memory_block = ""
+        if _memory_block:
+            system_instruction = f"{system_instruction}{_memory_block}"
+            logger.info(
+                "[Route:intelligent_chat_stream] memory_chars=%s user_id=%s folder=%s",
+                len(_memory_block),
+                user_id,
+                folder_name,
+            )
+        # Personalization: log this prompt (fire-and-forget on a worker thread; every
+        # Nth prompt triggers the background profile rebuild). Preset prompts log their
+        # label, not the secret body; custom prompts log the user's own text.
+        try:
+            personalization_service.record_prompt_in_background(
+                user_id=user_id,
+                session_id=chat_request.session_id,
+                prompt_text=(display_question if (chat_request.secret_id or "").strip() else query_text),
+                folder_name=folder_name,
+                incognito=bool(getattr(chat_request, "incognito", False)),
+            )
+        except Exception as _personal_log_exc:
+            logger.debug("[Route:intelligent_chat_stream] prompt log skipped: %s", _personal_log_exc)
         requested_model_name = (chat_request.llm_name or "").strip()
         # The UI may send a bare provider label instead of a concrete model id.
         # Map "deepseek"/"claude" to their configured model so the request actually
@@ -6087,6 +6173,25 @@ async def intelligent_chat_stream(
                     )
 
                 await loop.run_in_executor(None, _persist_stream_chat)
+
+                # Memory write-back. The answer has already streamed to the user, so
+                # this only queues a job on the personalization pool and returns; the
+                # extractor decides in the background whether anything durable was said
+                # and writes it into this project's memory files.
+                try:
+                    memory_service.schedule_turn_extract(
+                        user_id,
+                        query_text,
+                        answer,
+                        folder_name=folder_name,
+                        session_id=session_id,
+                        incognito=bool(getattr(chat_request, "incognito", False)),
+                    )
+                except Exception as _mem_turn_exc:  # noqa: BLE001
+                    logger.debug(
+                        "[Route:intelligent_chat_stream] turn memory extract skipped: %s",
+                        _mem_turn_exc,
+                    )
             except Exception:
                 pass  # session bookkeeping is non-critical
 

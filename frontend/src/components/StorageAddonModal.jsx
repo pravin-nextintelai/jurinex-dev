@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { X, HardDrive, CheckCircle, AlertCircle, Loader2, Zap, Shield, Clock } from 'lucide-react';
 import { PAYMENT_SERVICE_URL } from '../config/apiConfig';
 import { useAuth } from '../context';
+import { reportPaymentError } from '../services/paymentErrorReport';
 
 function loadRazorpay() {
   return new Promise((resolve) => {
@@ -140,11 +141,22 @@ export default function StorageAddonModal({ onClose, onSuccess }) {
               setSuccessPlan(plan);
               if (onSuccess) onSuccess(verifyData.extra_storage_bytes);
               resolve();
-            } catch (vErr) { reject(vErr); }
+            } catch (vErr) {
+              reportPaymentError({ flow: 'storage-addon', kind: 'verify-failed', token, error: vErr, order, plan });
+              reject(vErr);
+            }
           },
-          modal: { ondismiss: () => reject(new Error('Payment cancelled')) },
+          modal: {
+            ondismiss: () => {
+              reportPaymentError({ flow: 'storage-addon', kind: 'cancelled', token, message: 'Payment cancelled', order, plan });
+              reject(new Error('Payment cancelled'));
+            },
+          },
         });
-        rzp.on('payment.failed', (r) => reject(new Error(r.error?.description || 'Payment failed')));
+        rzp.on('payment.failed', (r) => {
+          reportPaymentError({ flow: 'storage-addon', kind: 'failed', token, razorpay: r, order, plan });
+          reject(new Error(r.error?.description || 'Payment failed'));
+        });
         rzp.open();
       });
     } catch (err) {

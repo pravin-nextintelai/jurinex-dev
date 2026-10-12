@@ -91,10 +91,16 @@ def get_current_user(
         or None
     )
 
-    return {
+    user = {
         "id": int(user_id),
         "name": full_name,
         "email": payload.get("email"),
         "role": payload.get("role", "user"),
         "account_type": account_type,  # SOLO | FIRM_ADMIN | FIRM_USER
     }
+    try:
+        from errorlog import set_user
+        set_user(user["id"], user.get("email"))
+    except Exception:
+        pass
+    return user

@@ -11,7 +11,7 @@
 
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const express = require("express");
-const { authMiddleware } = require("../middlewares/authMiddleware");
+const { authMiddleware, injectProxyUserHeaders } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
@@ -58,15 +58,7 @@ router.use(
             return path;
         },
         onProxyReq: (proxyReq, req) => {
-            // Forward Authorization header
-            if (req.headers.authorization) {
-                proxyReq.setHeader("Authorization", req.headers.authorization);
-            }
-            // Inject user ID from JWT into header
-            if (req.user && req.user.id) {
-                proxyReq.setHeader("x-user-id", req.user.id);
-            }
-            // Forward firm ID if present
+            injectProxyUserHeaders(proxyReq, req);
             if (req.headers["x-firm-id"]) {
                 proxyReq.setHeader("x-firm-id", req.headers["x-firm-id"]);
             }

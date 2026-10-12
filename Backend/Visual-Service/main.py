@@ -35,6 +35,15 @@ CORS(app, origins=allowed_origins)
 
 app.register_blueprint(visual_bp, url_prefix='/api/visual')
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ./errorlog ──
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(
+    flask_app=app,
+    service_name="visual-service",
+    own_code_root=os.path.dirname(os.path.abspath(__file__)),
+)
+
 
 @app.route('/api/test-route', methods=['GET'])
 def test_route():

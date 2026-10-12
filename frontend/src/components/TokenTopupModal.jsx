@@ -3,6 +3,7 @@ import { X, Zap, CheckCircle, AlertCircle, Loader2, Shield, Clock, Repeat } from
 import { PAYMENT_SERVICE_URL } from '../config/apiConfig';
 import { useAuth } from '../context';
 import { invalidateTokenQuotaCache } from '../services/tokenQuotaService';
+import { reportPaymentError } from '../services/paymentErrorReport';
 
 function loadRazorpay() {
   return new Promise((resolve) => {
@@ -117,13 +118,22 @@ export default function TokenTopupModal({ onClose, onSuccess }) {
               setNewBalance(Number(verifyData.topup_token_balance || 0));
               if (onSuccess) onSuccess(verifyData.topup_token_balance);
               resolve();
-            } catch (vErr) { reject(vErr); }
+            } catch (vErr) {
+              reportPaymentError({ flow: 'token-topup', kind: 'verify-failed', token, error: vErr, order, plan });
+              reject(vErr);
+            }
           },
-          modal: { ondismiss: () => reject(new Error('Payment cancelled')) },
+          modal: {
+            ondismiss: () => {
+              reportPaymentError({ flow: 'token-topup', kind: 'cancelled', token, message: 'Payment cancelled', order, plan });
+              reject(new Error('Payment cancelled'));
+            },
+          },
         });
-        rzp.on('payment.failed', (resp) =>
-          reject(new Error(resp.error?.description || 'Payment failed'))
-        );
+        rzp.on('payment.failed', (resp) => {
+          reportPaymentError({ flow: 'token-topup', kind: 'failed', token, razorpay: resp, order, plan });
+          reject(new Error(resp.error?.description || 'Payment failed'));
+        });
         rzp.open();
       });
     } catch (err) {

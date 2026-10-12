@@ -17,6 +17,7 @@ from app.api.routes.speech import router as speech_router
 from app.api.routes.cases import router as cases_router
 from app.api.routes.content import router as content_router
 from app.api.routes.custom_prompts import router as custom_prompts_router
+from app.api.routes.personalization import router as personalization_router
 from app.api.routes.files import router as files_router
 from app.api.routes.health import router as health_router
 from app.api.routes.memory import router as memory_router
@@ -111,9 +112,10 @@ def create_app() -> FastAPI:
     # /api/memory owns its own prefix, so the /api/files wildcard cannot shadow
     # it; registered here beside the other static prefixes for consistency.
     app.include_router(memory_router)
-    # Static /api/files/custom-prompts prefix must register before the files
-    # router's /api/files/{folder_name} wildcard routes.
+    # Static /api/files/custom-prompts and /api/files/personalization prefixes
+    # must register before the files router's /api/files/{folder_name} wildcards.
     app.include_router(custom_prompts_router)
+    app.include_router(personalization_router)
     app.include_router(files_router)
     if settings.enable_legacy_proxy:
         from app.api.routes.legacy_proxy import router as legacy_proxy_router
@@ -172,6 +174,28 @@ def _mount_adk_runtime(app: FastAPI) -> None:
 
 
 app = create_app()
+
+# ── Central error capture (docs/error-logging.md). This service owns the
+# error_logs table: it also serves POST /internal/error-logs for the Node
+# services and runs the daily retention job. Vendored copy: ./errorlog.
+import pathlib as _pathlib  # noqa: E402
+from app.api.routes.rbac.auth import get_current_user as _errorlog_current_user  # noqa: E402
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(
+    app,
+    service_name="agentic-document-service",
+    owner=True,
+    own_code_root=_pathlib.Path(__file__).resolve().parent,
+    parse_helpers=(
+        "app.services.learning_agent_controller:parse_model_json",
+        "app.services.adapters.document_ai:repair_json",
+    ),
+    # Browser-reported errors (frontend/src/services/clientErrorReporter.js):
+    # render crashes, unhandled rejections, network failures, with the user's id.
+    client_report_path="/api/files/client-errors",
+    client_report_dependency=_errorlog_current_user,
+)
 
 
 if __name__ == "__main__":

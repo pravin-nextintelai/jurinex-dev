@@ -15,6 +15,10 @@ const { startCronJobs } = require('./src/services/cronService');
 
 const app = express();
 
+// Central error capture (docs/error-logging.md). Vendored copy: ./errorlog
+const errorlog = require('./errorlog');
+errorlog.install(app, { serviceName: 'payment-service', root: __dirname });
+
 app.use(cookieParser());
 app.use(express.json());
 app.use(morgan('dev'));
@@ -59,6 +63,11 @@ app.use(cors({
 // Use a regex matcher for global preflight handling.
 app.options(/.*/, cors());
 
+// Browser-reported checkout failures (Razorpay cancelled / failed / verify failed),
+// stored in error_logs with the user's id. Served by the error-log module itself.
+const { protect: protectForErrorReports } = require('./src/middleware/auth');
+app.use('/api/payments/client-errors', protectForErrorReports, errorlog.clientErrorRouter());
+
 app.use('/api/payments', paymentRoutes);
 app.use('/api/storage',  storageRoutes);
 
@@ -71,6 +80,9 @@ app.get('/api/simple-test', (req, res) => {
 });
 
 const PORT = process.env.PORT || process.env.PAYMENT_SERVICE_PORT || 5003;
+
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err.stack || err.message);

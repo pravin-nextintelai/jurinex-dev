@@ -7,10 +7,15 @@ import App from './App.jsx';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { ThemeProvider, initThemePref } from './context/ThemeContext.jsx';
 import { initFontPref } from './utils/fontPrefs.js';
+import { installClientErrorReporter } from './services/clientErrorReporter.js';
 
 // Apply saved theme + font before first paint (Settings → Appearance).
 initThemePref();
 initFontPref();
+
+// Send browser-side errors (uncaught exceptions, unhandled rejections, failed
+// requests, render crashes) to the central error log (docs/error-logging.md).
+installClientErrorReporter();
 
 // pdfmake emits "Ran out of space in font private use area" for large fonts
 // (NotoSansDevanagari has 65 K+ glyphs).  The warning is non-fatal — glyphs

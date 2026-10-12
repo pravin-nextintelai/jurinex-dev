@@ -34,6 +34,8 @@ import {
   AlertTriangle,
   CornerDownRight,
   MessageSquarePlus,
+  Wand2,
+  EyeOff,
 } from "lucide-react";
 import { getCleanText, stripMarkdown, downloadAsPdf, downloadAsHtml, printResponse } from "../../utils/responseExportUtils";
 import ReactMarkdown from "react-markdown";
@@ -101,6 +103,7 @@ import PromptChipsBar from "../PromptChipsBar";
 import OcrViewer from "../OcrViewer";
 import { fetchSecretsList, peekSecretsList, fetchSecretById } from "../../services/secretsService";
 import CustomPromptBuilderModal from "../CustomPromptBuilder/CustomPromptBuilderModal";
+import PersonalizationModal from "../Personalization/PersonalizationModal";
 import {
   fetchCustomPromptGroups,
   deleteCustomPrompt,
@@ -1088,12 +1091,14 @@ const ChatInterface = () => {
   const [isLoadingSecrets, setIsLoadingSecrets] = useState(false);
   const [customPromptGroups, setCustomPromptGroups] = useState([]);
   const [showPromptBuilder, setShowPromptBuilder] = useState(false);
+  const [showPersonalization, setShowPersonalization] = useState(false);
   const [selectedSecretId, setSelectedSecretId] = useState(null);
   const [selectedLlmName, setSelectedLlmName] = useState(null);
   const [activeDropdown, setActiveDropdown] = useState("Custom Query");
   const [showStyleDropdown, setShowStyleDropdown] = useState(false);
   const [learningModeActive, setLearningModeActive] = useState(false);
   const [researchModeActive, setResearchModeActive] = useState(false);
+  const [incognitoChat, setIncognitoChat] = useState(false);
   // Deep Research: bounded agentic loop with validated web sources and a server-configured budget.
   const [deepResearchActive, setDeepResearchActive] = useState(false);
   // Panel state ? mirrors Claude's artifact panel
@@ -2280,6 +2285,7 @@ const ChatInterface = () => {
           learning_mode: learningModeActive,
           research_mode: researchModeActive,
           deep_research: deepResearchForRequest,
+          incognito: incognitoChat,
         }),
       });
 
@@ -2785,6 +2791,7 @@ const ChatInterface = () => {
             learning_mode: learningModeActive,
             research_mode: researchModeActive,
             deep_research: deepResearchForRequest,
+            incognito: incognitoChat,
             // Draft-from-template: when a template is attached, tell the backend to fill it from the
             // case's documents (the backend attaches the template file to the model).
             ...(draftTemplate
@@ -4750,6 +4757,29 @@ const ChatInterface = () => {
                 )}
               </button>
 
+              {/* Personalization: generate a working-style instruction from this user's prompt
+                  history + this session, and add it to the assistant's system prompt. */}
+              <button
+                type="button"
+                onClick={() => setShowPersonalization(true)}
+                disabled={isRecording || isTranscribing}
+                title="Personalize — generate an instruction from your prompts and add it to the assistant"
+                className="flex-shrink-0 p-2 rounded-xl text-[#21C1B6] hover:bg-teal-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Wand2 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setIncognitoChat((v) => !v)}
+                disabled={isRecording || isTranscribing}
+                title={incognitoChat ? 'Incognito is on — this chat will not read or write Memory' : 'Incognito — this chat will not read or write Memory'}
+                className={`flex-shrink-0 p-2 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed ${
+                  incognitoChat ? 'text-amber-700 bg-amber-50' : 'text-[#21C1B6] hover:bg-teal-50'
+                }`}
+              >
+                <EyeOff className="h-4 w-4" />
+              </button>
+
               {/* Draft from template: fill an uploaded template from this case's documents.
                   Hidden behind DRAFT_FROM_TEMPLATE_ENABLED while the token cost is optimised. */}
               {DRAFT_FROM_TEMPLATE_ENABLED && (
@@ -4860,6 +4890,12 @@ const ChatInterface = () => {
               </button>
             </form>
             {/* Cost warning shown only while Deep Research is toggled on. */}
+            {incognitoChat && (
+              <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 text-amber-800 text-[11px] font-medium">
+                <EyeOff className="h-3.5 w-3.5 flex-shrink-0" />
+                Incognito — this chat will not read or write Memory.
+              </div>
+            )}
             {researchModeActive && deepResearchActive && (
               <div className="mt-2 flex items-start gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 text-amber-700 text-[11px] leading-snug">
                 <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
@@ -5308,6 +5344,12 @@ const ChatInterface = () => {
         onClose={() => setShowPromptBuilder(false)}
         groups={customPromptGroups}
         onSaved={() => loadCustomPromptGroups()}
+      />
+      <PersonalizationModal
+        isOpen={showPersonalization}
+        onClose={() => setShowPersonalization(false)}
+        sessionId={selectedChatSessionId}
+        folderName={_normalizeFolderName(selectedFolder)}
       />
     </div>
   );

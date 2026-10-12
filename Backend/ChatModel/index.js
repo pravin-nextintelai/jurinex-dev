@@ -25,6 +25,10 @@ const chatRoutes = require('./routes/chatRoutes');
 const app = express();
 const PORT = process.env.PORT || 5003;
 
+// Central error capture (docs/error-logging.md). Vendored copy: ./errorlog
+const errorlog = require('./errorlog');
+errorlog.install(app, { serviceName: 'chatmodel', root: __dirname });
+
 // Must not use Access-Control-Allow-Origin: * with credentialed requests.
 // Keep known production and local origins enabled even if Cloud Run env vars drift.
 const defaultCorsOrigins = [
@@ -86,6 +90,9 @@ app.use((req, res) => {
     message: 'Route not found'
   });
 });
+
+// Record every error before the existing handler answers (format unchanged)
+app.use(errorlog.errorHandler({ passThrough: true }));
 
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err);

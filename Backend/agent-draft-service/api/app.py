@@ -49,6 +49,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Central error capture (docs/error-logging.md). Vendored copy: ../errorlog ──
+from errorlog import install as _install_errorlog  # noqa: E402
+
+_install_errorlog(
+    app,
+    service_name="agent-draft-service",
+    own_code_root=_project_root,
+    parse_helpers=("services.agent_modifier_service:_clean_json",),
+)
+
 # Request logging
 _request_logger = logging.getLogger("api.request")
 _draft_logger = logging.getLogger("agent_draft_service.app")
