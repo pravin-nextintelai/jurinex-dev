@@ -91,21 +91,62 @@ function defaultCompanyLines() {
   return ["Digital legal technology platform", "India", "support@jurinex.com"];
 }
 
-function renderProformaPdf(doc, { kind, customerName, customerEmail, planName, amount, paymentId, orderId, purchaseDate, paymentStatus }) {
-  const docTitle = kind === "invoice" ? "TAX INVOICE" : "PAYMENT RECEIPT";
-  const detailHeader = kind === "invoice" ? "INVOICE DETAILS" : "RECEIPT DETAILS";
-  const refLabel = kind === "invoice" ? "INVOICE NO" : "RECEIPT NO";
-  const refValue =
-    kind === "invoice"
-      ? `INV-${String(paymentId || orderId || "").slice(-12)}`
-      : String(paymentId || "N/A");
-
+/**
+ * Resolve the tax lines to print. Prefers the stored breakdown (integer paise from the payments row);
+ * falls back to the historical "18% inclusive split" only when no breakdown was supplied.
+ */
+function resolveTaxLines({ amount, tax }) {
+  if (tax && tax.totalPaise !== undefined && tax.totalPaise !== null) {
+    const toR = (p) => Number(p || 0) / 100;
+    const type = tax.taxType || (Number(tax.igstPaise) > 0 ? "IGST" : "CGST_SGST");
+    const lines = [];
+    if (type === "CGST_SGST") {
+      lines.push({ label: `CGST ${Number(tax.cgstRate ?? 9)}%`, rate: Number(tax.cgstRate ?? 9), amount: toR(tax.cgstPaise) });
+      lines.push({ label: `SGST ${Number(tax.sgstRate ?? 9)}%`, rate: Number(tax.sgstRate ?? 9), amount: toR(tax.sgstPaise) });
+    } else if (type === "IGST") {
+      lines.push({ label: `IGST ${Number(tax.igstRate ?? 18)}%`, rate: Number(tax.igstRate ?? 18), amount: toR(tax.igstPaise) });
+    }
+    const totalTax = lines.reduce((s, l) => s + l.amount, 0);
+    return {
+      subTotal: toR(tax.basicPaise),
+      gstRate: lines.reduce((s, l) => s + l.rate, 0),
+      gstAmt: totalTax,
+      grandTotal: toR(tax.totalPaise),
+      lines,
+      basisNote: tax.basis === "exclusive" ? "GST added on the plan price." : (type === "NONE" ? "No GST applied." : "Plan price is inclusive of GST."),
+    };
+  }
   const gstRate = 18;
   const total = Number(amount) || 0;
   const taxable = total > 0 ? total / (1 + gstRate / 100) : 0;
   const gstAmt = total - taxable;
-  const subTotal = taxable;
-  const grandTotal = total;
+  return {
+    subTotal: taxable,
+    gstRate,
+    gstAmt,
+    grandTotal: total,
+    lines: [
+      { label: "CGST 9%", rate: 9, amount: gstAmt / 2 },
+      { label: "SGST 9%", rate: 9, amount: gstAmt / 2 },
+    ],
+    basisNote: "GST shown is indicative (18% inclusive split).",
+  };
+}
+
+function renderProformaPdf(doc, {
+  kind, customerName, customerEmail, planName, amount, paymentId, orderId, purchaseDate, paymentStatus,
+  tax, appInvoiceNumber, razorpayInvoiceNumber, receipt, paymentMethod,
+}) {
+  const docTitle = kind === "invoice" ? "TAX INVOICE" : "PAYMENT RECEIPT";
+  const detailHeader = kind === "invoice" ? "INVOICE DETAILS" : "RECEIPT DETAILS";
+  const refLabel = kind === "invoice" ? "INVOICE NO" : "RECEIPT NO";
+  // Invoice number: the application-generated number (app_invoices). Never derived from the payment id.
+  const refValue =
+    kind === "invoice"
+      ? String(appInvoiceNumber || "N/A")
+      : String(receipt || paymentId || "N/A");
+
+  const { subTotal, gstRate, gstAmt, grandTotal, lines: taxLines, basisNote } = resolveTaxLines({ amount, tax });
   const dateStr = formatDateDDMMYYYY(purchaseDate);
   const status = paymentStatus || "captured";
 
@@ -160,9 +201,11 @@ function renderProformaPdf(doc, { kind, customerName, customerEmail, planName, a
     `${refLabel}: ${refValue}`,
     `DATE: ${dateStr}`,
     `ORDER ID: ${orderId || "N/A"}`,
-    `STATUS: ${status}`,
-    "TRANSPORTATION NAME: —",
-    "E-WAY BILL NO: —",
+    `PAYMENT ID: ${paymentId || "N/A"}`,
+    ...(kind === "invoice" && receipt ? [`RECEIPT: ${receipt}`] : []),
+    ...(razorpayInvoiceNumber ? [`RAZORPAY INVOICE NO: ${razorpayInvoiceNumber}`] : []),
+    `STATUS: ${status}${paymentMethod ? ` (${paymentMethod})` : ""}`,
+    ...(kind === "invoice" ? ["Application-generated invoice (JuriNex)"] : []),
   ];
   const rightBlock = ["STREET ADDRESS: —", "CITY / DIST / STATE / PIN: —", "PHONE NO: —"];
   let ly = y;
@@ -225,16 +268,16 @@ function renderProformaPdf(doc, { kind, customerName, customerEmail, planName, a
   const boxW = contentW * 0.46;
   let by = y - 12;
   const summary = [
-    ["SUB TOTAL", `₹ ${formatMoneyINR(subTotal)}`],
-    ["DISCOUNT", "₹ 0.00"],
-    ["SHIPPING CHARGES", "₹ 0.00"],
+    ["BASIC AMOUNT", `₹ ${formatMoneyINR(subTotal)}`],
+    ...taxLines.map((l) => [l.label.toUpperCase(), `₹ ${formatMoneyINR(l.amount)}`]),
     ["GRAND TOTAL", `₹ ${formatMoneyINR(grandTotal)}`],
   ];
   summary.forEach(([k, v], idx) => {
-    const h = idx === 3 ? 20 : 14;
+    const isTotal = idx === summary.length - 1;
+    const h = isTotal ? 20 : 14;
     doc.rect(boxX, by, boxW * 0.52, h).stroke();
     doc.rect(boxX + boxW * 0.52, by, boxW * 0.48, h).stroke();
-    doc.font(idx === 3 ? "Helvetica-Bold" : "Helvetica").fontSize(idx === 3 ? 9 : 8);
+    doc.font(isTotal ? "Helvetica-Bold" : "Helvetica").fontSize(isTotal ? 9 : 8);
     doc.text(k, boxX + 4, by + 3, { width: boxW * 0.5 });
     doc.text(v, boxX + boxW * 0.52 + 4, by + 3, { width: boxW * 0.44, align: "right" });
     by += h;
@@ -249,7 +292,7 @@ function renderProformaPdf(doc, { kind, customerName, customerEmail, planName, a
     .font("Helvetica")
     .fontSize(7)
     .text(
-      "Payment processed digitally. For billing queries, contact JuriNex support. GST shown is indicative (18% inclusive split).",
+      `Payment processed digitally. For billing queries, contact JuriNex support. ${basisNote}`,
       margin + 4,
       y + 16,
       { width: contentW * 0.48 - 8 }
@@ -304,39 +347,34 @@ function pdfToBuffer(drawFn) {
   });
 }
 
+function commonParams(params) {
+  return {
+    customerName: params.customerName,
+    customerEmail: params.customerEmail,
+    planName: params.planName,
+    amount: params.amount,
+    paymentId: params.paymentId,
+    orderId: params.orderId,
+    purchaseDate: params.purchaseDate,
+    paymentStatus: params.paymentStatus || "captured",
+    paymentMethod: params.paymentMethod,
+    tax: params.tax || null,
+    appInvoiceNumber: params.appInvoiceNumber || null,
+    razorpayInvoiceNumber: params.razorpayInvoiceNumber || null,
+    receipt: params.receipt || null,
+  };
+}
+
 function buildInvoicePdfBuffer(params) {
-  return pdfToBuffer((doc) =>
-    renderProformaPdf(doc, {
-      kind: "invoice",
-      customerName: params.customerName,
-      customerEmail: params.customerEmail,
-      planName: params.planName,
-      amount: params.amount,
-      paymentId: params.paymentId,
-      orderId: params.orderId,
-      purchaseDate: params.purchaseDate,
-      paymentStatus: "captured",
-    })
-  );
+  return pdfToBuffer((doc) => renderProformaPdf(doc, { kind: "invoice", ...commonParams(params) }));
 }
 
 function buildReceiptPdfBuffer(params) {
-  return pdfToBuffer((doc) =>
-    renderProformaPdf(doc, {
-      kind: "receipt",
-      customerName: params.customerName,
-      customerEmail: params.customerEmail,
-      planName: params.planName,
-      amount: params.amount,
-      paymentId: params.paymentId,
-      orderId: params.orderId,
-      purchaseDate: params.purchaseDate,
-      paymentStatus: "captured",
-    })
-  );
+  return pdfToBuffer((doc) => renderProformaPdf(doc, { kind: "receipt", ...commonParams(params) }));
 }
 
 module.exports = {
   buildInvoicePdfBuffer,
   buildReceiptPdfBuffer,
+  resolveTaxLines,
 };

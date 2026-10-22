@@ -8,9 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "start": "serve -s dist -l $PORT",
-    "preview": "vite preview",
-    "build:fonts": "node_modules/.bin/pdfmake-font-generator --in=src/fonts/ttf --out=src/fonts/vfs",
-    "generate:devanagari-vfs": "node scripts/generate-devanagari-vfs.js"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@ckeditor/ckeditor5-build-classic": "^41.4.2",
@@ -50,8 +48,6 @@
     "mammoth": "^1.10.0",
     "marked": "^18.0.5",
     "mermaid": "^11.12.1",
-    "pdfmake": "^0.2.20",
-    "pdfmake-font-generator": "^1.0.1",
     "react": "^19.1.0",
     "react-datepicker": "^8.9.0",
     "react-dom": "^19.1.0",

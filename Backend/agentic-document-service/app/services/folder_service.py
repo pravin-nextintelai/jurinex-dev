@@ -1130,35 +1130,6 @@ class FolderWorkflowService:
             folder_name=safe_case_name,
         )
 
-        # Controlled memory: anything written while this was still an intake
-        # folder moves onto the real case key, then the case is seeded from what
-        # creation established — the case form the advocate just confirmed, the
-        # grounded chronology, and the migrated documents. Best-effort: a memory
-        # failure must never fail case creation.
-        try:
-            from app.services.memory import repository as memory_repository
-            from app.services.memory.seed import seed_case_memory
-
-            temp_name = str(case_data.get("temp_folder_name") or "").strip().strip("/")
-            if temp_name:
-                memory_repository.rebind_case_key(temp_name, case_id, safe_case_name)
-            case_documents = (self.get_documents_in_folder(safe_case_name, str(user_id)) or {}).get(
-                "documents"
-            ) or []
-            seed_case_memory(
-                case_id,
-                folder_name=safe_case_name,
-                user_id=str(user_id),
-                case_row=dict(updated_case or new_case or {}),
-                tree=self.get_chronology(case_id, folder_name=safe_case_name),
-                files=case_documents,
-            )
-        except Exception as memory_exc:  # noqa: BLE001
-            logger.warning(
-                "[FolderService] task=create_case memory bind/seed skipped case_id=%s error=%s",
-                case_id,
-                memory_exc,
-            )
 
         folder_dict = {
             "id": folder_id,
@@ -1516,37 +1487,6 @@ class FolderWorkflowService:
                         db_counts["cases"] = cur.rowcount or 0
                     else:
                         db_counts["cases"] = 0
-
-                    # Case memory is sensitive case data, so it goes with the case,
-                    # in the same transaction. The keys cover every form this case's
-                    # memory can sit under: the case id, the folder key, and a temp-*
-                    # intake name. A plain folder name is never a memory key, so it is
-                    # deliberately not used. Each table is purged under its own
-                    # savepoint inside purge_case_keys, so a database without the
-                    # memory tables still deletes the case.
-                    memory_keys: list[str] = []
-                    if case_row and case_row.get("id"):
-                        memory_keys.append(str(case_row.get("id")))
-                    if folder_row and folder_row.get("id"):
-                        memory_keys.append(f"folder:{folder_row.get('id')}")
-                    for intake_name in {str(case_id or "").strip(), str(resolved_folder_name or "").strip()}:
-                        if intake_name.lower().startswith("temp-"):
-                            memory_keys.append(intake_name)
-                    if memory_keys:
-                        try:
-                            from app.services.memory.repository import purge_case_keys
-
-                            for table, count in purge_case_keys(cur, memory_keys).items():
-                                db_counts[f"memory_{table}"] = count
-                        except Exception as memory_exc:  # noqa: BLE001
-                            # Rows left under a deleted case id or folder key cannot
-                            # be reached again (neither is ever reused), so a failed
-                            # purge is logged rather than allowed to block the delete.
-                            logger.warning(
-                                "[FolderService] task=delete_case memory purge failed keys=%s error=%s",
-                                memory_keys,
-                                memory_exc,
-                            )
 
                     conn.commit()
                     db_deleted = any(value > 0 for value in db_counts.values())
@@ -2106,40 +2046,11 @@ class FolderWorkflowService:
         user_profile = fetch_full_profile(user_id, authorization)
         system_instruction = build_document_qa_system_prompt(user_profile)
 
-        # Controlled memory (JRNX-ENG-2026-008): the same layers the streaming
-        # route assembles, so both chat surfaces answer with identical context.
-        # Best-effort throughout — an unavailable memory store must not stop an
-        # answer.
-        memory_bundle = None
-        try:
-            from app.services.memory.assembly import build_context_layers
-            from app.services.memory.scope import resolve_case_scope
-
-            memory_scope = resolve_case_scope(folder_name, user_id, authorization=authorization)
-            if memory_scope is not None:
-                memory_bundle = build_context_layers(
-                    memory_scope,
-                    question_raw=request.question or "",
-                    session_id=request.session_id,
-                    mode="preset" if secret_id else "chat",
-                    model_name=selected_model,
-                    preset_ref={"secret_id": secret_id, "prompt_label": request.prompt_label},
-                )
-                if memory_bundle.system_suffix:
-                    system_instruction = f"{system_instruction}{memory_bundle.system_suffix}"
-        except Exception as memory_exc:  # noqa: BLE001
-            logger.warning(
-                "[FolderService] task=answer_folder_chat memory skipped folder=%s error=%s",
-                folder_name,
-                memory_exc,
-            )
-
         logger.info(
-            "[FolderService] task=answer_folder_chat system_prompt_chars=%s user_id=%s folder=%s memory=%s",
+            "[FolderService] task=answer_folder_chat system_prompt_chars=%s user_id=%s folder=%s",
             len(system_instruction),
             user_id,
             folder_name,
-            (memory_bundle.metadata() if memory_bundle else None),
         )
         effective_query_text = self._build_query_with_recent_history(
             user_id=user_id,
@@ -2148,11 +2059,6 @@ class FolderWorkflowService:
             query_text=query_text,
             max_history=int(llm_config.get("max_conversation_history") or 0),
         )
-        # Past-session recall goes ahead of the history, as on the streaming route.
-        if memory_bundle is not None and memory_bundle.recall_block:
-            from app.services.memory.recall import merge_recall_into_query
-
-            effective_query_text = merge_recall_into_query(effective_query_text, memory_bundle.recall_block)
         self._record_prompt(
             case_id=case_id,
             user_id=user_id,
@@ -2198,7 +2104,6 @@ class FolderWorkflowService:
         self._append_message(session, "user", display_question)
         self._append_message(session, "assistant", query_response.answer)
         citations = [citation for segment in query_response.answer_segments for citation in segment.citations]
-        # Pre-minted so memory written about this turn can point at this exact row.
         memory_chat_id = str(uuid.uuid4())
         self._save_folder_chat_to_db(
             user_id=user_id,
@@ -2212,39 +2117,6 @@ class FolderWorkflowService:
             secret_id=secret_id,
             chat_id=memory_chat_id,
         )
-        # Post-turn memory, as on the streaming route: submitted to the writer's
-        # own threads so this response is not delayed by an extraction call.
-        writer_scope = locals().get("memory_scope")
-        if writer_scope is not None:
-            try:
-                from app.services.memory.writer import TurnInput, submit_post_turn
-
-                question_text = str(request.question or "")
-                label = str(request.prompt_label or "").strip()
-                submit_post_turn(
-                    TurnInput(
-                        scope=writer_scope,
-                        question_raw=question_text,
-                        answer=query_response.answer,
-                        session_id=session.id,
-                        chat_id=memory_chat_id,
-                        mode="preset" if secret_id else "chat",
-                        model=selected_model,
-                        log_entry=dict((memory_bundle.log_entry if memory_bundle is not None else None) or {}),
-                        saved_prompt=bool(secret_id or (label and label != question_text.strip())),
-                        # The documents the answer cited, as the streaming route passes them.
-                        citations=[
-                            {"document_name": c.document_name, "file_id": c.document_id}
-                            for c in citations
-                            if getattr(c, "document_id", None) and getattr(c, "document_name", None)
-                        ],
-                    )
-                )
-            except Exception as memory_writer_exc:  # noqa: BLE001
-                logger.warning(
-                    "[FolderService] task=answer_folder_chat memory writer not started: %s", memory_writer_exc
-                )
-        # Rolling chat summary, as on the streaming route.
         try:
             from app.services.chat_summary import submit_summary_update
 
@@ -2253,7 +2125,6 @@ class FolderWorkflowService:
                 folder_name=folder_name,
                 session_id=session.id,
                 max_history=int(llm_config.get("max_conversation_history") or 0),
-                case_key=(writer_scope.case_key if writer_scope is not None else None),
             )
         except Exception as summary_exc:  # noqa: BLE001
             logger.warning("[FolderService] task=answer_folder_chat chat summary not started: %s", summary_exc)
@@ -2660,7 +2531,6 @@ class FolderWorkflowService:
 
         try:
             self._run_job_inner(job_id, case_id, documents, stored_case, document_ids)
-            self._refresh_memory_after_upload(job_id, case_id)
         except Exception as exc:
             # Catch-all: if _run_job_inner crashes before processing futures, mark every
             # document that is still at 20% (processing) as failed so they never get stuck.
@@ -2683,28 +2553,6 @@ class FolderWorkflowService:
                             self._update_document(job_id, doc_id, ProcessingState.error, 100.0, "failed", error=str(exc))
                     job_ref.status = ProcessingState.error
                     job_ref.updated_at = datetime.now(tz=UTC)
-
-    def _refresh_memory_after_upload(self, job_id: str, folder_name: str) -> None:
-        """Bring the case's memory up to date with the documents this job processed. Never raises.
-
-        Runs in the background (app/services/memory/seed.py), so the job queue moves on at once.
-        """
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return
-            user_id = job.user_id
-            processed = [
-                doc.document_name for doc in job.documents.values() if doc.status == ProcessingState.processed
-            ]
-        if not processed:
-            return
-        try:
-            from app.services.memory.seed import schedule_after_upload
-
-            schedule_after_upload(folder_name, user_id, documents=processed)
-        except Exception as exc:  # noqa: BLE001 — memory must never fail an upload
-            logger.debug("[FolderService] memory refresh after upload skipped folder=%s: %s", folder_name, exc)
 
     def _run_job_inner(
         self,

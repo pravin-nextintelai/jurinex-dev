@@ -15,7 +15,6 @@ from app.schemas.contracts import DocumentType
 from app.services import chunk_pages
 from app.services import pipeline_service
 from app.services.adapters.vector_store import ChunkRecord
-from app.services.memory import answer_facts as af
 
 
 class PageSpanTests(unittest.TestCase):
@@ -133,39 +132,6 @@ class UploadTests(unittest.TestCase):
         rows = [record("plain"), record("text")]
         pipeline_service.assign_chunk_pages(rows)
         self.assertEqual([r.metadata.get("page_start") for r in rows], [None, None])
-
-
-def part(index: int, text: str, page_start=None, *, own=False) -> dict:
-    return {"index": index, "text": text, "page_start": page_start, "page_end": page_start, "own": own}
-
-
-class FactPageTests(unittest.TestCase):
-    FACT = "Registered Sale Deed No. 4401/2006 was executed on 25/08/2006"
-
-    def test_a_fact_in_the_next_chunk_is_on_that_chunks_page(self) -> None:
-        hit = {"parts": [part(4, "Synopsis", 1), part(5, "Index", 1, own=True), part(6, "Sale Deed No. 4401/2006", 3)]}
-        self.assertEqual(af.page_of(self.FACT, hit), 3)
-
-    def test_a_stamp_in_an_earlier_part_carries_forward(self) -> None:
-        hit = {"parts": [part(4, "[PAGE 9]\nMemo"), part(5, "Sale Deed No. 4401/2006", own=True)]}
-        self.assertEqual(af.page_of(self.FACT, hit), 9)
-
-    def test_with_no_stamp_nearby_the_page_is_read_from_before_the_window(self) -> None:
-        hit = {"parts": [part(4, "memo"), part(5, "Sale Deed No. 4401/2006", own=True)]}
-        self.assertEqual(af.page_of(self.FACT, hit, earlier=lambda: 14), 14)
-        self.assertIsNone(af.page_of(self.FACT, hit))
-
-    def test_a_chunk_stored_without_pages_is_filled_for_next_time(self) -> None:
-        doc = af.CitedDocument(name="P.pdf", file_id="file-1")
-        fact = af.AnswerFact(section="documents", text=self.FACT, document="P.pdf")
-        hit = {"id": "c5", "chunk_index": 5, "window": "[PAGE 9]\nSale Deed No. 4401/2006 executed on 25/08/2006",
-               "parts": [part(5, "[PAGE 9]\nSale Deed No. 4401/2006 executed on 25/08/2006", own=True)]}
-        with patch.object(af, "is_db_available", return_value=True), \
-                patch.object(af, "_candidate_chunks", return_value=[hit]), \
-                patch.object(chunk_pages, "schedule_file") as schedule:
-            support = af.find_support(fact, [doc])
-        self.assertEqual(support.page, 9)
-        schedule.assert_called_once_with("file-1")
 
 
 if __name__ == "__main__":

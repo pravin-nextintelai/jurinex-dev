@@ -1,13 +1,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import './index.css';
-import './styles/ClaudeAI.css';
-import './styles/modern-ui.css';
-import App from './App.jsx';
-import { AuthProvider } from './context/AuthContext.jsx';
-import { ThemeProvider, initThemePref } from './context/ThemeContext.jsx';
-import { initFontPref } from './utils/fontPrefs.js';
-import { installClientErrorReporter } from './services/clientErrorReporter.js';
+import '@/shared/styles/index.css';
+import '@/shared/styles/ClaudeAI.css';
+import '@/shared/styles/modern-ui.css';
+import App from '@/app/App.jsx';
+import { AuthProvider } from '@/shared/context/AuthContext.jsx';
+import { ThemeProvider, initThemePref } from '@/shared/context/ThemeContext.jsx';
+import { initFontPref } from '@/shared/utils/fontPrefs.js';
+import { installClientErrorReporter } from '@/shared/api/clientErrorReporter.js';
 
 // Apply saved theme + font before first paint (Settings → Appearance).
 initThemePref();

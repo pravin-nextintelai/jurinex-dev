@@ -33,7 +33,26 @@ function formatDate(dateValue) {
   });
 }
 
-function buildMailHtml({ customerName, planName, amount, currency, paymentId, orderId, purchaseDate, transactionType }) {
+function taxRowsHtml(tax, currency) {
+  if (!tax || tax.totalPaise === undefined || tax.totalPaise === null) return "";
+  const toR = (p) => formatCurrency(Number(p || 0) / 100, currency);
+  const row = (label, value) =>
+    `<div style="margin-top:6px;font-size:14px;color:#334155;"><strong>${label}:</strong> ${value}</div>`;
+  let rows = row("Basic Amount", toR(tax.basicPaise));
+  if (tax.taxType === "IGST") {
+    rows += row(`IGST ${Number(tax.igstRate ?? 18)}%`, toR(tax.igstPaise));
+  } else if (tax.taxType !== "NONE") {
+    rows += row(`CGST ${Number(tax.cgstRate ?? 9)}%`, toR(tax.cgstPaise));
+    rows += row(`SGST ${Number(tax.sgstRate ?? 9)}%`, toR(tax.sgstPaise));
+  }
+  rows += row("Total", toR(tax.totalPaise));
+  return rows;
+}
+
+function buildMailHtml({
+  customerName, planName, amount, currency, paymentId, orderId, purchaseDate, transactionType,
+  tax, appInvoiceNumber, razorpayInvoiceNumber,
+}) {
   return `<!DOCTYPE html>
 <html lang="en">
   <body style="margin:0;padding:24px;background:#f4f7fb;font-family:Arial,sans-serif;color:#0f172a;">
@@ -47,9 +66,12 @@ function buildMailHtml({ customerName, planName, amount, currency, paymentId, or
         </div>
         <div style="margin-top:24px;padding:20px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0;">
           <div style="font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.08em;">Purchase Summary</div>
+          ${appInvoiceNumber ? `<div style="margin-top:14px;font-size:13px;font-weight:700;letter-spacing:0.04em;color:#0f766e;">INVOICE NO</div><div style="margin-top:2px;font-size:22px;font-weight:800;color:#0f172a;">${appInvoiceNumber}</div>` : ""}
           <div style="margin-top:14px;font-size:20px;font-weight:800;color:#0f172a;">${planName || "Subscription Plan"}</div>
           <div style="margin-top:10px;font-size:14px;color:#334155;"><strong>Amount:</strong> ${formatCurrency(amount, currency)}</div>
+          ${taxRowsHtml(tax, currency)}
           <div style="margin-top:6px;font-size:14px;color:#334155;"><strong>Purchase Date:</strong> ${formatDate(purchaseDate)}</div>
+          ${razorpayInvoiceNumber ? `<div style="margin-top:6px;font-size:14px;color:#334155;"><strong>Razorpay Invoice No:</strong> ${razorpayInvoiceNumber}</div>` : ""}
           <div style="margin-top:6px;font-size:14px;color:#334155;"><strong>Payment ID:</strong> ${paymentId || "N/A"}</div>
           <div style="margin-top:6px;font-size:14px;color:#334155;"><strong>Order ID:</strong> ${orderId || "N/A"}</div>
         </div>
@@ -73,6 +95,12 @@ async function sendPurchaseConfirmationEmail({
   orderId,
   purchaseDate,
   transactionType,
+  paymentStatus,
+  paymentMethod,
+  tax,                     // { basicPaise, cgstRate, cgstPaise, sgstRate, sgstPaise, igstRate, igstPaise, totalPaise, taxType, basis }
+  appInvoiceNumber,        // application-generated invoice number (app_invoices.invoice_number)
+  razorpayInvoiceNumber,   // genuine Razorpay invoice number, when Razorpay created one
+  receipt,
 }) {
   if (!to) {
     console.warn("[PurchaseMail] skipped: missing recipient email");
@@ -94,16 +122,28 @@ async function sendPurchaseConfirmationEmail({
     paymentId,
     orderId,
     purchaseDate,
+    paymentStatus,
+    paymentMethod,
+    tax,
+    appInvoiceNumber,
+    razorpayInvoiceNumber,
+    receipt,
   };
   const [invoicePdf, receiptPdf] = await Promise.all([
     buildInvoicePdfBuffer(pdfParams),
     buildReceiptPdfBuffer({ ...pdfParams, transactionType }),
   ]);
 
+  const invoiceFileName = appInvoiceNumber
+    ? `invoice-${String(appInvoiceNumber).replace(/[^A-Za-z0-9_-]+/g, "-")}.pdf`
+    : `invoice-${paymentId || orderId || Date.now()}.pdf`;
+
   const info = await transporter.sendMail({
     from: process.env.EMAIL_USER,
     to,
-    subject: `JuriNex ${transactionType || "Plan Purchase"} Confirmation - ${planName || "Subscription Plan"}`,
+    subject: appInvoiceNumber
+      ? `JuriNex Invoice ${appInvoiceNumber}`
+      : `JuriNex ${transactionType || "Plan Purchase"} Confirmation - ${planName || "Subscription Plan"}`,
     html: buildMailHtml({
       customerName,
       planName,
@@ -113,10 +153,13 @@ async function sendPurchaseConfirmationEmail({
       orderId,
       purchaseDate,
       transactionType,
+      tax,
+      appInvoiceNumber,
+      razorpayInvoiceNumber,
     }),
     attachments: [
       {
-        filename: `invoice-${paymentId || orderId || Date.now()}.pdf`,
+        filename: invoiceFileName,
         content: invoicePdf,
         contentType: "application/pdf",
       },

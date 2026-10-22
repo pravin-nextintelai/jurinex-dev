@@ -1,0 +1,631 @@
+frontend/src/
+├── app/
+│   ├── layouts/
+│   │   ├── MainContent.jsx
+│   │   ├── MainLayout.jsx
+│   │   ├── PublicHeader.jsx
+│   │   ├── PublicLayout.tsx
+│   │   ├── QuickTools.jsx
+│   │   ├── Sidebar.jsx
+│   │   └── UserProfileMenu.jsx
+│   ├── App.jsx
+│   └── router.jsx
+├── assets/
+│   ├── fonts/
+│   │   ├── ttf/
+│   │   │   ├── NotoSansDevanagari-Bold.ttf
+│   │   │   └── NotoSansDevanagari-Regular.ttf
+│   │   ├── vfs/
+│   │   │   └── devanagari_vfs.js
+│   │   └── README.md
+│   ├── landing/
+│   │   ├── advocate.jpg
+│   │   ├── advocates-meeting.jpg
+│   │   ├── consult.jpg
+│   │   ├── courtroom.jpg
+│   │   ├── courts-desk.jpg
+│   │   ├── gavel.jpg
+│   │   ├── hero-office.jpg
+│   │   ├── menu-product.jpg
+│   │   ├── menu-resources.jpg
+│   │   ├── menu-solutions.jpg
+│   │   └── nexintel-logo.jpg
+│   ├── team/
+│   │   ├── akshay.jpg
+│   │   ├── amar.jpg
+│   │   ├── amit.jpg
+│   │   ├── anoop.jpg
+│   │   ├── milind.jpg
+│   │   ├── prathamesh.jpg
+│   │   ├── santosh.jpg
+│   │   ├── saurabh.jpg
+│   │   └── shailesh.jpg
+│   ├── 3128271.png
+│   ├── advocate.png
+│   ├── ai law01.jpeg
+│   ├── ai law02.jpeg
+│   ├── image (10).png
+│   ├── image (9).png
+│   ├── jurinex-gavel.png
+│   ├── jurinex-mark.png
+│   ├── jurinex-wordmark-light.png
+│   ├── jurinex-wordmark.png
+│   ├── jurinex-wordtext-light.png
+│   ├── jurinex-wordtext.png
+│   ├── logoJurinex.png
+│   ├── nexintel.jpg
+│   ├── Wordlogo.svg.png
+│   └── zoho-logo-web.png
+├── config/
+│   ├── apiConfig.js
+│   └── firebase.js
+├── features/
+│   ├── analysis/
+│   │   ├── api/
+│   │   │   └── mindmapService.js
+│   │   ├── components/
+│   │   │   ├── ChatInputArea.jsx
+│   │   │   ├── CitationsPanel.jsx
+│   │   │   ├── DocumentList.jsx
+│   │   │   ├── DocumentViewer.jsx
+│   │   │   ├── MergeAnswersModal.jsx
+│   │   │   ├── MessageList.jsx
+│   │   │   ├── MindmapViewer.jsx
+│   │   │   ├── ProgressStagesPopup.jsx
+│   │   │   ├── StreamingMarkdown.jsx
+│   │   │   └── UploadProgressPanel.jsx
+│   │   ├── pages/
+│   │   │   ├── AnalysisPage.jsx
+│   │   │   └── ToolsPage.jsx
+│   │   ├── styles/
+│   │   │   └── AnalysisPage.css
+│   │   └── routes.jsx
+│   ├── auth/
+│   │   ├── api/
+│   │   │   └── salesReferrals.api.js
+│   │   ├── components/
+│   │   │   ├── AuthChecker.jsx
+│   │   │   ├── ProfileSetupPopup.jsx
+│   │   │   ├── ReferralCodeField.jsx
+│   │   │   └── TermsAndConditions.jsx
+│   │   ├── constants/
+│   │   │   └── referralText.js
+│   │   ├── hooks/
+│   │   │   └── useReferralCode.js
+│   │   ├── pages/
+│   │   │   ├── LawFirmRegistrationPage.css
+│   │   │   ├── LawFirmRegistrationPage.jsx
+│   │   │   ├── LoginPage.jsx
+│   │   │   ├── RegisterPage.jsx
+│   │   │   └── SetPasswordPage.jsx
+│   │   ├── utils/
+│   │   │   ├── referralCode.js
+│   │   │   └── referralCode.test.js
+│   │   └── routes.jsx
+│   ├── batch/
+│   │   ├── api/
+│   │   │   └── batchApi.js
+│   │   ├── pages/
+│   │   │   └── BatchRequestPage.jsx
+│   │   ├── utils/
+│   │   │   └── batchResultsExport.js
+│   │   └── routes.jsx
+│   ├── billing/
+│   │   ├── api/
+│   │   │   ├── paymentErrorReport.js
+│   │   │   └── tokenQuotaService.js
+│   │   ├── components/
+│   │   │   ├── ChatQuotaErrorModal.jsx
+│   │   │   ├── FileTokenBadge.jsx
+│   │   │   ├── LLMUsageComponent.jsx
+│   │   │   ├── PlanLimitsDisplay.jsx
+│   │   │   ├── SessionTokenBadge.jsx
+│   │   │   ├── StorageAddonModal.jsx
+│   │   │   ├── StorageFullModal.jsx
+│   │   │   ├── TokenCostPopover.jsx
+│   │   │   ├── TokenExhaustionBanner.jsx
+│   │   │   ├── TokenTopupModal.jsx
+│   │   │   └── UpgradePlanBanner.jsx
+│   │   ├── context/
+│   │   │   └── TokenQuotaContext.jsx
+│   │   ├── pages/
+│   │   │   ├── BillingAndUsagePage.jsx
+│   │   │   ├── PricingPage.jsx
+│   │   │   └── SubscriptionPlanPage.jsx
+│   │   ├── utils/
+│   │   │   ├── billingProformaTemplate.js
+│   │   │   └── planDisplayConfig.js
+│   │   └── routes.jsx
+│   ├── branding/
+│   │   ├── components/
+│   │   │   └── BrandingDownloadModal.jsx
+│   │   ├── pages/
+│   │   │   ├── BrandingProfileEditorPage.jsx
+│   │   │   └── BrandingProfilesPage.jsx
+│   │   ├── utils/
+│   │   │   ├── brandedDocxExport.js
+│   │   │   ├── brandingActiveProfile.js
+│   │   │   ├── brandingColorUtils.js
+│   │   │   ├── brandingExport.js
+│   │   │   ├── brandingProfileDefaults.js
+│   │   │   ├── brandingStorage.js
+│   │   │   ├── brandingTemplate.js
+│   │   │   └── brandingTypography.js
+│   │   └── routes.jsx
+│   ├── case-storage/
+│   │   ├── components/
+│   │   │   ├── CaseStorageChat.jsx
+│   │   │   ├── CreateFolderModal.jsx
+│   │   │   ├── DocumentCard.jsx
+│   │   │   ├── DocumentPreviewModal.jsx
+│   │   │   ├── DocumentProcessingProgress.tsx
+│   │   │   ├── FolderContent.jsx
+│   │   │   ├── FolderPickerModal.jsx
+│   │   │   ├── GoogleDrivePicker.jsx
+│   │   │   ├── LocalFileUpload.jsx
+│   │   │   ├── LocalFileUpload.README.md
+│   │   │   └── UploadOptionsMenu.jsx
+│   │   ├── pages/
+│   │   │   ├── CaseStoragePage.jsx
+│   │   │   ├── FolderDetailPage.jsx
+│   │   │   └── GoogleDriveCallback.jsx
+│   │   └── routes.jsx
+│   ├── cases/
+│   │   ├── components/
+│   │   │   └── CreateCase/
+│   │   │       ├── steps/
+│   │   │       │   ├── DatesStep.jsx
+│   │   │       │   ├── OverviewStep.jsx
+│   │   │       │   ├── PartiesStep.jsx
+│   │   │       │   ├── ReviewStep.jsx
+│   │   │       │   └── UploadStep.jsx
+│   │   │       └── CaseCreationFlow.jsx
+│   │   ├── hooks/
+│   │   │   └── useAutoSave.js
+│   │   ├── pages/
+│   │   │   ├── DocumentUploadPage.jsx
+│   │   │   ├── EvidenceMatrixPage.jsx
+│   │   │   └── GroundSummaryPage.jsx
+│   │   ├── utils/
+│   │   │   └── fieldMatcher.js
+│   │   └── routes.jsx
+│   ├── chat/
+│   │   ├── api/
+│   │   │   └── customPromptsService.js
+│   │   ├── components/
+│   │   │   ├── ChatInterface/
+│   │   │   │   ├── AgentStepsPanel.jsx
+│   │   │   │   ├── ChatInterface.jsx
+│   │   │   │   ├── ChatSessionList.jsx
+│   │   │   │   ├── ClarificationCard.jsx
+│   │   │   │   ├── DraftDocumentView.jsx
+│   │   │   │   ├── DraftEditModal.jsx
+│   │   │   │   ├── DraftEditor.jsx
+│   │   │   │   ├── DraftStudioModal.jsx
+│   │   │   │   ├── FieldPill.jsx
+│   │   │   │   ├── FormattedAssistantContent.jsx
+│   │   │   │   ├── LearningChatBubble.jsx
+│   │   │   │   ├── LearningDetailPanel.jsx
+│   │   │   │   └── LearningMcqBlock.jsx
+│   │   │   ├── CustomPromptBuilder/
+│   │   │   │   ├── CustomPromptBuilderModal.jsx
+│   │   │   │   └── CustomPromptGroups.jsx
+│   │   │   ├── AppAssistant.jsx
+│   │   │   ├── DeepSeekSidebarChat.jsx
+│   │   │   ├── LearningBubble.jsx
+│   │   │   └── PromptChipsBar.jsx
+│   │   ├── hooks/
+│   │   │   ├── useDocumentMicTranscribe.js
+│   │   │   └── useIntelligentFolderChat.js
+│   │   ├── pages/
+│   │   │   ├── ChatHistoryPage.jsx
+│   │   │   └── ChatModelPage.jsx
+│   │   ├── styles/
+│   │   │   ├── ChatInterface.css
+│   │   │   ├── CustomPromptBuilder.css
+│   │   │   └── DeepSeekSidebarChat.css
+│   │   ├── utils/
+│   │   │   ├── deepResearchCitations.js
+│   │   │   ├── deepResearchCitations.test.js
+│   │   │   ├── deepResearchSources.js
+│   │   │   ├── deepResearchSources.test.js
+│   │   │   ├── legalDraftRender.jsx
+│   │   │   ├── micTranscribe.js
+│   │   │   └── suggestedQuestions.js
+│   │   └── routes.jsx
+│   ├── chronology/
+│   │   ├── api/
+│   │   │   └── chronologyApi.js
+│   │   ├── components/
+│   │   │   ├── ChronologyButton.jsx
+│   │   │   ├── chronologyDisplay.js
+│   │   │   ├── chronologyExport.js
+│   │   │   ├── ChronologyModal.jsx
+│   │   │   ├── chronologyOrder.js
+│   │   │   ├── ChronologyTimeline.jsx
+│   │   │   ├── ChronologyToolbar.jsx
+│   │   │   └── index.js
+│   │   ├── hooks/
+│   │   │   └── useChronology.js
+│   │   ├── pages/
+│   │   │   └── TimelinePage.jsx
+│   │   └── routes.jsx
+│   ├── citations/
+│   │   ├── api/
+│   │   │   ├── citationApi.js
+│   │   │   ├── citationV1Api.js
+│   │   │   └── judgementApi.js
+│   │   ├── components/
+│   │   │   ├── CitationReport/
+│   │   │   │   ├── PipelineDetailModal.jsx
+│   │   │   │   ├── RedesignedCitationReportDoc.jsx
+│   │   │   │   └── ReportErrorBoundary.jsx
+│   │   │   ├── CitationResearch/
+│   │   │   │   ├── AdvancedSearchModal.jsx
+│   │   │   │   ├── CitationResearchPanel.jsx
+│   │   │   │   ├── CitationReviewResults.jsx
+│   │   │   │   └── ikDoctypes.js
+│   │   │   └── CitationTesting/
+│   │   │       └── CitationTestingPanel.jsx
+│   │   ├── pages/
+│   │   │   ├── CitationReportPage.jsx
+│   │   │   ├── CitationResearchPage.jsx
+│   │   │   ├── CitationTestingPage.jsx
+│   │   │   └── EnterpriseAnalyticsPage.jsx
+│   │   ├── styles/
+│   │   │   ├── CitationReport.css
+│   │   │   └── RedesignedCitationReport.css
+│   │   └── routes.jsx
+│   ├── dashboard/
+│   │   ├── components/
+│   │   │   ├── CaseDetailView.jsx
+│   │   │   ├── DashboardCasesTable.jsx
+│   │   │   ├── DashboardHeader.jsx
+│   │   │   └── DashboardInsights.jsx
+│   │   ├── pages/
+│   │   │   └── DashboardPage.jsx
+│   │   └── routes.jsx
+│   ├── drafting/
+│   │   ├── api/
+│   │   │   ├── chatDraftApi.js
+│   │   │   ├── draftApi.js
+│   │   │   ├── draftFormApi.js
+│   │   │   ├── draftingApi.js
+│   │   │   └── draftingModeApi.js
+│   │   ├── components/
+│   │   │   ├── DraftComponents/
+│   │   │   │   ├── DraftSelectionCard.jsx
+│   │   │   │   ├── GoogleDocsEditor.jsx
+│   │   │   │   ├── MicrosoftWordEditor.jsx
+│   │   │   │   └── README.md
+│   │   │   ├── DraftingMode/
+│   │   │   │   ├── draftDocxExport.js
+│   │   │   │   ├── draftFormatUtils.js
+│   │   │   │   ├── DraftingModal.jsx
+│   │   │   │   ├── DraftStreamingViewer.jsx
+│   │   │   │   ├── draftStreamParser.js
+│   │   │   │   └── FRONTEND_GUIDE.md
+│   │   │   ├── DraftingRedesign/
+│   │   │   │   ├── AgentActivityFeed.jsx
+│   │   │   │   ├── DraftingLayout.jsx
+│   │   │   │   └── WorkflowSidebar.jsx
+│   │   │   ├── TemplateWizard/
+│   │   │   │   ├── index.js
+│   │   │   │   ├── TemplatePreviewPopup.jsx
+│   │   │   │   ├── templateWizardApi.js
+│   │   │   │   ├── TemplateWizardCard.jsx
+│   │   │   │   ├── TemplateWizardGallery.css
+│   │   │   │   └── TemplateWizardGallery.jsx
+│   │   │   ├── ZohoOffice/
+│   │   │   │   ├── components/
+│   │   │   │   │   ├── DraftListOi.jsx
+│   │   │   │   │   ├── EditorFrame.jsx
+│   │   │   │   │   ├── PdfViewer.jsx
+│   │   │   │   │   └── UploadCard.jsx
+│   │   │   │   ├── hooks/
+│   │   │   │   │   └── useDraftingOi.js
+│   │   │   │   ├── img/
+│   │   │   │   │   └── logo.jpg
+│   │   │   │   ├── pages/
+│   │   │   │   │   └── DraftingOiPage.jsx
+│   │   │   │   ├── services/
+│   │   │   │   │   └── draftingOiApi.js
+│   │   │   │   └── index.js
+│   │   │   ├── ShareModal.jsx
+│   │   │   ├── TemplatePicker.jsx
+│   │   │   └── Templates.jsx
+│   │   ├── pages/
+│   │   │   ├── DraftSelection/
+│   │   │   │   ├── styles/
+│   │   │   │   │   └── enhanced-draft-selection.css
+│   │   │   │   ├── AllTemplatesPage.jsx
+│   │   │   │   ├── ARCHITECTURE_COMPLIANCE.md
+│   │   │   │   ├── DraftSelectionPageEnhanced.jsx
+│   │   │   │   ├── POSTMAN_API_TEST.md
+│   │   │   │   └── README.md
+│   │   │   ├── ChatDraftPage.jsx
+│   │   │   ├── DraftEditorPage.jsx
+│   │   │   ├── DraftFormPage.jsx
+│   │   │   ├── DraftingPage.jsx
+│   │   │   ├── DraftsPage.jsx
+│   │   │   ├── GoogleDocsPage.jsx
+│   │   │   └── MicrosoftWordPage.jsx
+│   │   ├── styles/
+│   │   │   └── ckeditor-a4.css
+│   │   └── routes.jsx
+│   ├── help/
+│   │   ├── components/
+│   │   │   ├── constants.js
+│   │   │   ├── FaqSection.jsx
+│   │   │   ├── GetHelpDashboard.jsx
+│   │   │   ├── RaiseTicketModal.jsx
+│   │   │   ├── StatusBadge.jsx
+│   │   │   ├── TicketHistory.jsx
+│   │   │   └── TrackingRail.jsx
+│   │   ├── pages/
+│   │   │   └── GetHelpPage.jsx
+│   │   └── routes.jsx
+│   ├── landing/
+│   │   ├── components/
+│   │   │   ├── AICapabilitiesSection.jsx
+│   │   │   ├── BenefitsSection.jsx
+│   │   │   ├── BookDemoModal.jsx
+│   │   │   ├── BrandLogo.jsx
+│   │   │   ├── ChatbotWidget.jsx
+│   │   │   ├── CommunitySection.jsx
+│   │   │   ├── CTASection.jsx
+│   │   │   ├── FAQSection.jsx
+│   │   │   ├── FeatureShowcase.jsx
+│   │   │   ├── FeaturesSection.jsx
+│   │   │   ├── Footer.jsx
+│   │   │   ├── HeroSection.jsx
+│   │   │   ├── IndianCourtsSection.jsx
+│   │   │   ├── motionTokens.js
+│   │   │   ├── Navbar.jsx
+│   │   │   ├── PolicyModal.jsx
+│   │   │   ├── PricingSection.jsx
+│   │   │   ├── primitives.jsx
+│   │   │   ├── ProblemSolutionSection.jsx
+│   │   │   ├── ProductMocks.jsx
+│   │   │   ├── PromotionBanner.jsx
+│   │   │   ├── PublicPageShell.jsx
+│   │   │   ├── SecuritySection.jsx
+│   │   │   ├── SocialIcon.jsx
+│   │   │   ├── StatsSection.jsx
+│   │   │   ├── TeamSection.jsx
+│   │   │   ├── TestimonialsSection.jsx
+│   │   │   ├── ThreeStepsSection.jsx
+│   │   │   ├── TrustSection.jsx
+│   │   │   ├── UseCasesSection.jsx
+│   │   │   ├── WhyChooseSection.jsx
+│   │   │   └── WorkflowSection.jsx
+│   │   ├── hooks/
+│   │   │   ├── useDemoPrompt.js
+│   │   │   └── useLandingScrollAnimation.js
+│   │   ├── pages/
+│   │   │   ├── AboutNexintelPage.jsx
+│   │   │   ├── AboutUsPage.jsx
+│   │   │   ├── BlogsPage.jsx
+│   │   │   ├── CommunityPage.jsx
+│   │   │   ├── ContactPage.jsx
+│   │   │   ├── ContactPageRoute.jsx
+│   │   │   ├── FAQsPage.jsx
+│   │   │   ├── HelpPage.jsx
+│   │   │   ├── HomePage.jsx
+│   │   │   ├── LandingPage.jsx
+│   │   │   ├── ProductDetailPage.jsx
+│   │   │   ├── ProductsPage.jsx
+│   │   │   └── TeamPage.jsx
+│   │   ├── utils/
+│   │   │   ├── landingConstants.js
+│   │   │   └── productDetails.js
+│   │   └── routes.jsx
+│   ├── ocr-viewer/
+│   │   ├── api/
+│   │   │   └── ocrApi.ts
+│   │   ├── components/
+│   │   │   ├── constants.ts
+│   │   │   ├── DocxPanel.tsx
+│   │   │   ├── fitText.ts
+│   │   │   ├── index.js
+│   │   │   ├── OcrDocumentModal.tsx
+│   │   │   ├── OcrPage.tsx
+│   │   │   ├── OcrPanel.tsx
+│   │   │   ├── OcrStats.tsx
+│   │   │   ├── OcrToolbar.tsx
+│   │   │   ├── OcrViewer.jsx
+│   │   │   ├── OcrWord.tsx
+│   │   │   ├── PdfPanel.tsx
+│   │   │   ├── previewKind.ts
+│   │   │   └── textMeasure.ts
+│   │   ├── hooks/
+│   │   │   └── useOcrDocumentViewer.ts
+│   │   ├── types/
+│   │   │   └── ocr.ts
+│   │   └── utils/
+│   │       └── ocrLayout.ts
+│   ├── settings/
+│   │   ├── components/
+│   │   │   └── ProfileSetupForm.jsx
+│   │   ├── pages/
+│   │   │   └── SettingsPage.jsx
+│   │   └── routes.jsx
+│   ├── template-builder/
+│   │   ├── api.ts
+│   │   ├── BuilderChat.tsx
+│   │   ├── ConversationalBuilder.tsx
+│   │   ├── GeneratedTemplateView.tsx
+│   │   ├── index.ts
+│   │   ├── RequirementsSidebar.tsx
+│   │   ├── routes.jsx
+│   │   └── templateBuilderStore.ts
+│   ├── template-drafting/
+│   │   ├── components/
+│   │   │   ├── actions/
+│   │   │   │   ├── ActionToolbar.tsx
+│   │   │   │   └── index.ts
+│   │   │   ├── chat/
+│   │   │   │   ├── AiSuggestionCard.tsx
+│   │   │   │   ├── ChatInput.tsx
+│   │   │   │   ├── ChatMessages.tsx
+│   │   │   │   ├── ChatPanel.tsx
+│   │   │   │   ├── EvidenceFileItem.tsx
+│   │   │   │   ├── EvidenceSelector.tsx
+│   │   │   │   └── index.ts
+│   │   │   ├── common/
+│   │   │   │   ├── EmptyState.tsx
+│   │   │   │   ├── ErrorBoundary.tsx
+│   │   │   │   ├── index.ts
+│   │   │   │   ├── LoadingSpinner.tsx
+│   │   │   │   └── StatusBadge.tsx
+│   │   │   ├── DraftSectionsManager/
+│   │   │   │   ├── index.ts
+│   │   │   │   └── UniversalSectionsList.tsx
+│   │   │   ├── form/
+│   │   │   │   ├── DynamicForm.tsx
+│   │   │   │   ├── FormField.tsx
+│   │   │   │   └── index.ts
+│   │   │   ├── layout/
+│   │   │   │   ├── index.ts
+│   │   │   │   ├── LeftPanel.tsx
+│   │   │   │   ├── RightPanel.tsx
+│   │   │   │   └── SplitViewLayout.tsx
+│   │   │   ├── preview/
+│   │   │   │   ├── A4PageContainer.tsx
+│   │   │   │   ├── A4PageRenderer.tsx
+│   │   │   │   ├── BlockRenderer.tsx
+│   │   │   │   ├── index.ts
+│   │   │   │   └── PageScrollIndicator.tsx
+│   │   │   ├── template/
+│   │   │   │   ├── index.ts
+│   │   │   │   ├── TemplateCard.tsx
+│   │   │   │   ├── TemplateCategoryFilter.tsx
+│   │   │   │   └── TemplateGrid.tsx
+│   │   │   ├── constants.ts
+│   │   │   └── index.ts
+│   │   ├── pages/
+│   │   │   ├── AssembledPreviewPage.tsx
+│   │   │   ├── DraftEditorPage.tsx
+│   │   │   ├── DraftResumePage.tsx
+│   │   │   ├── index.ts
+│   │   │   ├── SectionDraftingPage.tsx
+│   │   │   ├── TemplateListingPage.tsx
+│   │   │   └── TemplatePreviewPage.tsx
+│   │   ├── services/
+│   │   │   ├── aiApi.ts
+│   │   │   ├── api.ts
+│   │   │   ├── draftApi.ts
+│   │   │   ├── evidenceApi.ts
+│   │   │   ├── exportApi.ts
+│   │   │   ├── index.ts
+│   │   │   ├── templateApi.ts
+│   │   │   └── universalSectionsApi.ts
+│   │   ├── store/
+│   │   │   ├── draftStore.ts
+│   │   │   ├── index.ts
+│   │   │   ├── templateStore.ts
+│   │   │   └── uiStore.ts
+│   │   ├── styles/
+│   │   │   ├── a4.css
+│   │   │   ├── chat.css
+│   │   │   ├── form.css
+│   │   │   ├── index.css
+│   │   │   ├── preview.css
+│   │   │   └── variables.css
+│   │   ├── types/
+│   │   │   ├── ai.types.ts
+│   │   │   ├── api.types.ts
+│   │   │   ├── draft.types.ts
+│   │   │   ├── index.ts
+│   │   │   └── template.types.ts
+│   │   ├── user_custom_template/
+│   │   │   ├── api.ts
+│   │   │   ├── CustomTemplateCard.tsx
+│   │   │   ├── CustomTemplateUploadModal.tsx
+│   │   │   ├── EditTemplateModal.tsx
+│   │   │   ├── ImagePreviewModal.tsx
+│   │   │   ├── index.ts
+│   │   │   └── types.ts
+│   │   ├── utils/
+│   │   │   ├── debounce.ts
+│   │   │   ├── domAnchors.ts
+│   │   │   ├── index.ts
+│   │   │   ├── logger.ts
+│   │   │   ├── pageGrouping.ts
+│   │   │   └── validation.ts
+│   │   ├── index.tsx
+│   │   ├── README.md
+│   │   ├── routePaths.ts
+│   │   ├── routes.jsx
+│   │   ├── template_drafting_backend_analysis.txt
+│   │   ├── TEMPLATE_DRAFTING_FRONTEND_PLAN.md
+│   │   └── vite-env.d.ts
+│   ├── translation/
+│   │   ├── api/
+│   │   │   └── translationApi.js
+│   │   ├── pages/
+│   │   │   └── TranslationPage.jsx
+│   │   └── routes.jsx
+│   └── user-management/
+│       ├── api/
+│       │   └── rbacApi.js
+│       ├── components/
+│       │   ├── AddUserModal.jsx
+│       │   ├── FirmAnalyticsTab.jsx
+│       │   ├── PermissionsModal.jsx
+│       │   ├── rbac_documentation.md
+│       │   ├── SupportTicketsTab.jsx
+│       │   └── UserManagementTable.jsx
+│       ├── pages/
+│       │   └── UserManagementPage.jsx
+│       └── routes.jsx
+├── shared/
+│   ├── api/
+│   │   ├── api.js
+│   │   ├── clientErrorReporter.js
+│   │   ├── documentApi.js
+│   │   ├── googleDriveApi.js
+│   │   ├── llmChatLimitsService.js
+│   │   └── secretsService.js
+│   ├── components/
+│   │   ├── DownloadPdf.jsx
+│   │   ├── Footer.jsx
+│   │   ├── InteractiveTable.jsx
+│   │   └── SearchableSelect.jsx
+│   ├── context/
+│   │   ├── authContext.js
+│   │   ├── AuthContext.jsx
+│   │   ├── FileManagerContext.jsx
+│   │   ├── index.js
+│   │   ├── SidebarContext.jsx
+│   │   ├── ThemeContext.jsx
+│   │   └── useAuth.js
+│   ├── hooks/
+│   │   └── useLlmChatLimits.js
+│   ├── styles/
+│   │   ├── ClaudeAI.css
+│   │   ├── index.css
+│   │   ├── InteractiveTable.css
+│   │   └── modern-ui.css
+│   └── utils/
+│       ├── asciiBlocks.js
+│       ├── asciiBlocks.test.js
+│       ├── fileHelpers.js
+│       ├── fontPrefs.js
+│       ├── formatChatResponse.js
+│       ├── jsonToPlainText.js
+│       ├── llmQuotaMessages.js
+│       ├── markdownToExportHtml.js
+│       ├── markdownUtils.js
+│       ├── markdownUtils.jsx
+│       ├── notificationPrefs.js
+│       ├── permissions.js
+│       ├── planStorage.js
+│       ├── planUpgrade.js
+│       ├── planUtils.js
+│       ├── quotaError.js
+│       ├── renderSecretPromptResponse.js
+│       ├── responseExportUtils.js
+│       ├── responseNotifier.js
+│       └── storageGuard.js
+└── main.jsx

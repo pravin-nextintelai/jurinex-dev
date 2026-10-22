@@ -9,6 +9,7 @@ const paymentRoutes = require('./src/routes/paymentRoutes');
 const userResourceRoutes = require('./src/routes/userResourcesRoutes');
 const userplanRoutes = require('./src/routes/userplanRoutes');
 const storageRoutes = require('./src/routes/storageRoutes');
+const webhookRoutes = require('./src/routes/webhookRoutes');
 const { initializeFirmAnalyticsSchema } = require('./src/utils/firmAnalyticsDb');
 const { applyMigrations } = require('./src/utils/applyMigrations');
 const { startCronJobs } = require('./src/services/cronService');
@@ -20,6 +21,12 @@ const errorlog = require('./errorlog');
 errorlog.install(app, { serviceName: 'payment-service', root: __dirname });
 
 app.use(cookieParser());
+
+// Razorpay webhooks must see the RAW body (signature = HMAC-SHA256 over the exact bytes), so this is
+// mounted before express.json(). Razorpay calls this URL directly (not through the gateway, which
+// requires a user JWT): <payment-service public URL>/api/payments/webhooks/razorpay
+app.use('/api/payments/webhooks', webhookRoutes);
+
 app.use(express.json());
 app.use(morgan('dev'));
 

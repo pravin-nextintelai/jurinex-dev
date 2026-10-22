@@ -3,6 +3,9 @@ const crypto = require("crypto");
 const db = require("../config/db");
 const { sendPurchaseConfirmationEmail } = require("../services/purchaseEmailService");
 const { maybeDeductTopupAfterUsage } = require("../services/topupDeductionService");
+const { issuePurchaseInvoice } = require("../services/invoiceNumberService");
+const taxService = require("../services/taxService");
+const gst = require("../utils/gst");
 
 const TOPUP_PLANS_TABLE = "topup_plans";
 
@@ -349,6 +352,20 @@ const verifyTopupPayment = async (req, res) => {
       [userId, tokensToCredit, topupExpiresAt]
     );
 
+    const totalPaise = gst.rupeesToPaise(paidAmount);
+    const tax = taxService.buildTaxBreakdown({ totalPaise, currency: paidCurrency });
+    const invoice = await issuePurchaseInvoice(client, {
+      userId,
+      sourceKind: "topup",
+      sourceId: Number(purchase.id),
+      currency: paidCurrency,
+      basicPaise: tax.basicPaise,
+      cgstPaise: tax.cgstPaise,
+      sgstPaise: tax.sgstPaise,
+      igstPaise: tax.igstPaise,
+      totalPaise: tax.totalPaise,
+    });
+
     await client.query(
       `UPDATE user_token_topup_purchases SET
          razorpay_payment_id = $1::text,
@@ -357,7 +374,8 @@ const verifyTopupPayment = async (req, res) => {
          currency            = $4::text,
          status              = 'completed',
          expires_at          = $5::timestamptz,
-         tokens_credited     = $6::integer
+         tokens_credited     = $6::integer,
+         invoice_number      = $8::text
        WHERE id = $7::integer`,
       [
         String(razorpay_payment_id),
@@ -367,6 +385,7 @@ const verifyTopupPayment = async (req, res) => {
         topupExpiresAt,
         tokensToCredit,
         Number(purchase.id),
+        invoice.invoice_number,
       ]
     );
 
@@ -386,6 +405,8 @@ const verifyTopupPayment = async (req, res) => {
       orderId: paymentDetails.order_id || razorpay_order_id,
       purchaseDate: new Date(),
       transactionType: "Token Top-Up",
+      tax,
+      appInvoiceNumber: invoice.invoice_number,
     }).catch((mailErr) => {
       console.warn("[verifyTopupPayment] email failed:", mailErr.message);
     });
@@ -396,6 +417,7 @@ const verifyTopupPayment = async (req, res) => {
       tokens_credited: tokensToCredit,
       topup_token_balance: newBalance,
       expires_at: topupExpiresAt,
+      invoice_number: invoice.invoice_number,
       plan: { id: plan.id, name: plan.name, validity_days: plan.validity_days },
     });
   } catch (err) {
@@ -463,6 +485,7 @@ const getTopupHistory = async (req, res) => {
          p.razorpay_payment_id,
          p.razorpay_order_id,
          p.expires_at,
+         p.invoice_number,
          p.created_at,
          t.name   AS plan_name,
          t.tokens AS plan_tokens

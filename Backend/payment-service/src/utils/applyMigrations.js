@@ -2,7 +2,16 @@
  * Applies pending schema migrations on service startup.
  * Each migration is idempotent (uses IF NOT EXISTS / IF EXISTS guards).
  */
+const fs = require('fs');
+const path = require('path');
 const db = require('../config/db');
+
+const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'db', 'migrations');
+
+/** Load a .sql file from db/migrations so the file stays the single source of truth. */
+function sqlFile(name) {
+  return fs.readFileSync(path.join(MIGRATIONS_DIR, name), 'utf8');
+}
 
 const MIGRATIONS = [
   {
@@ -197,6 +206,16 @@ const MIGRATIONS = [
       ALTER TABLE user_subscriptions
         ADD COLUMN IF NOT EXISTS extra_storage_bytes BIGINT NOT NULL DEFAULT 0;
     `,
+  },
+  {
+    // payments GST/invoice columns, payment_orders, payment_webhook_events, payment_refunds,
+    // app_invoices (+ sequences) and the guarded backfill of existing payment rows.
+    name: 'payment_tax_invoice_webhooks_2026_10_15',
+    sql: sqlFile('2026-10-15_payment_tax_invoice_webhooks.sql'),
+  },
+  {
+    name: 'invoice_number_sources_2026_10_17',
+    sql: sqlFile('2026-10-17_invoice_number_sources.sql'),
   },
 ];
 

@@ -15,9 +15,9 @@ The history block now carries, in this order:
   CHAT_HISTORY_LATEST_ANSWER_TOKENS, older answers up to CHAT_HISTORY_OLDER_ANSWER_TOKENS.
 
 The summary is written only from the saved turns and the previous summary. It records
-what the advocate asked and decided, attributes JuriNex's answers as answers rather than
-established facts, and skips rules already saved as instructions. The chat prompt marks
-it as context that the documents override. Nothing here raises into a chat.
+what the advocate asked and decided, and attributes JuriNex's answers as answers rather
+than established facts. The chat prompt marks it as context that the documents override.
+Nothing here raises into a chat.
 """
 from __future__ import annotations
 
@@ -570,24 +570,9 @@ def _store_summary(
 
 
 def _saved_rules(user_id: str, case_key: str | None) -> list[str]:
-    """Instruction texts already saved, so the summary does not repeat them. Never raises."""
-    try:
-        from app.services.memory import repository
-
-        scopes: list[tuple[str, str]] = [("user", user_id)]
-        if case_key:
-            scopes.append(("case", case_key))
-        texts: list[str] = []
-        for scope_type, scope_id in scopes:
-            data = repository.get_instruction_set(scope_type, scope_id) or {}
-            for item in data.get("items") or []:
-                text = str(item.get("text") or "").strip()
-                if text and item.get("enabled", True):
-                    texts.append(text)
-        return texts[:40]
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[ChatSummary] saved rules unavailable: %s", exc)
-        return []
+    """Kept so a caller can still pass rules into the summary prompt. None are stored."""
+    del user_id, case_key
+    return []
 
 
 def build_summary_request(previous: str, turns: Sequence[Turn], rules: Sequence[str]) -> str:

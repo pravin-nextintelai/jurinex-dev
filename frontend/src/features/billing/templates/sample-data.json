@@ -1,0 +1,78 @@
+{
+  "_comment": "Full data shape for tax-invoice.html and payment-receipt.html. Empty strings and false hide the matching {{#block}}. The invoice template reads `invoice`, the receipt template reads `receipt`; everything else is shared.",
+  "company": {
+    "name": "JuriNex",
+    "tagline": "Digital legal technology platform",
+    "logo_src": "https://example.com/jurinex-mark.png",
+    "address": "",
+    "country": "India",
+    "email": "support@jurinex.com",
+    "gstin": ""
+  },
+  "customer": {
+    "name": "Asha Verma",
+    "address": "",
+    "city_state_pin": "Pune, Maharashtra, 411001",
+    "email": "asha@example.com",
+    "phone": "+91 98765 43210",
+    "gstin": ""
+  },
+  "invoice": {
+    "number": "JNX/2026-27/000123",
+    "date": "17 Oct 2026",
+    "order_id": "order_PqRsTuVwXyZ123",
+    "place_of_supply": "",
+    "reverse_charge": "No",
+    "status_label": "Paid",
+    "paid": true,
+    "payment_method": "UPI",
+    "payment_id": "pay_AbCdEfGhIjKl45",
+    "receipt": "rcpt_1729170000"
+  },
+  "receipt": {
+    "number": "rcpt_1729170000",
+    "date": "17 Oct 2026",
+    "invoice_number": "JNX/2026-27/000123",
+    "order_id": "order_PqRsTuVwXyZ123",
+    "payment_id": "pay_AbCdEfGhIjKl45",
+    "payment_status": "Paid",
+    "status_label": "Paid",
+    "paid": true,
+    "payment_method": "UPI",
+    "gateway_receipt": ""
+  },
+  "items": [
+    {
+      "index": 1,
+      "name": "Professional plan (monthly)",
+      "description": "17 Oct 2026 to 16 Nov 2026",
+      "sac": "",
+      "qty": 1,
+      "unit": "",
+      "rate": "2,000.00",
+      "taxable": "2,000.00",
+      "gst_amount": "360.00",
+      "gst_rate": "18",
+      "total": "2,360.00"
+    }
+  ],
+  "totals": {
+    "total_qty": 1,
+    "taxable": "2,000.00",
+    "cgst": "180.00",
+    "cgst_rate": "9",
+    "sgst": "180.00",
+    "sgst_rate": "9",
+    "igst": "",
+    "igst_rate": "0",
+    "round_off": "",
+    "grand_total_label": "Grand total",
+    "grand_total": "2,360.00",
+    "amount_in_words": "Two thousand three hundred sixty rupees only"
+  },
+  "terms": [
+    "GST is added on the plan price.",
+    "Payment was processed digitally. This invoice is issued against the payment referenced above.",
+    "Subscription credits and storage are subject to the JuriNex terms of service."
+  ]
+}

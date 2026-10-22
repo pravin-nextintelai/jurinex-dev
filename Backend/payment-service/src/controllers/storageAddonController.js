@@ -12,6 +12,9 @@ const Razorpay = require('razorpay');
 const crypto   = require('crypto');
 const db       = require('../config/db');
 const { sendPurchaseConfirmationEmail } = require('../services/purchaseEmailService');
+const { issuePurchaseInvoice } = require('../services/invoiceNumberService');
+const taxService = require('../services/taxService');
+const gst = require('../utils/gst');
 
 const razorpay = new Razorpay({
   key_id:     process.env.RAZORPAY_KEY_ID,
@@ -233,6 +236,20 @@ exports.verifyStorageAddonPayment = async (req, res) => {
       [userId, storageBytes]
     );
 
+    const totalPaise = gst.rupeesToPaise(paidAmount);
+    const tax = taxService.buildTaxBreakdown({ totalPaise, currency: paidCurrency });
+    const invoice = await issuePurchaseInvoice(client, {
+      userId,
+      sourceKind: 'storage',
+      sourceId: Number(purchase.id),
+      currency: paidCurrency,
+      basicPaise: tax.basicPaise,
+      cgstPaise: tax.cgstPaise,
+      sgstPaise: tax.sgstPaise,
+      igstPaise: tax.igstPaise,
+      totalPaise: tax.totalPaise,
+    });
+
     // Mark purchase completed
     await client.query(
       `UPDATE user_storage_addon_purchases SET
@@ -242,7 +259,8 @@ exports.verifyStorageAddonPayment = async (req, res) => {
          currency              = $4::text,
          status                = 'completed',
          expires_at            = $5::timestamptz,
-         storage_bytes_granted = $6::bigint
+         storage_bytes_granted = $6::bigint,
+         invoice_number        = $8::text
        WHERE id = $7::integer`,
       [
         String(razorpay_payment_id),
@@ -252,6 +270,7 @@ exports.verifyStorageAddonPayment = async (req, res) => {
         expiresAt,
         storageBytes,
         Number(purchase.id),
+        invoice.invoice_number,
       ]
     );
 
@@ -270,6 +289,8 @@ exports.verifyStorageAddonPayment = async (req, res) => {
       orderId:         paymentDetails.order_id || razorpay_order_id,
       purchaseDate:    new Date(),
       transactionType: 'Storage Add-On',
+      tax,
+      appInvoiceNumber: invoice.invoice_number,
     }).catch((mailErr) => {
       console.warn('[storageAddon] email failed:', mailErr.message);
     });
@@ -281,6 +302,7 @@ exports.verifyStorageAddonPayment = async (req, res) => {
       storage_bytes_granted: storageBytes,
       extra_storage_bytes:   newExtraBytes,
       expires_at:            expiresAt,
+      invoice_number:        invoice.invoice_number,
       plan: { id: plan.id, name: plan.name, validity_years: plan.validity_years },
     });
   } catch (err) {
@@ -314,6 +336,7 @@ exports.getStorageAddonHistory = async (req, res) => {
          p.razorpay_payment_id,
          p.razorpay_order_id,
          p.expires_at,
+         p.invoice_number,
          p.created_at,
          a.name           AS plan_name,
          a.storage_gb     AS plan_storage_gb,

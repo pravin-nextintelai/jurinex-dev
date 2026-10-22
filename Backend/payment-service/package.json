@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test \"test/*.test.js\"",
+    "test:payments": "node --test test/gst.test.js test/paymentFinalize.test.js test/razorpayWebhook.test.js",
     "start": "node index.js"
   },
   "keywords": [],

@@ -2,9 +2,12 @@ const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const db = require("../config/db");
 const TokenUsageService = require("../services/tokenUsageService");
-const { sendPurchaseConfirmationEmail } = require("../services/purchaseEmailService");
 const { resolveEffectivePlan } = require("../services/effectivePlanService");
-const { syncUserActivePlanToAuth } = require("../services/userPlanSyncService");
+const { withTransaction } = require("../utils/withTransaction");
+const { createPaymentFinalizer, PaymentVerificationError, PLAN_SOURCE } = require("../services/paymentFinalizeService");
+const { createWebhookProcessor } = require("../services/razorpayWebhookService");
+const { afterPaymentFinalized } = require("../services/purchasePostCommitService");
+const gst = require("../utils/gst");
 const axios = require('axios'); // Import axios for HTTP requests
 
 const razorpay = new Razorpay({
@@ -12,47 +15,97 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_SECRET,
 });
 
-const getCircularReplacer = () => {
-  const seen = new WeakSet();
-  return (key, value) => {
-    if (typeof value === "object" && value !== null) {
-      if (seen.has(value)) return;
-      seen.add(value);
-    }
-    return value;
-  };
-};
+const finalizer = createPaymentFinalizer({ razorpay });
+const webhookProcessor = createWebhookProcessor({
+  db,
+  finalizer,
+  hooks: { afterPaymentFinalized: (result) => afterPaymentFinalized(result, { transactionType: 'Plan Purchase' }) },
+});
 
+/** Constant-time comparison of the checkout signature. */
+function signatureMatches(expectedBase, received) {
+  if (!received || !process.env.RAZORPAY_SECRET) return false;
+  const expected = crypto.createHmac("sha256", process.env.RAZORPAY_SECRET).update(expectedBase).digest("hex");
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(String(received), "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function verificationErrorResponse(res, err, label) {
+  if (err instanceof PaymentVerificationError) {
+    console.warn(`[${label}] ${err.code}: ${err.message}`, err.details || "");
+    return res.status(err.httpStatus).json({ success: false, message: err.message, code: err.code });
+  }
+  console.error(`[${label}] error:`, err);
+  return res.status(500).json({ success: false, message: "Payment verification failed", error: err?.message || "Unknown verification error" });
+}
+
+function publicTax(payment) {
+  if (!payment) return null;
+  return {
+    basic_amount: gst.paiseToRupeesNumber(payment.basic_amount_paise || 0),
+    cgst_rate: payment.cgst_rate === null || payment.cgst_rate === undefined ? null : Number(payment.cgst_rate),
+    cgst_amount: gst.paiseToRupeesNumber(payment.cgst_amount_paise || 0),
+    sgst_rate: payment.sgst_rate === null || payment.sgst_rate === undefined ? null : Number(payment.sgst_rate),
+    sgst_amount: gst.paiseToRupeesNumber(payment.sgst_amount_paise || 0),
+    igst_rate: payment.igst_rate === null || payment.igst_rate === undefined ? null : Number(payment.igst_rate),
+    igst_amount: gst.paiseToRupeesNumber(payment.igst_amount_paise || 0),
+    total_amount: gst.paiseToRupeesNumber(payment.total_amount_paise || payment.amount_paise || 0),
+    currency: payment.currency || "INR",
+    tax_type: payment.tax_type,
+    tax_basis: payment.tax_basis,
+  };
+}
+
+/**
+ * POST /api/payments/order/create   (legacy one-time purchase of a subscription_plans row)
+ * Body: { plan_id } or { plan_name }. The amount sent by the browser is ignored: the price comes
+ * from subscription_plans and the GST breakdown is frozen in payment_orders.
+ */
 const createOneTimeOrder = async (req, res) => {
   try {
-    const userId = req.user?.id || req.headers['x-user-id'];
-    const { amount, currency = "INR", plan_name = "Plan Purchase" } = req.body || {};
+    const userId = req.user?.id;
+    const { plan_id, plan_name, currency: requestedCurrency } = req.body || {};
 
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized: User ID missing." });
     }
-    if (!amount || Number(amount) <= 0) {
-      return res.status(400).json({ success: false, message: "Invalid amount." });
+    if (!plan_id && !plan_name) {
+      return res.status(400).json({ success: false, message: "plan_id or plan_name is required." });
     }
 
-    const order = await razorpay.orders.create({
-      amount: Number(amount), // paise
-      currency,
-      receipt: `ord_${userId}_${Date.now()}`,
-      notes: {
-        app_user_id: String(userId),
-        plan_name: String(plan_name),
-      },
-    });
+    const planResult = plan_id
+      ? await db.query(`SELECT * FROM subscription_plans WHERE id = $1 AND (is_active IS NOT FALSE) LIMIT 1`, [Number(plan_id)])
+      : await db.query(`SELECT * FROM subscription_plans WHERE LOWER(name) = LOWER($1) AND (is_active IS NOT FALSE) ORDER BY price DESC LIMIT 1`, [String(plan_name)]);
+    const plan = planResult.rows[0];
+    if (!plan) return res.status(404).json({ success: false, message: "Plan not found or inactive." });
+    plan.plan_source = PLAN_SOURCE.LEGACY;
+    if (requestedCurrency && String(requestedCurrency).toUpperCase() !== String(plan.currency || "INR").toUpperCase()) {
+      return res.status(400).json({ success: false, message: "Currency does not match the plan." });
+    }
+
+    const { breakdown, amountPaise } = await finalizer.prepareOrderAmount({ plan, userId });
+    if (!amountPaise || amountPaise <= 0) {
+      return res.status(400).json({ success: false, message: "Plan has no valid price configured." });
+    }
+
+    const receipt = `ord_${userId}_${Date.now()}`;
+    const notes = { app_user_id: String(userId), app_plan_id: String(plan.id), plan_name: String(plan.name) };
+    const order = await razorpay.orders.create({ amount: amountPaise, currency: breakdown.currency, receipt, notes });
+
+    await withTransaction(db, (client) => finalizer.recordOrder(client, { razorpayOrder: order, userId, plan, breakdown, notes }));
 
     return res.status(200).json({
       success: true,
       message: "Order created successfully",
-      order: {
-        id: order.id,
-        amount: order.amount,
-        currency: order.currency,
-      },
+      order: { id: order.id, amount: order.amount, currency: order.currency, receipt: order.receipt },
+      plan: { id: plan.id, name: plan.name },
+      tax: publicTax({
+        basic_amount_paise: breakdown.basicPaise, cgst_rate: gst.bpToPercentNumber(breakdown.cgstRateBp), cgst_amount_paise: breakdown.cgstPaise,
+        sgst_rate: gst.bpToPercentNumber(breakdown.sgstRateBp), sgst_amount_paise: breakdown.sgstPaise,
+        igst_rate: gst.bpToPercentNumber(breakdown.igstRateBp), igst_amount_paise: breakdown.igstPaise,
+        total_amount_paise: breakdown.totalPaise, currency: breakdown.currency, tax_type: breakdown.taxType, tax_basis: breakdown.basis,
+      }),
       key: process.env.RAZORPAY_KEY_ID,
     });
   } catch (err) {
@@ -238,405 +291,78 @@ const startSubscription = async (req, res) => {
 };
 
 
+/**
+ * POST /api/payments/subscription/verify   (legacy Razorpay-managed subscription on subscription_plans)
+ */
 const verifySubscription = async (req, res) => {
+  const userId = req.user?.id;
+  const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature, razorpay_order_id } = req.body || {};
+
+  console.log(`[verifySubscription] User: ${userId}, Payment: ${razorpay_payment_id}, Subscription: ${razorpay_subscription_id}`);
+
+  if (!userId || !razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature) {
+    return res.status(400).json({ success: false, message: "Missing verification data" });
+  }
+  if (!signatureMatches(`${razorpay_payment_id}|${razorpay_subscription_id}`, razorpay_signature)) {
+    console.warn(`[verifySubscription] Invalid signature for payment ${razorpay_payment_id}`);
+    return res.status(400).json({ success: false, message: "Invalid payment signature" });
+  }
+
   try {
-    await db.query('BEGIN');
+    const result = await withTransaction(db, (client) => finalizer.finalizePayment(client, {
+      userId,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpayOrderId: razorpay_order_id || null,
+      razorpaySubscriptionId: razorpay_subscription_id,
+      razorpaySignature: razorpay_signature,
+      source: 'checkout',
+      userEmail: req.user?.email,
+    }));
 
-    const userId = req.user?.id;
-    const { 
-      razorpay_payment_id, 
-      razorpay_subscription_id, 
-      razorpay_signature,
-      razorpay_order_id
-    } = req.body;
+    afterPaymentFinalized(result, { transactionType: 'Plan Upgrade', fallbackEmail: req.user?.email })
+      .catch((e) => console.error("[verifySubscription] post-commit error:", e.message));
 
-    console.log(`[verifySubscription] User: ${userId}, Payment: ${razorpay_payment_id}, Subscription: ${razorpay_subscription_id}`);
-
-    if (!userId || !razorpay_payment_id || !razorpay_subscription_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Missing verification data" });
-    }
-
-    const existingPayment = await db.query(
-      'SELECT id FROM payments WHERE razorpay_payment_id = $1',
-      [razorpay_payment_id]
-    );
-
-    if (existingPayment.rows.length > 0) {
-      console.log(`[verifySubscription] Payment ${razorpay_payment_id} already processed`);
-      await db.query('COMMIT');
-      return res.status(200).json({ 
-        success: true, 
-        message: "Payment already verified and processed", 
-        subscription: { status: 'active' }
+    if (result.payment.status !== 'captured') {
+      return res.status(202).json({
+        success: false,
+        pending: true,
+        message: `Payment is ${result.payment.status}. Your plan will be activated automatically once Razorpay confirms the capture.`,
+        payment: { payment_id: razorpay_payment_id, status: result.payment.status },
       });
     }
 
-    const generatedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_SECRET)
-      .update(`${razorpay_payment_id}|${razorpay_subscription_id}`)
-      .digest('hex');
-
-    if (generatedSignature !== razorpay_signature) {
-      console.warn(`[verifySubscription] Invalid signature. Expected=${generatedSignature}, Received=${razorpay_signature}`);
-      await db.query('ROLLBACK');
-      return res.status(400).json({ success: false, message: "Invalid payment signature" });
-    }
-
-    let paymentDetails;
-    try {
-      paymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
-      console.log("[verifySubscription] Payment details:", {
-        id: paymentDetails.id,
-        amount: paymentDetails.amount,
-        status: paymentDetails.status,
-        method: paymentDetails.method,
-        order_id: paymentDetails.order_id
-      });
-    } catch (fetchError) {
-      console.error("[verifySubscription] Razorpay fetch failed:", fetchError.message);
-      paymentDetails = {
-        id: razorpay_payment_id,
-        amount: 0,
-        currency: 'INR',
-        status: 'captured',
-        method: 'unknown',
-        order_id: razorpay_order_id || null
-      };
-    }
-
-    const updateResult = await db.query(
-      `UPDATE user_subscriptions 
-       SET status = 'active', 
-           razorpay_payment_id = $1, 
-           activated_at = CURRENT_TIMESTAMP,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE user_id = $2 AND razorpay_subscription_id = $3 
-       RETURNING *`,
-      [razorpay_payment_id, userId, razorpay_subscription_id]
-    );
-
-    if (updateResult.rows.length === 0) {
-      await db.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: "Subscription not found" });
-    }
-
-    const userSubscription = updateResult.rows[0];
-
-    const planQuery = await db.query(
-      "SELECT token_limit, name, price, currency FROM subscription_plans WHERE id = $1", 
-      [userSubscription.plan_id]
-    );
-
-    const tokenLimit = planQuery.rows.length > 0 ? planQuery.rows[0].token_limit : 0;
-    const subscribedPlan = planQuery.rows.length > 0 ? planQuery.rows[0] : null;
-
-    try {
-      await db.query(
-        `INSERT INTO payments (
-          user_id,
-          subscription_id,
-          razorpay_payment_id,
-          razorpay_order_id,
-          razorpay_signature,
-          amount,
-          currency,
-          status,
-          payment_method,
-          created_at,
-          transaction_date
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_DATE)`,
-        [
-          userId,
-          userSubscription.id,
-          paymentDetails.id,
-          paymentDetails.order_id || razorpay_order_id,
-          razorpay_signature,
-          paymentDetails.amount ? paymentDetails.amount / 100 : 0, // convert from paise
-          paymentDetails.currency || 'INR',
-          paymentDetails.status || 'captured',
-          paymentDetails.method || 'unknown'
-        ]
-      );
-      console.log(`[verifySubscription] Payment record inserted for payment_id: ${paymentDetails.id}`);
-    } catch (insertError) {
-      if (insertError.code === '23505' && insertError.constraint === 'payments_razorpay_payment_id_key') {
-        console.log(`[verifySubscription] Payment ${razorpay_payment_id} already exists in payments table`);
-      } else {
-        console.error(`[verifySubscription] Payment insert error:`, insertError);
-        throw insertError; // Re-throw other errors
-      }
-    }
-
-    try {
-      await TokenUsageService.resetUserUsage(
-        userId, 
-        tokenLimit, 
-        'Subscription Verified and Activated'
-      );
-      console.log(`[verifySubscription] Token usage reset for user ${userId} with limit ${tokenLimit}`);
-    } catch (tokenError) {
-      console.error(`[verifySubscription] Token reset error:`, tokenError);
-    }
-
-    await db.query('COMMIT');
-
-    sendPurchaseConfirmationEmail({
-      to: req.user?.email,
-      customerName: req.user?.email ? req.user.email.split('@')[0] : `User ${userId}`,
-      customerEmail: req.user?.email,
-      planName: subscribedPlan?.name || 'Subscription Plan',
-      amount: paymentDetails.amount ? paymentDetails.amount / 100 : Number(subscribedPlan?.price || 0),
-      currency: paymentDetails.currency || subscribedPlan?.currency || 'INR',
-      paymentId: paymentDetails.id,
-      orderId: paymentDetails.order_id || razorpay_order_id,
-      purchaseDate: new Date(),
-      transactionType: 'Plan Upgrade',
-    }).catch((mailError) => {
-      console.error("[verifySubscription] purchase email failed:", mailError.message);
+    const subscription = result.subscription
+      || (await db.query('SELECT * FROM user_subscriptions WHERE user_id = $1', [userId])).rows[0] || { status: 'active' };
+    return res.status(200).json({
+      success: true,
+      message: result.alreadyProcessed ? "Payment already verified and processed" : "Subscription verified successfully",
+      subscription,
+      payment: {
+        payment_id: result.payment.razorpay_payment_id,
+        order_id: result.payment.razorpay_order_id,
+        status: result.payment.status,
+        app_invoice_number: result.appInvoice?.invoice_number || null,
+        razorpay_invoice_number: result.payment.razorpay_invoice_number || null,
+      },
+      tax: publicTax(result.payment),
     });
-
-    console.log(`[verifySubscription] Subscription verified successfully for user ${userId}`);
-
-    return res.status(200).json({ 
-      success: true, 
-      message: "Subscription verified successfully", 
-      subscription: userSubscription 
-    });
-
   } catch (err) {
-    await db.query('ROLLBACK');
-    console.error("[verifySubscription] Error:", err);
-    return res.status(500).json({ 
-      success: false, 
-      message: "Subscription verification failed", 
-      error: err.message 
-    });
+    return verificationErrorResponse(res, err, 'verifySubscription');
   }
 };
 
 
+/**
+ * POST /api/payments/webhooks/razorpay — raw body (Buffer) is required; see routes/webhookRoutes.js
+ */
 const handleWebhook = async (req, res) => {
-  try {
-    await db.query('BEGIN');
-    
-    const signature = req.headers['x-razorpay-signature'];
-    const payload = JSON.stringify(req.body);
-    console.log(`Webhook received - Event: ${req.body.event}`);
-    
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
-      .update(payload)
-      .digest('hex');
-    
-    if (signature !== expectedSignature) {
-      console.log("Invalid webhook signature");
-      return res.status(400).json({ message: "Invalid signature" });
-    }
-    
-    const { event, payload: eventPayload } = req.body;
-    console.log(`Processing webhook event: ${event}`);
-    
-    switch (event) {
-      case 'subscription.activated':
-        await handleSubscriptionActivated(eventPayload.subscription.entity);
-        break;
-      case 'subscription.charged':
-        await handleSubscriptionCharged(eventPayload.payment.entity, eventPayload.subscription.entity);
-        break;
-      case 'subscription.cancelled':
-        await handleSubscriptionCancelled(eventPayload.subscription.entity);
-        break;
-      case 'subscription.completed':
-        await handleSubscriptionCompleted(eventPayload.subscription.entity);
-        break;
-      default:
-        console.log(`Unhandled webhook event: ${event}`);
-    }
-    
-    await db.query('COMMIT');
-    return res.status(200).json({ status: 'ok' });
-    
-  } catch (err) {
-    await db.query('ROLLBACK');
-    console.error("Webhook handling failed:", err);
-    return res.status(500).json({ message: "Webhook handling failed" });
-  }
-};
-
-const handleSubscriptionActivated = async (subscription) => {
-  try {
-    console.log(`Activating subscription: ${subscription.id}`);
-    
-    const result = await db.query(
-      `UPDATE user_subscriptions
-       SET status = 'active', activated_at = CURRENT_TIMESTAMP
-       WHERE razorpay_subscription_id = $1 RETURNING user_id, plan_id, last_reset_date`,
-      [subscription.id]
-    );
-    
-    if (result.rows.length > 0) {
-      const { user_id, plan_id, last_reset_date } = result.rows[0];
-      console.log(`Subscription ${subscription.id} activated for user ${user_id}`);
-
-      const planResult = await db.query(
-        `SELECT token_limit, interval FROM subscription_plans WHERE id = $1`,
-        [plan_id]
-      );
-      
-      if (planResult.rows.length > 0) {
-        const { token_limit: tokenLimit, interval } = planResult.rows[0];
-
-        const lastResetDate = new Date(last_reset_date);
-        let nextResetDate = new Date(lastResetDate);
-
-        if (interval === 'monthly') {
-          nextResetDate.setUTCMonth(nextResetDate.getUTCMonth() + 1);
-        } else if (interval === 'yearly') {
-          nextResetDate.setUTCFullYear(nextResetDate.getUTCFullYear() + 1);
-        } else if (interval === 'weekly') {
-          nextResetDate.setUTCDate(nextResetDate.getUTCDate() + 7);
-        } else if (interval === 'daily') {
-          nextResetDate.setUTCDate(nextResetDate.getUTCDate() + 1);
-        }
-
-        const now = new Date();
-        now.setUTCHours(0, 0, 0, 0);
-
-        if (interval === 'lifetime' || now >= nextResetDate) {
-          await TokenUsageService.resetUserUsage(user_id, tokenLimit, 'Subscription Activated');
-          await db.query(
-            `UPDATE user_subscriptions SET last_reset_date = CURRENT_DATE, plan_tokens_used = 0 WHERE user_id = $1`,
-            [user_id]
-          );
-          console.log(`User ${user_id} tokens reset to ${tokenLimit}`);
-        } else {
-          console.log(`User ${user_id} tokens not reset. Next renewal on ${nextResetDate.toISOString().split('T')[0]}. Current date: ${now.toISOString().split('T')[0]}`);
-        }
-      }
-    } else {
-      console.warn(`No subscription found for Razorpay ID: ${subscription.id}`);
-    }
-  } catch (err) {
-    console.error(`Error handling subscription activation for ${subscription.id}:`, err);
-    throw err;
-  }
-};
-
-const handleSubscriptionCharged = async (payment, subscription) => {
-  try {
-    console.log(`Handling charge for subscription: ${subscription.id}, payment: ${payment.id}`);
-    
-    const updateResult = await db.query(
-      `UPDATE user_subscriptions
-       SET razorpay_payment_id = $1,
-            last_charged_at = CURRENT_TIMESTAMP
-       WHERE razorpay_subscription_id = $2 RETURNING id, user_id, plan_id, last_reset_date`,
-      [payment.id, subscription.id]
-    );
-
-    if (updateResult.rows.length > 0) {
-      const { id: user_subscription_id, user_id, plan_id, last_reset_date } = updateResult.rows[0];
-      console.log(`Subscription ${subscription.id} charged for user ${user_id}`);
-
-      const planResult = await db.query(
-        `SELECT token_limit, interval FROM subscription_plans WHERE id = $1`,
-        [plan_id]
-      );
-      
-      if (planResult.rows.length > 0) {
-        const { token_limit: tokenLimit, interval } = planResult.rows[0];
-
-        const lastResetDate = new Date(last_reset_date);
-        let nextResetDate = new Date(lastResetDate);
-
-        if (interval === 'monthly') {
-          nextResetDate.setUTCMonth(nextResetDate.getUTCMonth() + 1);
-        } else if (interval === 'yearly') {
-          nextResetDate.setUTCFullYear(nextResetDate.getUTCFullYear() + 1);
-        } else if (interval === 'weekly') {
-          nextResetDate.setUTCDate(nextResetDate.getUTCDate() + 7);
-        } else if (interval === 'daily') {
-          nextResetDate.setUTCDate(nextResetDate.getUTCDate() + 1);
-        }
-
-        const now = new Date();
-        now.setUTCHours(0, 0, 0, 0); // Normalize current time to start of day UTC
-
-        if (interval === 'lifetime' || now >= nextResetDate) {
-          await TokenUsageService.resetUserUsage(user_id, tokenLimit, 'Subscription Charged/Renewed');
-          await db.query(
-            `UPDATE user_subscriptions SET last_reset_date = CURRENT_DATE, plan_tokens_used = 0 WHERE user_id = $1`,
-            [user_id]
-          );
-          console.log(`User ${user_id} tokens reset to ${tokenLimit}`);
-        } else {
-          console.log(`User ${user_id} tokens not reset. Next renewal on ${nextResetDate.toISOString().split('T')[0]}. Current date: ${now.toISOString().split('T')[0]}`);
-        }
-      }
-
-      await db.query(
-        `INSERT INTO payments (
-          user_id,
-          subscription_id,
-          razorpay_payment_id,
-          razorpay_order_id,
-          amount,
-          currency,
-          status,
-          payment_method,
-          created_at,
-          transaction_date
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_DATE)`,
-        [
-          user_id,
-          user_subscription_id,
-          payment.id,
-          payment.order_id,
-          payment.amount / 100,
-          payment.currency,
-          payment.status,
-          payment.method
-        ]
-      );
-      
-      console.log(`Payment ${payment.id} recorded for user ${user_id}`);
-    } else {
-      console.warn(`No subscription found for Razorpay ID: ${subscription.id}`);
-    }
-  } catch (err) {
-    console.error(`Error handling subscription charge for ${subscription.id}:`, err);
-    throw err;
-  }
-};
-
-const handleSubscriptionCancelled = async (subscription) => {
-  try {
-    await db.query(
-      `UPDATE user_subscriptions
-       SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP
-       WHERE razorpay_subscription_id = $1`,
-      [subscription.id]
-    );
-    console.log(`Subscription ${subscription.id} cancelled`);
-  } catch (err) {
-    console.error(`Error handling subscription cancellation for ${subscription.id}:`, err);
-    throw err;
-  }
-};
-
-const handleSubscriptionCompleted = async (subscription) => {
-  try {
-    await db.query(
-      `UPDATE user_subscriptions
-       SET status = 'completed', completed_at = CURRENT_TIMESTAMP
-       WHERE razorpay_subscription_id = $1`,
-      [subscription.id]
-    );
-    console.log(`Subscription ${subscription.id} completed`);
-  } catch (err) {
-    console.error(`Error handling subscription completion for ${subscription.id}:`, err);
-    throw err;
-  }
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}), 'utf8');
+  const { httpStatus, body } = await webhookProcessor.processWebhook({
+    rawBody,
+    signature: req.headers['x-razorpay-signature'],
+    eventId: req.headers['x-razorpay-event-id'] || null,
+  });
+  return res.status(httpStatus).json(body);
 };
 
 const getUserPaymentHistory = async (req, res) => {
@@ -651,27 +377,53 @@ const getUserPaymentHistory = async (req, res) => {
         p.id AS payment_id,
         p.razorpay_payment_id,
         p.razorpay_order_id,
+        p.razorpay_subscription_id,
         p.amount,
         p.currency,
         p.status AS payment_status,
+        p.razorpay_status,
+        p.refund_status,
         p.payment_method,
         p.created_at AS payment_date,
+        COALESCE(p.purchase_date, p.created_at) AS purchase_date,
         p.transaction_date,
-        
+
+        -- GST breakdown (rupees, derived from integer paise)
+        ROUND(p.basic_amount_paise / 100.0, 2) AS basic_amount,
+        p.cgst_rate,
+        ROUND(p.cgst_amount_paise / 100.0, 2)  AS cgst_amount,
+        p.sgst_rate,
+        ROUND(p.sgst_amount_paise / 100.0, 2)  AS sgst_amount,
+        p.igst_rate,
+        ROUND(p.igst_amount_paise / 100.0, 2)  AS igst_amount,
+        ROUND(COALESCE(p.total_amount_paise, p.amount_paise) / 100.0, 2) AS total_amount,
+        ROUND(p.amount_refunded_paise / 100.0, 2) AS amount_refunded,
+        p.tax_type,
+        p.tax_basis,
+
+        -- Invoice references: Razorpay (genuine, usually NULL for order payments) and application-generated
+        p.razorpay_invoice_id,
+        p.razorpay_invoice_number,
+        p.razorpay_receipt,
+        ai.invoice_number AS app_invoice_number,
+        ai.issued_at      AS app_invoice_issued_at,
+
         us.id AS user_subscription_id,
         us.status AS subscription_status,
         us.start_date,
         us.end_date,
 
-        sp.id AS plan_id,
-        sp.name AS plan_name,
-        sp.description AS plan_description,
-        sp.price AS plan_price,
+        COALESCE(p.monthly_plan_id, p.plan_id, sp.id, mp.id) AS plan_id,
+        COALESCE(p.plan_name, mp.name, sp.name) AS plan_name,
+        COALESCE(mp.description, sp.description) AS plan_description,
+        COALESCE(mp.price, sp.price) AS plan_price,
         sp.interval AS plan_interval,
-        sp.token_limit AS plan_token_limit
+        COALESCE(mp.monthly_tokens, sp.token_limit) AS plan_token_limit
       FROM payments p
+      LEFT JOIN app_invoices ai ON ai.id = p.app_invoice_id
       LEFT JOIN user_subscriptions us ON p.subscription_id = us.id
-      LEFT JOIN subscription_plans sp ON us.plan_id = sp.id
+      LEFT JOIN subscription_plans sp ON sp.id = COALESCE(p.plan_id, us.plan_id)
+      LEFT JOIN monthly_plans mp ON mp.id = COALESCE(p.monthly_plan_id, us.monthly_plan_id)
       WHERE p.user_id = $1
       ORDER BY p.created_at DESC, p.id DESC`,
       [userId]
@@ -695,7 +447,7 @@ const testPlans = async (req, res) => {
   try {
     const dbPlans = await db.query("SELECT id, name, razorpay_plan_id, price, interval, is_active FROM subscription_plans ORDER BY id");
     const rzpPlans = await razorpay.plans.all({ count: 10 });
-    
+
     console.log("Database Plans:", JSON.stringify(dbPlans.rows, null, 2));
     console.log("Razorpay Plans:", JSON.stringify(rzpPlans.items?.map(p => ({
       id: p.id,
@@ -718,10 +470,10 @@ const testPlans = async (req, res) => {
       }))
     });
   } catch (error) {
-    return res.status(500).json({ 
-      success: false, 
-      message: "Plan test failed", 
-      error: error.message 
+    return res.status(500).json({
+      success: false,
+      message: "Plan test failed",
+      error: error.message
     });
   }
 };
@@ -821,207 +573,64 @@ const rollbackTokensApi = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/payments/order/verify   (legacy one-time order on subscription_plans)
+ * plan_id / plan_name from the body are only a fallback for orders created before payment_orders
+ * existed; the payment_orders snapshot (by razorpay_order_id) is the trusted source.
+ */
 const verifyPersistedOneTimePayment = async (req, res) => {
+  const userId = req.user?.id;
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan_name, plan_id } = req.body || {};
+
+  if (!userId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    return res.status(400).json({ success: false, message: "Missing verification data" });
+  }
+  if (!signatureMatches(`${razorpay_order_id}|${razorpay_payment_id}`, razorpay_signature)) {
+    return res.status(400).json({ success: false, message: "Invalid payment signature" });
+  }
+
   try {
-    await db.query('BEGIN');
+    const result = await withTransaction(db, (client) => finalizer.finalizePayment(client, {
+      userId,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpayOrderId: razorpay_order_id,
+      razorpaySignature: razorpay_signature,
+      planHint: { source: PLAN_SOURCE.LEGACY, id: plan_id ? Number(plan_id) : undefined, name: plan_name },
+      source: 'checkout',
+      userEmail: req.user?.email,
+    }));
 
-    const userId = req.user?.id;
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan_name, plan_id } = req.body || {};
+    afterPaymentFinalized(result, { transactionType: 'Plan Purchase', fallbackEmail: req.user?.email })
+      .catch((e) => console.error("[verifyPersistedOneTimePayment] post-commit error:", e.message));
 
-    if (!userId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      await db.query('ROLLBACK');
-      return res.status(400).json({ success: false, message: "Missing verification data" });
-    }
-
-    const existingPayment = await db.query(
-      `SELECT id FROM payments WHERE razorpay_payment_id = $1`,
-      [razorpay_payment_id]
-    );
-
-    if (existingPayment.rows.length > 0) {
-      const { activePlan } = await resolveEffectivePlan(userId);
-      if (activePlan) {
-        await syncUserActivePlanToAuth(userId, activePlan);
-      }
-      await db.query('COMMIT');
-      return res.status(200).json({
-        success: true,
-        message: "Payment already verified successfully",
-        payment: {
-          order_id: razorpay_order_id,
-          payment_id: razorpay_payment_id,
-          plan_name: plan_name || activePlan?.plan_name || null,
-          plan_id: activePlan?.plan_id || null,
-        },
-        activePlan,
+    if (result.payment.status !== 'captured') {
+      return res.status(202).json({
+        success: false,
+        pending: true,
+        message: `Payment is ${result.payment.status}. Your plan will be activated automatically once Razorpay confirms the capture.`,
+        payment: { order_id: razorpay_order_id, payment_id: razorpay_payment_id, status: result.payment.status },
       });
     }
 
-    const generatedSignature = crypto
-      .createHmac("sha256", process.env.RAZORPAY_SECRET)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest("hex");
-
-    if (generatedSignature !== razorpay_signature) {
-      await db.query('ROLLBACK');
-      return res.status(400).json({ success: false, message: "Invalid payment signature" });
-    }
-
-    let planQuery;
-    if (plan_id) {
-      planQuery = await db.query(
-        `SELECT * FROM subscription_plans WHERE id = $1 AND (is_active IS NOT FALSE) LIMIT 1`,
-        [plan_id]
-      );
-    } else if (plan_name) {
-      planQuery = await db.query(
-        `SELECT * FROM subscription_plans
-         WHERE LOWER(name) = LOWER($1) AND (is_active IS NOT FALSE)
-         ORDER BY price DESC
-         LIMIT 1`,
-        [plan_name]
-      );
-    } else {
-      planQuery = { rows: [] };
-    }
-
-    if (planQuery.rows.length === 0) {
-      await db.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: "Purchased plan not found in subscription_plans. Check plan_id or plan_name." });
-    }
-
-    const resolvedPlan = planQuery.rows[0];
-
-    let paymentDetails;
-    try {
-      paymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
-    } catch (fetchError) {
-      console.error("[verifyPersistedOneTimePayment] Failed to fetch payment details from Razorpay:", fetchError.message);
-      paymentDetails = {
-        id: razorpay_payment_id,
-        order_id: razorpay_order_id,
-        amount: resolvedPlan.price ? Number(resolvedPlan.price) * 100 : 0,
-        currency: resolvedPlan.currency || "INR",
-        status: "captured",
-        method: "unknown",
-      };
-    }
-
-    const subscriptionEndDate = new Date();
-    const normalizedInterval = String(resolvedPlan.interval || '').toLowerCase();
-    if (['year', 'yearly', 'annual'].includes(normalizedInterval)) {
-      subscriptionEndDate.setFullYear(subscriptionEndDate.getFullYear() + 1);
-    } else if (['quarter', 'quarterly'].includes(normalizedInterval)) {
-      subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 3);
-    } else if (['month', 'monthly'].includes(normalizedInterval)) {
-      subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1);
-    }
-
-    const subscriptionResult = await db.query(
-      `INSERT INTO user_subscriptions (
-        user_id,
-        plan_id,
-        razorpay_subscription_id,
-        razorpay_payment_id,
-        status,
-        current_token_balance,
-        start_date,
-        end_date,
-        activated_at,
-        last_reset_date,
-        created_at,
-        updated_at
-      )
-      VALUES ($1, $2, NULL, $3, 'active', $4, CURRENT_DATE, $5, CURRENT_TIMESTAMP, CURRENT_DATE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT (user_id) DO UPDATE SET
-        plan_id = EXCLUDED.plan_id,
-        razorpay_payment_id = EXCLUDED.razorpay_payment_id,
-        status = EXCLUDED.status,
-        current_token_balance = EXCLUDED.current_token_balance,
-        start_date = EXCLUDED.start_date,
-        end_date = EXCLUDED.end_date,
-        activated_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
-      RETURNING *`,
-      [userId, resolvedPlan.id, razorpay_payment_id, resolvedPlan.token_limit || 0, subscriptionEndDate]
-    );
-
-    const userSubscription = subscriptionResult.rows[0];
-
-    await db.query(
-      `INSERT INTO payments (
-        user_id,
-        subscription_id,
-        razorpay_payment_id,
-        razorpay_order_id,
-        razorpay_signature,
-        amount,
-        currency,
-        status,
-        payment_method,
-        created_at,
-        transaction_date
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP, CURRENT_DATE)`,
-      [
-        userId,
-        userSubscription.id,
-        paymentDetails.id,
-        paymentDetails.order_id || razorpay_order_id,
-        razorpay_signature,
-        paymentDetails.amount ? paymentDetails.amount / 100 : Number(resolvedPlan.price || 0),
-        paymentDetails.currency || resolvedPlan.currency || "INR",
-        paymentDetails.status || "captured",
-        paymentDetails.method || "unknown",
-      ]
-    );
-
-    if (resolvedPlan.token_limit) {
-      await TokenUsageService.resetUserUsage(userId, resolvedPlan.token_limit, 'One-time plan purchase activation');
-    }
-
-    await db.query('COMMIT');
-
     const { activePlan } = await resolveEffectivePlan(userId);
-
-    if (activePlan) {
-      await syncUserActivePlanToAuth(userId, activePlan);
-    }
-
-    sendPurchaseConfirmationEmail({
-      to: req.user?.email,
-      customerName: req.user?.email ? req.user.email.split('@')[0] : `User ${userId}`,
-      customerEmail: req.user?.email,
-      planName: resolvedPlan.name || plan_name || null,
-      amount: paymentDetails.amount ? paymentDetails.amount / 100 : Number(resolvedPlan.price || 0),
-      currency: paymentDetails.currency || resolvedPlan.currency || "INR",
-      paymentId: paymentDetails.id,
-      orderId: paymentDetails.order_id || razorpay_order_id,
-      purchaseDate: new Date(),
-      transactionType: 'Plan Purchase',
-    }).catch((mailError) => {
-      console.error("[verifyPersistedOneTimePayment] purchase email failed:", mailError.message);
-    });
-
     return res.status(200).json({
       success: true,
-      message: "Payment verified successfully",
+      message: result.alreadyProcessed ? "Payment already verified successfully" : "Payment verified successfully",
       payment: {
         order_id: razorpay_order_id,
         payment_id: razorpay_payment_id,
-        plan_id: resolvedPlan.id,
-        plan_name: resolvedPlan.name || plan_name || null,
+        plan_id: result.plan.id,
+        plan_name: result.plan.name,
+        status: result.payment.status,
+        app_invoice_number: result.appInvoice?.invoice_number || null,
+        razorpay_invoice_number: result.payment.razorpay_invoice_number || null,
       },
-      subscription: userSubscription,
+      tax: publicTax(result.payment),
+      subscription: result.subscription || null,
       activePlan,
     });
   } catch (err) {
-    await db.query('ROLLBACK');
-    console.error("[verifyPersistedOneTimePayment] error:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Payment verification failed",
-      error: err?.message || "Unknown verification error",
-    });
+    return verificationErrorResponse(res, err, 'verifyPersistedOneTimePayment');
   }
 };
 
@@ -1038,4 +647,9 @@ module.exports = {
   checkAndReserveTokensApi,
   commitTokensApi,
   rollbackTokensApi,
+  // exported for tests / other controllers
+  finalizer,
+  webhookProcessor,
+  publicTax,
+  signatureMatches,
 };

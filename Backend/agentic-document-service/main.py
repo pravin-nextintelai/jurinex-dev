@@ -17,10 +17,8 @@ from app.api.routes.speech import router as speech_router
 from app.api.routes.cases import router as cases_router
 from app.api.routes.content import router as content_router
 from app.api.routes.custom_prompts import router as custom_prompts_router
-from app.api.routes.personalization import router as personalization_router
 from app.api.routes.files import router as files_router
 from app.api.routes.health import router as health_router
-from app.api.routes.memory import router as memory_router
 from app.api.routes.rbac import router as rbac_router
 from app.api.routes.branding import router as branding_router
 from app.api.routes.summarization_config_admin import router as summarization_config_admin_router
@@ -109,13 +107,9 @@ def create_app() -> FastAPI:
     app.include_router(cases_router)
     app.include_router(content_router)
     app.include_router(rbac_router)
-    # /api/memory owns its own prefix, so the /api/files wildcard cannot shadow
-    # it; registered here beside the other static prefixes for consistency.
-    app.include_router(memory_router)
-    # Static /api/files/custom-prompts and /api/files/personalization prefixes
-    # must register before the files router's /api/files/{folder_name} wildcards.
+    # Static /api/files/custom-prompts must register before the files router's
+    # /api/files/{folder_name} wildcards.
     app.include_router(custom_prompts_router)
-    app.include_router(personalization_router)
     app.include_router(files_router)
     if settings.enable_legacy_proxy:
         from app.api.routes.legacy_proxy import router as legacy_proxy_router
