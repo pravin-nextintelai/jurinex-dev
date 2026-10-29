@@ -1,0 +1,71 @@
+# Jurinex
+
+> Jurinex.ai is the legal operating system from NexIntel AI Pvt Ltd for advocates and law firms in India. It analyses case documents, checks Indian citations, drafts filings and stores matters. Customer data resides in India.
+
+Jurinex covers Indian courts, including the Supreme Court and the High Courts, and works in English, Hindi, Marathi, Tamil and Telugu. The company office is B11, Near Railway Station Road, MIDC, Chhatrapati Sambhajinagar, Maharashtra 431010. Phone +91 9684027372. Email connect@jurinex.ai. CIN U62010MH2025PTC448297. GSTIN 27AAKCN4811B1ZQ.
+
+Public pages below are safe to cite. Signed-in workspaces are private and are excluded from robots.txt.
+
+## Public pages
+- [Enterprise grade legal operating system for Law Professionals powered by AI](https://jurinex.ai/): Work faster, practice smarter with the power of AI. Jurinex handles your research, drafting, citations and case files — purpose-built for Indian courts, supports Indian languages.
+- [Five products. One case memory.](https://jurinex.ai/products): Create Case, Case Storage, Quick Chat, AI Drafting and Citation Research. Five products, one case memory, built for Indian courts.
+- [Free legal micro-tools](https://jurinex.ai/legal-tools): Map IPC, CrPC and Evidence Act sections to the Bharatiya codes, check citations, and calculate limitation. Free tools for Indian advocates.
+- [Legal Hub](https://jurinex.ai/content-hub): Judgments, news and practitioner explainers from the Supreme Court of India and the High Courts.
+- [All stories](https://jurinex.ai/content-hub/stories): Judgments, news and practitioner explainers from the Supreme Court and the High Courts of India.
+- [Supreme Court](https://jurinex.ai/content-hub/supreme-court): Stories and explainers from the Supreme Court of India, written for practising advocates.
+- [High Courts](https://jurinex.ai/content-hub/high-courts): Stories and explainers from the High Courts of India, organised by court.
+- [Notes from the Jurinex team](https://jurinex.ai/blogs): Practical writing on legal AI, drafting, citation checks and running a modern Indian practice.
+- [Frequently asked questions](https://jurinex.ai/faqs): What Jurinex does, which documents and languages it supports, how citation checks work, and how Indian data residency is handled.
+- [How Jurinex compares to Indian and global legal tools](https://jurinex.ai/compare/jurinex-vs-alternatives): Jurinex compared with other Indian and global legal tools on architecture, vernacular OCR, citation checks, court formatting and data residency in India.
+- [Plans that grow with you](https://jurinex.ai/pricing): Jurinex plans for solo advocates and law firms. Every plan starts with a 7-day free trial.
+- [Contact Jurinex](https://jurinex.ai/contact): Contact NexIntel AI Pvt Ltd at B11, Near Railway Station Road, MIDC, Chhatrapati Sambhajinagar, Maharashtra 431010. +91 9684027372. connect@jurinex.ai.
+- [Engineers and lawyers, building together.](https://jurinex.ai/team): The lawyers and engineers at NexIntel AI Pvt Ltd who build Jurinex in Chhatrapati Sambhajinagar.
+- [Practise alongside advocates who use AI every day](https://jurinex.ai/community): A WhatsApp community for Indian advocates using Jurinex: release notes, drafting tips and a direct line to the team.
+- [How can we help?](https://jurinex.ai/help): Help with Jurinex by email at connect@jurinex.ai, by phone at +91 9684027372, or in the WhatsApp community. Support hours are Monday to Friday, 9 AM to 6 PM IST.
+- [About Nexintel AI](https://jurinex.ai/aboutus): NexIntel AI Pvt Ltd builds Jurinex, an AI legal operating system for Indian advocates and law firms, from Chhatrapati Sambhajinagar.
+- [About Nexintel AI Legal Summarizer](https://jurinex.ai/about-nexintel): How the Nexintel AI legal summarizer reads long Indian case files and returns a summary counsel can check.
+- [Create Case](https://jurinex.ai/products/create-case): A case in Jurinex is like a folder: every document, note and AI analysis for one matter lives inside it. A guided wizard reads your papers, fills in the…
+- [Case Storage](https://jurinex.ai/products/case-storage): Every document and every case lives here. Browse My Documents and My Cases as folders, upload files without opening a case, create documents in place,…
+- [Quick Chat](https://jurinex.ai/products/quick-chat): Session chat over any document, the easiest way into Jurinex. Upload the file, type a question in plain English and get an answer that cites the passage it…
+- [AI Drafting](https://jurinex.ai/products/ai-drafting): Litigation drafts start from inside case chat. Conveyancing, corporate and general drafting go through a guided template picker: system templates, or your…
+- [Citation Research](https://jurinex.ai/products/citation-research): Pick a case, or upload or paste the text you are arguing from. Tell Jurinex who you act for and the legal focus, and it retrieves Indian Kanoon authorities…
+- [Vernacular FIR & 7/12 text sandbox](https://jurinex.ai/legal-tools/fir-text): Paste Marathi, Hindi, Tamil, Telugu or English text and update the section numbers.
+- [High Court bench line & citation check](https://jurinex.ai/legal-tools/citation-check): Check the shape of a citation, and the coram line, before it goes into a draft.
+- [Indian Court Limitation Calculator](https://jurinex.ai/legal-tools/limitation): Filing deadlines under the Limitation Act, with Section 12 certified-copy time excluded.
+- [A five-point checklist before you rely on an AI-generated citation](https://jurinex.ai/blogs/citation-hallucination-checklist): Courts in India and abroad have sanctioned counsel for citing cases that do not exist. Here is the routine we recommend before any authority reaches a draft.
+- [Why structured drafts beat free-form prompts for court filings](https://jurinex.ai/blogs/drafting-with-structure): A plaint, a written statement and a bail application share almost no structure. Asking a model to write one from a blank prompt is where most quality…
+- [Working with Marathi, Hindi and other regional-language case files](https://jurinex.ai/blogs/regional-language-ocr): A large share of trial-court records are scanned, handwritten or in a regional language. Here is how Jurinex handles them and where it still needs your help.
+- [Building a case chronology from a thousand-page bundle in an afternoon](https://jurinex.ai/blogs/chronology-from-bundle): The chronology is the document every litigator needs and nobody wants to prepare. A repeatable method for producing one from raw files.
+- [What the DPDP Act means for a law firm adopting AI tools](https://jurinex.ai/blogs/data-protection-for-law-firms): Client files are personal data. The Digital Personal Data Protection Act puts obligations on firms that process them, and on the vendors those firms choose.
+- [A week in a solo practice, with and without an AI assistant](https://jurinex.ai/blogs/solo-practice-week): We asked a solo advocate to log where the hours went for two weeks. The second week used Jurinex for research, drafting and file review.
+- [Allahabad High Court](https://jurinex.ai/content-hub/high-courts/allahabad): Practitioner stories from the Allahabad High Court in Prayagraj.
+- [Bombay High Court](https://jurinex.ai/content-hub/high-courts/bombay): Practitioner stories from the Bombay High Court in Mumbai.
+- [Delhi High Court](https://jurinex.ai/content-hub/high-courts/delhi): Practitioner stories from the Delhi High Court in New Delhi.
+- [Karnataka High Court](https://jurinex.ai/content-hub/high-courts/karnataka): Practitioner stories from the Karnataka High Court in Bengaluru.
+- [Kerala High Court](https://jurinex.ai/content-hub/high-courts/kerala): Practitioner stories from the Kerala High Court in Kochi.
+- [Madras High Court](https://jurinex.ai/content-hub/high-courts/madras): Practitioner stories from the Madras High Court in Chennai.
+- [Punjab and Haryana High Court](https://jurinex.ai/content-hub/high-courts/punjab-haryana): Practitioner stories from the Punjab and Haryana High Court in Chandigarh.
+- [Supreme Court Examines Plea Challenging New Six-Stanza Vande Mataram Order Amid Secularism Constitutional Concerns](https://jurinex.ai/content-hub/stories/six-stanza-vande-mataram-plea): A former IAS officer has asked the Court to quash Home Ministry orders that prescribe the six-stanza Anandamath text of Vande Mataram, and to bar any…
+- [When Can a Suit for Recovery of Possession Proceed Without a Prayer for Declaration of Title?](https://jurinex.ai/content-hub/stories/recovery-of-possession-without-declaration): A practitioner's guide to how courts approach suits for possession where the plaintiff's title is under a cloud, and when a separate declaratory prayer…
+- [Karnataka High Court quashes FIR against persons who put up posters terming Supreme Court judgment a "denial of justice"](https://jurinex.ai/content-hub/stories/karnataka-hc-quashes-fir-denial-of-justice-posters): The Court held that expressing dissent against a judgment did not attract offences of promoting enmity or outraging religious feelings, and fell within the…
+- [Arrests Over Social Media Posts: The Safeguards Every Advocate Should Cite](https://jurinex.ai/content-hub/stories/arrest-guidelines-social-media-posts): From notice before arrest to the proportionality test, a checklist of procedural protections and the provisions that anchor them. The first question is…
+- [Are WhatsApp Messages Enough to Sustain a Conviction? Reading the Evidence Rules](https://jurinex.ai/content-hub/stories/whatsapp-messages-as-evidence): Certification requirements for electronic records, corroboration, and why screenshots alone often fail at trial. A printout is secondary evidence, and it…
+- [Writ Appeals Against Orders Directing Registration of an FIR: What the Bench Looks At](https://jurinex.ai/content-hub/stories/writ-appeals-vigilance-fir): Maintainability, delay and the scope of interference in intra-court appeals arising from vigilance proceedings. The Division Bench does not re-investigate…
+- [Bail in Economic Offences: Twin Conditions, Parity and Long Incarceration](https://jurinex.ai/content-hub/stories/bail-economic-offences): How courts weigh the gravity of the offence against the right to a speedy trial, with drafting tips for bail applications. Gravity is a factor. It is not a…
+- [Pre-Institution Mediation Under the Commercial Courts Act: Mandatory or Directory?](https://jurinex.ai/content-hub/stories/commercial-courts-pre-institution-mediation): What happens when a commercial suit is filed without exhausting mediation, and when urgent interim relief excuses the step. A bare plea of urgency is not…
+- [Regularisation of Contractual Employees: The Questions High Courts Keep Asking](https://jurinex.ai/content-hub/stories/service-law-regularisation): Sanctioned posts, length of service and the line between irregular and illegal appointments, explained with practice notes. Years in a post do not, by…
+- [Compounding Cheque Bounce Cases at the Appellate Stage: A Quick Reference](https://jurinex.ai/content-hub/stories/cheque-bounce-compounding): Stage-wise costs, the court's discretion to compound, and how to frame a joint compromise application. Before a High Court, the usual cost under the…
+- [Limitation in Election Petitions: Why the Clock Is Unforgiving](https://jurinex.ai/content-hub/stories/electoral-disputes-limitation): Computing the 45-day window, defects in verification, and the rare cases where amendment is allowed after limitation.
+- [News updates](https://jurinex.ai/content-hub/stories?topic=news-updates): News updates from the Supreme Court and the High Courts of India.
+- [Judgments](https://jurinex.ai/content-hub/stories?topic=judgments): Judgments from the Supreme Court and the High Courts of India.
+- [Articles](https://jurinex.ai/content-hub/stories?topic=articles): Articles from the Supreme Court and the High Courts of India.
+- [Explainers](https://jurinex.ai/content-hub/stories?topic=explainers): Explainers from the Supreme Court and the High Courts of India.
+- [Supreme Court stories](https://jurinex.ai/content-hub/stories?court=supreme-court): Stories from the Supreme Court.
+- [High Courts stories](https://jurinex.ai/content-hub/stories?court=high-courts): Stories from the High Courts.
+- [Allahabad High Court stories](https://jurinex.ai/content-hub/stories?court=allahabad): Stories from the Allahabad High Court.
+- [Bombay High Court stories](https://jurinex.ai/content-hub/stories?court=bombay): Stories from the Bombay High Court.
+- [Delhi High Court stories](https://jurinex.ai/content-hub/stories?court=delhi): Stories from the Delhi High Court.
+- [Karnataka High Court stories](https://jurinex.ai/content-hub/stories?court=karnataka): Stories from the Karnataka High Court.
+- [Kerala High Court stories](https://jurinex.ai/content-hub/stories?court=kerala): Stories from the Kerala High Court.
+- [Madras High Court stories](https://jurinex.ai/content-hub/stories?court=madras): Stories from the Madras High Court.
+- [Punjab and Haryana High Court stories](https://jurinex.ai/content-hub/stories?court=punjab-haryana): Stories from the Punjab and Haryana High Court.

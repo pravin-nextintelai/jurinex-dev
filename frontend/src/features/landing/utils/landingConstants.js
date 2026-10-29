@@ -5,15 +5,40 @@
  * add customer names, statistics, or certifications beyond these.
  */
 
-/**
- * Primary navigation. Items with `children` render a dropdown; every
- * child href is a real on-page anchor or app route.
- * @type {{ label: string, href: string, children?: { label: string, href: string }[] }[]}
- */
+/** The 25 High Courts of India, in the order shown in the Content Hub menu. */
+export const HIGH_COURTS = [
+  { slug: "allahabad", name: "Allahabad High Court" },
+  { slug: "andhra-pradesh", name: "Andhra Pradesh High Court" },
+  { slug: "bombay", name: "Bombay High Court" },
+  { slug: "calcutta", name: "Calcutta High Court" },
+  { slug: "chhattisgarh", name: "Chhattisgarh High Court" },
+  { slug: "delhi", name: "Delhi High Court" },
+  { slug: "gauhati", name: "Gauhati High Court" },
+  { slug: "gujarat", name: "Gujarat High Court" },
+  { slug: "himachal-pradesh", name: "Himachal Pradesh High Court" },
+  { slug: "jammu-kashmir-ladakh", name: "High Court of Jammu & Kashmir and Ladakh" },
+  { slug: "jharkhand", name: "Jharkhand High Court" },
+  { slug: "karnataka", name: "Karnataka High Court" },
+  { slug: "kerala", name: "Kerala High Court" },
+  { slug: "madhya-pradesh", name: "Madhya Pradesh High Court" },
+  { slug: "madras", name: "Madras High Court" },
+  { slug: "manipur", name: "Manipur High Court" },
+  { slug: "meghalaya", name: "Meghalaya High Court" },
+  { slug: "orissa", name: "Orissa High Court" },
+  { slug: "patna", name: "Patna High Court" },
+  { slug: "punjab-haryana", name: "Punjab and Haryana High Court" },
+  { slug: "rajasthan", name: "Rajasthan High Court" },
+  { slug: "sikkim", name: "Sikkim High Court" },
+  { slug: "telangana", name: "Telangana High Court" },
+  { slug: "tripura", name: "Tripura High Court" },
+  { slug: "uttarakhand", name: "Uttarakhand High Court" },
+]
+
 /**
  * Primary navigation. Items with `children` or `sections` open a
  * full-width mega menu; each entry carries a one-line description and
- * the menu shows a `feature` card on the right.
+ * the menu shows a `feature` card on the right. Legal Hub uses a compact
+ * dropdown (`menu: "compact"`).
  */
 export const NAV_LINKS = [
   {
@@ -85,6 +110,37 @@ export const NAV_LINKS = [
   },
   { label: "Pricing", href: "#pricing" },
   { label: "Team", href: "/team" },
+  {
+    label: "Legal Hub",
+    href: "/content-hub",
+    menu: "compact",
+    children: [
+      {
+        label: "Free Legal Micro-Tools",
+        href: "/legal-tools",
+        icon: "Wrench",
+        desc: "Section mapper, FIR section update, citation check and limitation dates.",
+      },
+      {
+        label: "Bench Wire News & Hub",
+        href: "/content-hub/stories?topic=news-updates",
+        icon: "Newspaper",
+        desc: "Court news and updates from the bench, gathered in one feed.",
+      },
+      {
+        label: "Why Jurinex (Compare)",
+        href: "/compare/jurinex-vs-alternatives",
+        icon: "GitCompareArrows",
+        desc: "How Jurinex compares with Indian and global legal tools.",
+      },
+      {
+        label: "Content Hub",
+        href: "/content-hub",
+        icon: "Library",
+        desc: "Judgments, explainers and stories from the Supreme Court and High Courts.",
+      },
+    ],
+  },
 ]
 
 export const HERO_COPY = {
