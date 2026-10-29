@@ -4,11 +4,11 @@ import { useLocation, useNavigate } from "react-router-dom"
 import { motion as Motion, AnimatePresence, useReducedMotion } from "framer-motion"
 import { isModifiedClick, toPublicHref } from "../seo/site"
 import { NAV_LINKS } from "../utils/landingConstants"
-import { useLandingScrollAnimation } from "../hooks/useLandingScrollAnimation"
 import { EASE } from "./motionTokens"
 import { Icon } from "./primitives"
 import BrandLogo from "./BrandLogo"
 import PromotionBanner from "./PromotionBanner"
+import { useLandingScrollAnimation } from "../hooks/useLandingScrollAnimation"
 import productPhoto from "@/assets/landing/menu-product.jpg"
 import solutionsPhoto from "@/assets/landing/menu-solutions.jpg"
 import resourcesPhoto from "@/assets/landing/menu-resources.jpg"
@@ -233,7 +233,6 @@ const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange 
   const navigate = useNavigate()
   const { pathname, search } = useLocation()
   const reduceMotion = useReducedMotion()
-  const { scrolled } = useLandingScrollAnimation({ thresholdPx: 8 })
   const activeSection = useActiveSection()
   const isLinkActive = (href) => {
     if (!href.startsWith("/")) return activeSection === href.replace("#", "")
@@ -339,12 +338,13 @@ const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange 
 
   const openLink = NAV_LINKS.find((l) => l.label === openDropdown)
   /**
-   * The bar is transparent with white type only over the home hero at the
-   * very top of the page. Everywhere else, and once scrolled or a menu is
-   * open, it is white with dark type.
+   * Over the dark home hero the bar is transparent with white type. It
+   * turns white with dark type once the page scrolls, when a menu is
+   * open, and on every other page.
    */
-  const onDarkHero = pathname === "/"
-  const solidBar = !onDarkHero || scrolled || menuOpen || Boolean(openDropdown)
+  const { scrolled } = useLandingScrollAnimation({ thresholdPx: 8 })
+  const onHome = pathname === "/"
+  const solidBar = !onHome || scrolled || menuOpen || Boolean(openDropdown)
 
   return (
     <>
@@ -352,14 +352,14 @@ const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange 
       ref={headerRef}
       onMouseLeave={scheduleClose}
       className={`fixed inset-x-0 top-0 z-50 border border-t-0 font-body transition-[background-color,box-shadow,border-color,border-radius] duration-300 ${
-        menuOpen ? "rounded-none" : "rounded-b-[2rem]"
+        menuOpen || !solidBar ? "rounded-none" : "rounded-b-[2rem]"
       } ${
         solidBar
           ? "border-teal-200 bg-white/95 shadow-[0_1px_12px_rgba(8,163,147,0.12)] backdrop-blur"
           : "border-transparent bg-transparent"
       }`}
     >
-      {onDarkHero && <PromotionBanner onVisibilityChange={onPromoVisibilityChange} />}
+      {onHome && <PromotionBanner onVisibilityChange={onPromoVisibilityChange} />}
       <nav
         className={`mx-auto flex h-20 w-full max-w-7xl items-center gap-6 px-5 transition-transform duration-300 sm:px-8 ${
           solidBar ? "translate-y-0" : "translate-y-2.5"
@@ -381,7 +381,7 @@ const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange 
         </a>
 
         {/* Desktop links, left-aligned next to the brand */}
-        <ul className="mx-auto hidden h-full items-center gap-0.5 pl-2 xl:flex">
+        <ul className="mx-auto hidden h-full items-center gap-0.5 pl-2 xl:flex 2xl:gap-4 2xl:pl-4">
           {NAV_LINKS.map((link) => {
             const hasMenu =
               (Array.isArray(link.sections) && link.sections.length > 0) ||
@@ -413,13 +413,21 @@ const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange 
                   }}
                   aria-expanded={hasMenu ? isOpen : undefined}
                   aria-haspopup={hasMenu ? "menu" : undefined}
-                  className={`flex items-center gap-1 whitespace-nowrap rounded-lg px-2 py-2 text-[15px] font-semibold transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-nx-teal ${
+                  className={`flex items-center gap-1 whitespace-nowrap rounded-lg px-2 py-2 text-[15px] font-semibold transition-colors 2xl:px-3 duration-200 focus-visible:outline-2 focus-visible:outline-nx-teal ${
                     isActive || isOpen
                       ? solidBar ? "text-teal-700" : "text-nx-mint"
                       : solidBar ? "text-nx-ink hover:text-teal-700" : "text-white hover:text-nx-mint"
                   }`}
                 >
-                  {link.label}
+                  {link.lines ? (
+                    <span className="flex flex-col items-start text-[13px] leading-[1.15]">
+                      {link.lines.map((line) => (
+                        <span key={line}>{line}</span>
+                      ))}
+                    </span>
+                  ) : (
+                    link.label
+                  )}
                   {hasMenu && (
                     <Icon
                       name="ChevronDown"
@@ -531,7 +539,7 @@ const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange 
             animate={{ opacity: 1, height: "auto" }}
             exit={reduceMotion ? undefined : { opacity: 0, height: 0 }}
             transition={{ duration: 0.28, ease: EASE }}
-            className={`${onDarkHero ? "max-h-[calc(100dvh-9.5rem)] sm:max-h-[calc(100dvh-7.5rem)]" : "max-h-[calc(100dvh-5rem)]"} overflow-y-auto border-t border-nx-line bg-white xl:hidden`}
+            className={`${onHome ? "max-h-[calc(100dvh-9.5rem)] sm:max-h-[calc(100dvh-7.5rem)]" : "max-h-[calc(100dvh-5rem)]"} overflow-y-auto border-t border-nx-line bg-white xl:hidden`}
           >
             <div className="flex flex-col gap-0.5 px-5 py-4">
               {NAV_LINKS.map((link, i) => (

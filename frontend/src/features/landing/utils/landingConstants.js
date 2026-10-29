@@ -37,8 +37,8 @@ export const HIGH_COURTS = [
 /**
  * Primary navigation. Items with `children` or `sections` open a
  * full-width mega menu; each entry carries a one-line description and
- * the menu shows a `feature` card on the right. Legal Hub uses a compact
- * dropdown (`menu: "compact"`).
+ * the menu shows a `feature` card on the right. Bench Wire News & Hub is
+ * a plain link; `lines` splits its label over two rows in the desktop bar.
  */
 export const NAV_LINKS = [
   {
@@ -109,37 +109,12 @@ export const NAV_LINKS = [
     },
   },
   { label: "Pricing", href: "#pricing" },
+  { label: "Blog", href: "/blogs" },
   { label: "Team", href: "/team" },
   {
-    label: "Legal Hub",
-    href: "/content-hub",
-    menu: "compact",
-    children: [
-      {
-        label: "Free Legal Micro-Tools",
-        href: "/legal-tools",
-        icon: "Wrench",
-        desc: "Section mapper, FIR section update, citation check and limitation dates.",
-      },
-      {
-        label: "Bench Wire News & Hub",
-        href: "/content-hub/stories?topic=news-updates",
-        icon: "Newspaper",
-        desc: "Court news and updates from the bench, gathered in one feed.",
-      },
-      {
-        label: "Why Jurinex (Compare)",
-        href: "/compare/jurinex-vs-alternatives",
-        icon: "GitCompareArrows",
-        desc: "How Jurinex compares with Indian and global legal tools.",
-      },
-      {
-        label: "Content Hub",
-        href: "/content-hub",
-        icon: "Library",
-        desc: "Judgments, explainers and stories from the Supreme Court and High Courts.",
-      },
-    ],
+    label: "Bench Wire News & Hub",
+    lines: ["Bench Wire", "News & Hub"],
+    href: "/content-hub/stories?topic=news-updates",
   },
 ]
 
@@ -924,96 +899,253 @@ export const HELP_TOPICS = [
   },
 ]
 
-/** Articles rendered on the public Blogs page. */
+/** Articles rendered on the public Blogs page. Newest first. */
 export const BLOG_POSTS = [
   {
-    slug: "citation-hallucination-checklist",
-    category: "Research",
+    slug: "what-is-case-memory",
+    category: "Legal AI",
+    date: "Oct 2026",
+    readTime: "5 min read",
+    author: "Jurinex Team",
+    title: "What a case memory is, and why every Jurinex product reads from it",
+    excerpt:
+      "Upload a bundle once and Jurinex builds a structured record of the parties, dates, documents and issues. Drafting, research and chat all work from that one record instead of from scratch.",
+    body: [
+      "Most legal software treats every task as a new conversation. You upload the same bundle to one tool to summarise it, to another to draft from it, and to a third to find authorities. Each tool starts with no knowledge of the case. The case memory is our answer to that waste. When you create a case in Jurinex, the documents are read once, and the facts they contain are organised into a record the rest of the platform can query.",
+      "The record holds the cause title and the parties, the court and the stage, a dated chronology drawn from the documents, the issues as pleaded, and a document index with page references. It is not a summary written once and frozen. Each later upload adds to it, and each product reads the current version.",
+      "That is why AI Drafting can fill a cause title without being told who the parties are, why Citation Research can match authorities to the grounds you actually pleaded, and why Quick Chat can answer a question about a particular annexure with a page reference. The products look different, but they are windows onto the same record.",
+      "A short routine makes the case memory reliable. First, upload the complete bundle, including the annexures, before you ask for anything. Second, check the chronology and the parties on the review step, because every later output inherits them. Third, add each new filing to the case as it arrives, so the record stays current.",
+    ],
+    outline: ["The problem with blank slates", "What the record holds", "One record, five products", "Keeping it reliable"],
+    sources: [
+      { label: "Create Case", href: "/products/create-case" },
+      { label: "All Products", href: "/products" },
+    ],
+  },
+  {
+    slug: "how-jurinex-verifies-a-citation",
+    category: "Legal Research",
+    date: "Oct 2026",
+    readTime: "6 min read",
+    author: "Jurinex Team",
+    title: "How Jurinex verifies an authority before you rely on it",
+    excerpt:
+      "Courts have sanctioned counsel for citing judgments that do not exist. Here is what our citation check actually does, in order, and what it leaves for you to confirm.",
+    body: [
+      "In 2023 a federal court in New York sanctioned two lawyers for filing a brief that cited judgments invented by a chatbot. Indian courts have since warned counsel about the same risk. The lesson is not that AI research is unusable. It is that a citation produced by a language model is a lead, not an authority, until it has been checked against a primary source.",
+      "Citation Research treats every suggestion that way. The check runs in a fixed order. First, the case is looked up on Indian Kanoon by its title and citation, and a suggestion that cannot be found is marked as unverified rather than shown as a result. Second, the passage relied on is read in the judgment itself, so the proposition attributed to the case is the one the court actually stated. Third, the later history is scanned for decisions that overrule, distinguish or doubt it. Fourth, the bench strength and the court are recorded, so a single-judge decision is never presented as if it bound a Division Bench.",
+      "Two things remain yours. The check confirms that an authority exists and says what we say it says. It does not decide whether the facts of your matter are close enough for the ratio to apply, and it cannot know about a judgment delivered this morning that has not yet been reported. Read the passage before it goes into a filing, and keep the verification record with the draft.",
+    ],
+    outline: ["Why the check exists", "The four steps", "What stays with you"],
+    sources: [
+      { label: "Mata v. Avianca, Inc.: sanctions for fabricated AI citations (S.D.N.Y., 2023)", href: "https://en.wikipedia.org/wiki/Mata_v._Avianca,_Inc.", publisher: "Wikipedia" },
+      { label: "Indian Kanoon: search judgments by citation", href: "https://indiankanoon.org/", publisher: "Indian Kanoon" },
+      { label: "Citation Research", href: "/products/citation-research" },
+    ],
+  },
+  {
+    slug: "drafting-a-plaint-under-order-vii",
+    category: "Drafting",
+    date: "Sep 2026",
+    readTime: "6 min read",
+    author: "Jurinex Team",
+    title: "Drafting a plaint under Order VII: the mandatory parts and how AI Drafting fills them",
+    excerpt:
+      "A plaint is rejected for what it leaves out, not for what it says. Order VII of the Code of Civil Procedure lists the particulars every plaint must carry. Here is how a structured draft covers each one.",
+    body: [
+      "Order VII Rule 1 of the Code of Civil Procedure, 1908 sets out what a plaint must contain: the name of the court, the names and descriptions of the parties, the facts constituting the cause of action and when it arose, the facts showing that the court has jurisdiction, the relief claimed, any set-off or relinquished portion of the claim, and a statement of the value of the subject matter for jurisdiction and court fees. Rule 11 lets the court reject a plaint that does not disclose a cause of action or is undervalued or insufficiently stamped.",
+      "Free-form prompting fails here because a model asked to write a plaint will write persuasive prose and skip the statutory skeleton. AI Drafting inverts this. The plaint template carries the Order VII particulars as named sections, the verification required by Order VI Rule 15, and the court-specific cause title. The model fills each section from the case memory and the documents you uploaded, and you regenerate one section at a time instead of re-reading the whole draft after every change.",
+      "Before filing, check three things the template cannot decide for you. First, confirm the pecuniary and territorial jurisdiction against the facts, because the draft states what you tell it. Second, confirm the limitation position and plead it where Order VII Rule 6 requires an exemption to be shown. Third, read the list of documents under Order VII Rule 14 against the annexures actually in the bundle.",
+    ],
+    outline: ["What Order VII requires", "Why a template beats a prompt", "Before you file"],
+    sources: [
+      { label: "The Code of Civil Procedure, 1908 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/2191", publisher: "India Code, Ministry of Law and Justice" },
+      { label: "AI Drafting", href: "/products/ai-drafting" },
+    ],
+  },
+  {
+    slug: "bns-bnss-bsa-transition-checklist",
+    category: "Litigation",
+    date: "Sep 2026",
+    readTime: "6 min read",
+    author: "Jurinex Team",
+    title: "BNS, BNSS and BSA: a transition checklist for pending and new criminal matters",
+    excerpt:
+      "From 1 July 2024 the three new criminal codes replaced the IPC, the CrPC and the Evidence Act. The section you remember is no longer the section you should cite. A short routine keeps both regimes straight.",
+    body: [
+      "The Bharatiya Nyaya Sanhita, 2023, the Bharatiya Nagarik Suraksha Sanhita, 2023 and the Bharatiya Sakshya Adhiniyam, 2023 came into force on 1 July 2024. Offences committed on or after that date are charged under the BNS and tried under the BNSS. Cheating that practitioners knew as Section 420 of the IPC is Section 318(4) of the BNS. The information that was Section 154 of the CrPC is Section 173 of the BNSS. Memory is not a safe guide to the number.",
+      "Pending matters are the trap. A proceeding instituted under the old codes continues under them, and a charge sheet in such a case still cites the IPC. Keep both bare Acts open and ask one question first: which code governs this proceeding? The answer decides every citation that follows.",
+      "The Statute Mapper on the free tools page does the number conversion and gives you a footnote for the pleading. The check it cannot do is yours. First, confirm the date of the offence from the FIR, not from the date of the complaint. Second, confirm whether the proceeding was instituted before or after 1 July 2024. Third, open the new provision in the bare Act and read it, because several offences were redrafted, not merely renumbered.",
+    ],
+    outline: ["What changed on 1 July 2024", "Which code governs", "The checklist"],
+    sources: [
+      { label: "The Bharatiya Nyaya Sanhita, 2023 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/20062", publisher: "India Code, Ministry of Law and Justice" },
+      { label: "The Bharatiya Nagarik Suraksha Sanhita, 2023 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/20099", publisher: "India Code, Ministry of Law and Justice" },
+      { label: "The Bharatiya Sakshya Adhiniyam, 2023 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/20063", publisher: "India Code, Ministry of Law and Justice" },
+      { label: "Free legal tools: Statute Mapper", href: "/legal-tools" },
+    ],
+  },
+  {
+    slug: "computing-limitation-in-practice",
+    category: "Litigation",
     date: "Aug 2026",
     readTime: "5 min read",
     author: "Jurinex Team",
-    title: "A five-point checklist before you rely on an AI-generated citation",
+    title: "Computing limitation in practice: the sections that move the date",
     excerpt:
-      "Courts in India and abroad have sanctioned counsel for citing cases that do not exist. Here is the routine we recommend before any authority reaches a draft.",
+      "The Schedule to the Limitation Act, 1963 tells you how long you have. The sections tell you when the clock starts, pauses and restarts. Both have to be read before a filing date is safe.",
     body: [
-      "Generative models are excellent at producing text that looks like a citation and poor at guaranteeing the case exists. The failure is not rare, and the consequences for counsel are serious. The fix is procedural, not technical: treat every citation as unverified until it clears a short checklist.",
-      "First, confirm the case exists in a primary source, not a secondary summary. Second, check that the proposition attributed to it actually appears in the judgment. Third, confirm it has not been overruled or distinguished. Fourth, verify the bench and year match what you are citing. Fifth, keep the verification record with the draft.",
-      "Jurinex runs steps one through three automatically and marks anything it cannot verify, but the checklist belongs in your own practice regardless of which tool you use.",
+      "Limitation is decided in two steps. The Schedule names the Article for the kind of suit, appeal or application and fixes the period. The sections in Part III then adjust how that period is computed. A filing date fixed from the Article alone is often wrong by weeks.",
+      "Four sections do most of the work. Section 12 excludes the day from which the period runs and, for appeals and applications, the time taken to obtain a certified copy of the order. Section 14 excludes time spent prosecuting the same matter in good faith in a court that lacked jurisdiction. Section 18 restarts the period when the person liable acknowledges the liability in writing before the period expires. Section 5 allows a court to condone delay in an appeal or application on sufficient cause, but it does not apply to a suit.",
+      "The Filing Deadline Calculator on the free tools page applies the Article and the Section 12 exclusions for the common cases. Use its answer as the outer date, then write the computation into the file: the Article, the starting event, each exclusion and the final date. A judge asked to condone delay will want to see exactly that.",
+    ],
+    outline: ["Two steps, not one", "The four sections", "Writing the computation down"],
+    sources: [
+      { label: "The Limitation Act, 1963 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/1565", publisher: "India Code, Ministry of Law and Justice" },
+      { label: "Free legal tools: Filing Deadline Calculator", href: "/legal-tools" },
     ],
   },
   {
-    slug: "drafting-with-structure",
-    category: "Drafting",
+    slug: "commercial-courts-act-timelines",
+    category: "Litigation",
+    date: "Aug 2026",
+    readTime: "5 min read",
+    author: "Jurinex Team",
+    title: "The Commercial Courts Act, 2015: pre-institution mediation and the timelines that bite",
+    excerpt:
+      "Commercial suits run on a stricter clock than ordinary civil suits. Miss the mediation step or the written statement deadline and the court has little room to help you.",
+    body: [
+      "The Commercial Courts Act, 2015 applies to commercial disputes of a specified value, set at three lakh rupees after the 2018 amendment. It does not create a separate code. It overlays the Code of Civil Procedure with amendments that apply only to commercial suits, and those amendments are where the risk lies.",
+      "Two of them decide most cases. Section 12A requires pre-institution mediation before a suit that does not seek urgent interim relief is filed, and the Supreme Court has held the requirement to be mandatory. The amended Order VIII fixes the outer limit for a written statement at one hundred and twenty days from service of summons, after which the right to file it is forfeited and the court cannot extend the time.",
+      "Order XI, as amended for commercial suits, also requires both sides to disclose and file all documents in their power and possession with the pleading, and a document not disclosed cannot be relied on without leave. A case memory that indexes every document at the start of the matter is the practical answer to that rule. Build the index before the plaint is drafted, not after the written statement is due.",
+    ],
+    outline: ["What the Act overlays", "The two deadlines", "Disclosure from day one"],
+    sources: [
+      { label: "The Commercial Courts Act, 2015 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/2156", publisher: "India Code, Ministry of Law and Justice" },
+      { label: "The Code of Civil Procedure, 1908 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/2191", publisher: "India Code, Ministry of Law and Justice" },
+      { label: "Case Storage", href: "/products/case-storage" },
+    ],
+  },
+  {
+    slug: "dpdp-act-for-law-firms",
+    category: "Compliance",
+    date: "Jul 2026",
+    readTime: "6 min read",
+    author: "Jurinex Team",
+    title: "The DPDP Act, 2023 for law firms: what changes when client files meet AI tools",
+    excerpt:
+      "A law firm that processes a client's personal data is a Data Fiduciary under the Digital Personal Data Protection Act. Choosing an AI vendor is now a compliance decision, not only a productivity one.",
+    body: [
+      "The Digital Personal Data Protection Act, 2023 applies to digital personal data processed in India, and to processing outside India connected with offering goods or services to persons in India. A firm that stores client files, affidavits and identity documents in digital form is a Data Fiduciary for that data. The individuals in those files, including opposing parties and witnesses, are Data Principals.",
+      "The Act asks for a lawful basis, which is normally consent given after a notice that states the purpose, and for reasonable security safeguards. It also makes the fiduciary answerable for any processing done on its behalf by a Data Processor, which is what an AI vendor is. The firm, not the vendor, answers to the Data Protection Board if the vendor mishandles the data.",
+      "That is why the questions to put to a vendor are concrete. Where is the data stored and processed, and does it leave India? Is client data used to train models? Is it encrypted in transit and at rest, and who holds the keys? Can a file be deleted on request, and is the deletion confirmed? Jurinex keeps data in India, does not train on client files, encrypts end to end, and deletes on instruction. Ask the same of every tool in the chamber.",
+    ],
+    outline: ["Who the Act covers", "What it asks of a firm", "Questions for any vendor"],
+    sources: [
+      { label: "The Digital Personal Data Protection Act, 2023 (bare Act)", href: "https://www.indiacode.nic.in/handle/123456789/22037", publisher: "India Code, Ministry of Electronics and IT" },
+      { label: "Contact the Jurinex team", href: "/contact" },
+    ],
+  },
+  {
+    slug: "chronology-from-a-thousand-page-bundle",
+    category: "Practice Management",
     date: "Jul 2026",
     readTime: "4 min read",
     author: "Jurinex Team",
-    title: "Why structured drafts beat free-form prompts for court filings",
+    title: "A dated chronology from a thousand-page bundle, before the first conference",
     excerpt:
-      "A plaint, a written statement and a bail application share almost no structure. Asking a model to write one from a blank prompt is where most quality problems begin.",
+      "The chronology is the first document a senior asks for and the last one a junior finishes. Jurinex extracts the dated events from the bundle and links each one to its page.",
     body: [
-      "The most common drafting complaint we hear is that AI output reads well but misses mandatory parts: a verification clause, a prayer, the correct cause title format for the court concerned. These are not knowledge failures. They are the result of asking for a document without telling the model what shape it must take.",
-      "Structured drafting inverts this. The template carries the mandatory sections, the court-specific formatting and the order of relief. The model fills content into that structure from your case facts and the documents you have uploaded, and every section can be regenerated on its own.",
-      "The result is a draft you review section by section rather than a wall of text you re-read from the top after every change.",
+      "A chronology built by hand means reading every page, noting every date, and then reconciling the dates that conflict. In a thousand-page matter that is a week of work, and it is work that is redone when a supplementary affidavit arrives. The result is often a table nobody fully trusts because nobody can say which page a line came from.",
+      "Jurinex reads the bundle at the Create Case step and builds the chronology as part of the case memory. Each event carries its date, a one-line description, the document it came from and the page. When two documents give different dates for the same event, both are shown with their sources, and the conflict is flagged instead of silently resolved. The table exports to a draft or a list of dates in the court's format.",
+      "Treat the generated chronology as a first draft from a careful reader, not as evidence. Check the events that matter to the case theory against the pages, correct any date the OCR misread, and mark the events you intend to rely on. The corrected chronology then feeds every later draft.",
+    ],
+    outline: ["The week that disappears", "How the chronology is built", "What to check"],
+    sources: [
+      { label: "Create Case", href: "/products/create-case" },
+      { label: "Quick Chat", href: "/products/quick-chat" },
     ],
   },
   {
-    slug: "regional-language-ocr",
-    category: "Product",
+    slug: "regional-language-case-files",
+    category: "Product Updates",
     date: "Jun 2026",
-    readTime: "3 min read",
+    readTime: "4 min read",
     author: "Jurinex Team",
     title: "Working with Marathi, Hindi and other regional-language case files",
     excerpt:
-      "A large share of trial-court records are scanned, handwritten or in a regional language. Here is how Jurinex handles them and where it still needs your help.",
+      "A large share of trial-court records are scanned, handwritten or in a regional language. Here is how Jurinex reads them, and where it still needs your help.",
     body: [
-      "Most legal AI tools assume clean, English, machine-readable PDFs. Indian practice does not look like that. Lower-court orders, police papers and evidence bundles arrive as scans, often in Devanagari or other scripts, sometimes with handwritten annotations in the margins.",
-      "Jurinex runs OCR on every scanned page and detects the language automatically, so a Marathi charge sheet can be searched, summarised and translated alongside the English documents in the same case. Translations preserve page layout so you can cross-check against the original.",
-      "Handwriting remains the hard case. Where recognition confidence is low we flag the page rather than guess, and the original scan is always one click away.",
+      "Subordinate court records across India are produced in the language of the state. A matter that reaches a High Court or the Supreme Court carries a bundle that mixes Marathi or Hindi pleadings, typed English orders, and photocopied exhibits of uneven quality. Tools built for clean English PDFs fail on exactly these files.",
+      "Jurinex runs OCR tuned for Indian scripts and for the scan quality of district-court certified copies. A Marathi written statement is read in Marathi, and the case memory stores both the original text and an English rendering, with the page reference kept on each passage. A question asked in English about a Hindi affidavit is answered from the affidavit, with the original line shown beside the translation.",
+      "Handwriting, stamps across text and very faint photocopies still produce gaps. Where the OCR confidence is low, the passage is marked, so you know which lines to read from the original. The Vernacular OCR sandbox on the free tools page lets you test a page from your own bundle before you create a case.",
+    ],
+    outline: ["The bundle as it really is", "What Jurinex does with it", "Where to look yourself"],
+    sources: [
+      { label: "Free legal tools: Vernacular OCR sandbox", href: "/legal-tools" },
+      { label: "Create Case", href: "/products/create-case" },
     ],
   },
   {
-    slug: "chronology-from-bundle",
-    category: "Case management",
+    slug: "zero-hallucination-policy-explained",
+    category: "Legal AI",
+    date: "Jun 2026",
+    readTime: "5 min read",
+    author: "Jurinex Team",
+    title: "Our zero-hallucination policy: what it promises and what it does not",
+    excerpt:
+      "Jurinex answers only from authorised sources and flags a gap instead of filling it. That is a design rule, not magic. Here is what it covers and how to work with it.",
+    body: [
+      "A language model will produce a fluent answer to almost any question, and fluency is not accuracy. Our policy is that an answer about your case must come from the documents in the case, and an answer about the law must come from a verified authority or a bare Act. If neither source supports an answer, Jurinex says so rather than guessing.",
+      "In practice this shows up in three ways. A summary carries page references you can click. A citation that could not be verified is labelled unverified, never presented as a result. A question the bundle does not answer gets a plain statement that the documents are silent, with a suggestion of what to ask for.",
+      "The policy has limits worth knowing. It does not make a flagged source correct, because a reported judgment can itself be wrong or overruled. It cannot see a document you did not upload. And it does not replace the reading of a passage before it goes into a filing. Treat every output as the work of a diligent junior: trust it enough to use it, and read it before you sign.",
+    ],
+    outline: ["The rule", "What it looks like in use", "The limits"],
+    sources: [
+      { label: "Citation Research", href: "/products/citation-research" },
+      { label: "Quick Chat", href: "/products/quick-chat" },
+    ],
+  },
+  {
+    slug: "a-week-in-a-solo-practice",
+    category: "Practice Management",
     date: "May 2026",
-    readTime: "4 min read",
-    author: "Jurinex Team",
-    title: "Building a case chronology from a thousand-page bundle in an afternoon",
-    excerpt:
-      "The chronology is the document every litigator needs and nobody wants to prepare. A repeatable method for producing one from raw files.",
-    body: [
-      "A good chronology does three things: it lists every dated event, ties each event to the page that proves it, and makes gaps and contradictions visible. Done by hand it takes days and is out of date the moment a new document arrives.",
-      "The method we recommend is to extract every dated statement from the bundle first, with its source page, and only then decide which events matter. Jurinex produces that first list automatically and links each entry to the exact page. Your work becomes editorial: merge duplicates, cut noise, annotate significance.",
-      "When new documents come in, the extraction re-runs on the additions only, so the chronology grows with the file instead of being rebuilt.",
-    ],
-  },
-  {
-    slug: "data-protection-for-law-firms",
-    category: "Security",
-    date: "Apr 2026",
     readTime: "6 min read",
-    author: "Jurinex Team",
-    title: "What the DPDP Act means for a law firm adopting AI tools",
-    excerpt:
-      "Client files are personal data. The Digital Personal Data Protection Act puts obligations on firms that process them, and on the vendors those firms choose.",
-    body: [
-      "Under the DPDP Act a law firm is typically a data fiduciary for the personal data in its client files, and an AI vendor processing that data on the firm's behalf is a data processor. That relationship needs a contract, defined purposes and a clear answer to where the data lives and who can see it.",
-      "Questions to put to any vendor: Is data stored in India? Is it encrypted at rest and in transit? Is it used to train models? Can the firm delete it on demand? Who inside the vendor can access it and under what audit?",
-      "Jurinex answers these in its Data Processing Agreement and Data Security Policy, both linked from the footer. We think every vendor should be able to do the same in writing.",
-    ],
-  },
-  {
-    slug: "solo-practice-week",
-    category: "Practice",
-    date: "Mar 2026",
-    readTime: "4 min read",
     author: "Jurinex Team",
     title: "A week in a solo practice, with and without an AI assistant",
     excerpt:
-      "We asked a solo advocate to log where the hours went for two weeks. The second week used Jurinex for research, drafting and file review.",
+      "A solo practitioner does the senior's work and the junior's work on the same day. We followed one through a week to see where the hours actually go, and which of them Jurinex gives back.",
     body: [
-      "Week one looked familiar: roughly a third of working hours on reading and summarising files, a quarter on drafting, a large slice on research, and the remainder on court attendance and client calls. Almost none of it was billable at full rate.",
-      "In week two, file review and first-draft time fell sharply. Research time fell less than expected, because verification of AI-suggested authorities replaced some of the searching. Court attendance and client time were unchanged.",
-      "The honest conclusion is that the gain is not in replacing legal judgment but in removing the mechanical reading and typing that surrounds it. The hours came back as client time and, for the first time in months, an evening off.",
+      "Monday opens with a new brief: a commercial recovery matter, four hundred pages, a hearing in ten days. Without help, the day goes to reading and to a chronology on a legal pad. With Jurinex, the bundle is uploaded at nine, the case memory and chronology are ready before lunch, and the afternoon goes to the client call and to the strategy the reading was meant to support.",
+      "Tuesday and Wednesday are drafting days. The reply affidavit takes a template from AI Drafting, with the cause title, the parties and the list of dates filled from the case memory. Each paragraph is regenerated on its own until it says what the practitioner means. Citation Research proposes authorities for the two legal grounds and verifies them on Indian Kanoon, and the practitioner reads each passage before accepting it.",
+      "Thursday is court and Friday is the backlog. Quick Chat answers the quick questions about older files without opening a case. Case Storage keeps the finished draft, the verification record and the bundle together, so the next hearing starts from the file rather than from memory.",
+      "The hours saved are the reading and the retyping. The hours that remain are the judgement calls, the client conversations and the appearances. That is the division we are building for.",
+    ],
+    outline: ["Monday: the new brief", "Midweek: drafting and research", "Court day and backlog", "Where the hours go"],
+    sources: [
+      { label: "Create Case", href: "/products/create-case" },
+      { label: "AI Drafting", href: "/products/ai-drafting" },
+      { label: "Citation Research", href: "/products/citation-research" },
+    ],
+  },
+  {
+    slug: "court-ready-formatting-for-indian-courts",
+    category: "Drafting",
+    date: "May 2026",
+    readTime: "4 min read",
+    author: "Jurinex Team",
+    title: "Court-ready formatting: why the Bench Validator checks margins before merits",
+    excerpt:
+      "Registries return filings for defects long before a judge reads them. The Bench Validator checks the formatting rules of the court you are filing in, so the defect list is short.",
+    body: [
+      "Every High Court and the Supreme Court publish rules for the form of a filing: paper size, margins, line spacing, font, the order of the index, the synopsis and list of dates, and the pagination of annexures. A filing that breaks them is listed as defective by the registry, and the days spent curing defects come out of the time you had to prepare.",
+      "The Bench Validator on the free tools page reads a draft and checks it against the rules of the selected bench. It reports the margin and spacing errors, a missing or misordered section, and the citations that could not be verified. It does not rewrite the draft. It tells you what the registry will tell you, a week earlier.",
+      "Use it last, after the content is settled, and once more after any late change. A corrected paragraph that pushes the annexure pagination out of sequence is a defect the registry will find.",
+    ],
+    outline: ["Why registries return filings", "What the validator checks", "When to run it"],
+    sources: [
+      { label: "Free legal tools: Bench Validator", href: "/legal-tools" },
+      { label: "AI Drafting", href: "/products/ai-drafting" },
     ],
   },
 ]

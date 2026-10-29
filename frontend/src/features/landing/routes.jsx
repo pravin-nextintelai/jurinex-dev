@@ -1,6 +1,7 @@
 import LandingPage from './pages/LandingPage';
 import ContactPageRoute from './pages/ContactPageRoute';
 import BlogsPage from './pages/BlogsPage';
+import BlogArticlePage from "./pages/BlogArticlePage"
 import FAQsPage from './pages/FAQsPage';
 import TeamPage from './pages/TeamPage';
 import CommunityPage from './pages/CommunityPage';
@@ -21,7 +22,7 @@ export default [
   { path: '/', element: <LandingPage />, publicLayout: bare },
   { path: '/contact', element: <ContactPageRoute />, publicLayout: bare },
   { path: '/blogs', element: <BlogsPage />, publicLayout: bare },
-  { path: '/blogs/:slug', element: <BlogsPage />, publicLayout: bare },
+  { path: '/blogs/:slug', element: <BlogArticlePage />, publicLayout: bare },
   { path: '/faqs', element: <FAQsPage />, publicLayout: bare },
   { path: '/team', element: <TeamPage />, publicLayout: bare },
   { path: '/legal-tools', element: <MicroToolsPage />, publicLayout: bare },

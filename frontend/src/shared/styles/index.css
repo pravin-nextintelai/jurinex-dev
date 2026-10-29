@@ -36,6 +36,22 @@
   --color-nx-faint: #8f9b98;
   --color-nx-line: #e3e9e7;        /* hairline borders */
   --color-nx-pale: #f5f8f7;        /* soft-gray section ground */
+
+  /* Jurinex micro-tools section palette (crimson + onyx, from jurinex.ai) */
+  --color-jurinex-blue: #DC2626;      /* crimson accent (name kept from source demo) */
+  --color-jurinex-darkBlue: #B91C1C;  /* crimson hover */
+  --color-jurinex-navy: #18181B;      /* onyx */
+  --color-jurinex-light: #FEF2F2;     /* rose tint for active tabs & pills */
+  --color-jurinex-cream: #F4F1EA;
+  --color-jurinex-surface: #FCFAF7;
+  --color-jurinex-border: #E5E0D8;
+}
+
+/* Micro-tools section: blurred gated rows */
+.blur-paywall {
+  filter: blur(5px);
+  user-select: none;
+  pointer-events: none;
 }
 
 body {

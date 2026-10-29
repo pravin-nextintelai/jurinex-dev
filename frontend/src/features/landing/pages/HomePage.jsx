@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react"
 import PropTypes from "prop-types"
 import Navbar from "../components/Navbar"
-import HeroSection from "../components/HeroSection"
+import HeroSection, { ProductShowcaseSection } from "../components/HeroSection"
+import MicroToolsSection from "../components/MicroToolsSection"
 import StatsSection from "../components/StatsSection"
 import TrustSection from "../components/TrustSection"
 import ProblemSolutionSection from "../components/ProblemSolutionSection"
@@ -60,6 +61,8 @@ const HomePage = ({ onNavigateLogin, onNavigateContact, pendingSection, onPendin
       <Navbar onRequestDemo={openDemo} onLogin={handleLogin} onPromoVisibilityChange={setPromoVisible} />
       <main className={promoVisible ? "pt-[72px] sm:pt-10" : ""}>
         <HeroSection onLogin={handleLogin} />
+        <MicroToolsSection />
+        <ProductShowcaseSection />
         <StatsSection />
         <TrustSection />
         <ProblemSolutionSection />

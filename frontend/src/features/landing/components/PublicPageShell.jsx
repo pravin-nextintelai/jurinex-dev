@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import PropTypes from "prop-types"
-import { useNavigate } from "react-router-dom"
+import { useLocation, useNavigate } from "react-router-dom"
 import Navbar from "./Navbar"
 import Footer from "./Footer"
 import PolicyModal from "./PolicyModal"
@@ -19,6 +19,7 @@ import { Icon } from "./primitives"
  */
 const PublicPageShell = ({ title, children, className = "" }) => {
   const navigate = useNavigate()
+  const embed = new URLSearchParams(useLocation().search).get("embed") === "1"
   const [demoOpen, setDemoOpen] = useState(false)
   const [policyKey, setPolicyKey] = useState(null)
   useDemoPrompt(setDemoOpen)
@@ -29,15 +30,17 @@ const PublicPageShell = ({ title, children, className = "" }) => {
 
   return (
     <div className="min-h-screen bg-white font-body text-nx-ink antialiased">
-      <Navbar
-        onRequestDemo={() => setDemoOpen(true)}
-        onLogin={(loginState) =>
-          navigate("/login", loginState ? { state: loginState } : undefined)
-        }
-      />
+      {!embed && (
+        <Navbar
+          onRequestDemo={() => setDemoOpen(true)}
+          onLogin={(loginState) =>
+            navigate("/login", loginState ? { state: loginState } : undefined)
+          }
+        />
+      )}
 
-      <main className={`pt-20 ${className}`}>
-        {title && (
+      <main className={`${embed ? "" : "pt-20"} ${className}`}>
+        {!embed && title && (
           <nav
             aria-label="Breadcrumb"
             className="border-b border-nx-line bg-nx-pale/60"
@@ -65,16 +68,18 @@ const PublicPageShell = ({ title, children, className = "" }) => {
         {children}
       </main>
 
-      <Footer
-        onOpenPolicy={setPolicyKey}
-        onGetInTouch={() => navigate("/contact")}
-        onRequestDemo={() => setDemoOpen(true)}
-      />
+      {!embed && (
+        <Footer
+          onOpenPolicy={setPolicyKey}
+          onGetInTouch={() => navigate("/contact")}
+          onRequestDemo={() => setDemoOpen(true)}
+        />
+      )}
 
-      <BookDemoModal isOpen={demoOpen} onClose={() => setDemoOpen(false)} />
-      {policyKey && <PolicyModal policyKey={policyKey} onClose={() => setPolicyKey(null)} />}
+      {!embed && <BookDemoModal isOpen={demoOpen} onClose={() => setDemoOpen(false)} />}
+      {!embed && policyKey && <PolicyModal policyKey={policyKey} onClose={() => setPolicyKey(null)} />}
 
-      <ChatbotWidget />
+      {!embed && <ChatbotWidget />}
     </div>
   )
 }

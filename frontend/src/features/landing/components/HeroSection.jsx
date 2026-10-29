@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react"
 import PropTypes from "prop-types"
-import { useNavigate } from "react-router-dom"
 import { motion as Motion, AnimatePresence, useReducedMotion } from "framer-motion"
 import { HERO_COPY } from "../utils/landingConstants"
 import { Icon } from "./primitives"
@@ -59,9 +58,8 @@ const Sidebar = ({ active }) => (
       {SIDEBAR_MAIN.map((item) => (
         <div
           key={item.label}
-          className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-[10px] font-medium ${
-            item.label === active ? "bg-white/10 text-white" : "text-slate-400"
-          }`}
+          className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-[10px] font-medium ${item.label === active ? "bg-white/10 text-white" : "text-slate-400"
+            }`}
         >
           <Icon name={item.icon} className="h-3 w-3 flex-none" />
           {item.label}
@@ -245,9 +243,8 @@ const DashboardScreen = () => (
           {WEEK_DAYS.map((day) => (
             <div
               key={day.d}
-              className={`rounded-md border px-1 py-1 text-center ${
-                day.active ? "border-teal-300 bg-teal-50" : "border-nx-line bg-white"
-              }`}
+              className={`rounded-md border px-1 py-1 text-center ${day.active ? "border-teal-300 bg-teal-50" : "border-nx-line bg-white"
+                }`}
             >
               <p className="text-[7px] text-nx-faint">{day.d}</p>
               <p className="text-[8.5px] font-semibold text-nx-ink">{day.n}</p>
@@ -421,9 +418,8 @@ const CasesScreen = () => (
           {["Ongoing (3)", "Pending (0)", "Disposed (0)", "Draft (0)"].map((tab, i) => (
             <span
               key={tab}
-              className={`pb-1.5 text-[9px] font-medium ${
-                i === 0 ? "border-b-2 border-nx-teal text-nx-ink" : "text-nx-faint"
-              }`}
+              className={`pb-1.5 text-[9px] font-medium ${i === 0 ? "border-b-2 border-nx-teal text-nx-ink" : "text-nx-faint"
+                }`}
             >
               {tab}
             </span>
@@ -600,11 +596,10 @@ const ChatScreen = () => (
       {CHAT_CHIPS.map((chip, i) => (
         <span
           key={chip}
-          className={`rounded-full border px-2 py-0.5 text-[8px] font-medium ${
-            i === 0
+          className={`rounded-full border px-2 py-0.5 text-[8px] font-medium ${i === 0
               ? "border-teal-200 bg-teal-50 text-teal-700"
               : "border-nx-line bg-white text-nx-muted"
-          }`}
+            }`}
         >
           {chip}
         </span>
@@ -727,9 +722,8 @@ const CitationScreen = () => (
             {["My cases", "Upload document", "Paste text"].map((tab, i) => (
               <span
                 key={tab}
-                className={`pb-1 font-medium ${
-                  i === 0 ? "border-b-2 border-nx-teal text-nx-ink" : "text-nx-faint"
-                }`}
+                className={`pb-1 font-medium ${i === 0 ? "border-b-2 border-nx-teal text-nx-ink" : "text-nx-faint"
+                  }`}
               >
                 {tab}
               </span>
@@ -764,11 +758,10 @@ const CitationScreen = () => (
             ].map((opt) => (
               <div
                 key={opt.t}
-                className={`rounded-md border p-1.5 text-[8px] font-medium ${
-                  opt.sel
+                className={`rounded-md border p-1.5 text-[8px] font-medium ${opt.sel
                     ? "border-teal-300 bg-teal-50 text-teal-800"
                     : "border-nx-line text-nx-muted"
-                }`}
+                  }`}
               >
                 {opt.sel ? "● " : "○ "}
                 {opt.t}
@@ -870,9 +863,8 @@ const AppShowcase = () => {
             type="button"
             onClick={() => setIndex(i)}
             aria-label={`Show the ${s.active} screen`}
-            className={`h-1.5 rounded-full transition-all duration-300 ${
-              i === index ? "w-6 bg-nx-teal-deep" : "w-1.5 bg-nx-forest/25 hover:bg-nx-forest/40"
-            }`}
+            className={`h-1.5 rounded-full transition-all duration-300 ${i === index ? "w-6 bg-nx-teal-deep" : "w-1.5 bg-nx-forest/25 hover:bg-nx-forest/40"
+              }`}
           />
         ))}
       </div>
@@ -893,7 +885,6 @@ const TYPE_START_MS = 350
 const HOLD_MS = 2600
 const RESTART_MS = 450
 
-const HERO_STAGES = ["01 Analyze", "02 Research", "03 Draft", "+ Indian courts"]
 
 /**
  * Headline that types itself in one word at a time with a blinking
@@ -927,7 +918,7 @@ const TypedHeadline = () => {
     <h1
       id="hero-heading"
       aria-label={`${HERO_COPY.titleMain} ${HERO_COPY.titleAccent}`}
-      className="relative max-w-[30ch] font-hero text-[clamp(2.6rem,6vw,5.25rem)] font-light leading-[1.1] tracking-[-0.04em] text-[#fafaf7]"
+      className="relative max-w-4xl font-hero text-[clamp(2.7rem,4.6vw,4.35rem)] font-light leading-[1.12] tracking-[-0.03em] text-[#f7f4ef]"
     >
       {/* Invisible full headline reserves the height so the layout never jumps */}
       <span aria-hidden="true" className="invisible block">
@@ -946,24 +937,29 @@ const TypedHeadline = () => {
           </span>
         ))}
         <span
-          className={`hero-caret ml-1 inline-block h-[0.85em] w-[3px] translate-y-[0.1em] bg-[#fafaf7] align-baseline ${
-            done ? "" : "hero-caret-typing"
-          }`}
+          className={`hero-caret ml-1 inline-block h-[0.85em] w-[3px] translate-y-[0.1em] bg-[#fafaf7] align-baseline ${done ? "" : "hero-caret-typing"
+            }`}
         />
       </span>
     </h1>
   )
 }
 
+const HERO_STAGES = [
+  { label: "Jurinex" },
+  { mark: "01", label: "Analyze" },
+  { mark: "02", label: "Research" },
+  { mark: "03", label: "Draft" },
+  { mark: "+", label: "Indian courts" },
+]
+
 /**
  * Editorial full-bleed hero: dark office photograph under a deep-teal
  * wash, eyebrow, headline typed in word by word, italic tagline, a
- * dotted rule with the product stages, then the intro copy on the left
- * with the two CTAs beside it. The rotating product showcase follows
- * on the light ground below.
+ * dotted rule with the product stages. The rotating product showcase
+ * follows on the light ground below.
  */
-const HeroSection = ({ onLogin } = {}) => {
-  const navigate = useNavigate()
+const HeroSection = () => {
   const reduce = useReducedMotion()
 
   return (
@@ -974,15 +970,15 @@ const HeroSection = ({ onLogin } = {}) => {
           src={heroOffice}
           alt=""
           aria-hidden="true"
-          className="absolute inset-0 h-full w-full object-cover object-center"
-          style={{ filter: "sepia(0.45) saturate(1.05) brightness(0.9) contrast(1.05)" }}
+          className="absolute inset-0 h-full w-full object-cover object-[center_42%]"
+          style={{ filter: "sepia(0.35) saturate(0.95) brightness(0.78) contrast(1.05)" }}
         />
         <div
           className="absolute inset-0"
           aria-hidden="true"
           style={{
             background:
-              "linear-gradient(90deg, rgba(38,26,16,0.62) 0%, rgba(38,26,16,0.4) 50%, rgba(38,26,16,0.22) 100%), linear-gradient(180deg, rgba(38,26,16,0.15) 0%, rgba(30,20,12,0.5) 100%)",
+              "linear-gradient(90deg, rgba(22,16,12,0.72) 0%, rgba(22,16,12,0.48) 46%, rgba(22,16,12,0.28) 100%), linear-gradient(180deg, rgba(22,16,12,0.28) 0%, rgba(22,16,12,0.08) 42%, rgba(16,12,8,0.55) 100%)",
           }}
         />
 
@@ -990,7 +986,7 @@ const HeroSection = ({ onLogin } = {}) => {
           variants={reduce ? undefined : stagger}
           initial={reduce ? false : "hidden"}
           animate="show"
-          className="relative mx-auto flex min-h-[calc(100vh-4rem)] max-w-7xl flex-col px-5 pb-14 pt-[calc(4rem+clamp(80px,12vh,140px))] sm:px-8 lg:pb-20"
+          className="relative mx-auto flex max-w-7xl flex-col px-5 pb-12 pt-32 sm:px-8 sm:pb-14 sm:pt-36 lg:pb-16 lg:pt-40"
         >
           {/* Eyebrow */}
           <Motion.p
@@ -1002,93 +998,66 @@ const HeroSection = ({ onLogin } = {}) => {
           </Motion.p>
 
           {/* Typed headline */}
-          <div className="mt-10">
+          <div className="mt-5 lg:mt-6">
             <TypedHeadline />
           </div>
 
           {/* Tagline */}
           <Motion.p
             variants={fadeUp}
-            className="mt-[22px] max-w-[60ch] font-hero text-[1.15rem] font-light italic text-teal-50/85"
+            className="mt-5 max-w-xl font-hero text-lg font-light italic leading-relaxed text-white/75 sm:text-xl"
           >
             {HERO_COPY.trustLine}
           </Motion.p>
 
-          {/* Dotted rule + stage strip */}
-          <Motion.div variants={fadeUp} className="mt-10 border-t border-dotted border-white/40 pt-4">
-            <ul className="flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-teal-100/65">
-              <li className="flex items-center gap-2 text-white">
-                <span className="text-[8px] text-nx-mint" aria-hidden="true">◆</span>
-                Jurinex
-              </li>
-              {HERO_STAGES.map((stage) => (
-                <li key={stage} className="flex items-center gap-3">
-                  <span className="text-white/30" aria-hidden="true">/</span>
-                  {stage}
-                </li>
-              ))}
-            </ul>
-          </Motion.div>
-
-          {/* Intro copy + CTAs */}
-          <Motion.div
+          {/* Stages on a dotted rule */}
+          <Motion.p
             variants={fadeUp}
-            className="mt-auto grid grid-cols-1 items-end gap-10 pt-16 lg:grid-cols-[1.3fr_0.7fr] lg:gap-20"
+            className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[11px] font-medium uppercase tracking-[0.18em] text-white/80 sm:mt-9"
           >
-            <p className="max-w-2xl text-[17px] leading-relaxed text-white/90 sm:text-lg">
-              <span className="font-bold text-white">Work faster, practice smarter</span> with the
-              power of AI. <span className="font-bold text-white">Jurinex</span> handles your
-              research, drafting, citations and case files — purpose-built for{" "}
-              <span className="font-bold text-white">Indian courts</span>, supports Indian
-              languages.
-            </p>
+            <span className="h-1 w-1 flex-none rounded-full bg-nx-mint" aria-hidden="true" />
+            {HERO_STAGES.map((stage, i) => (
+              <span key={stage.label} className="inline-flex items-center gap-3">
+                {i > 0 && <span className="text-white/35">/</span>}
+                <span className="text-white/90">
+                  {stage.mark ? <span className="mr-1.5 text-nx-mint/80">{stage.mark}</span> : null}
+                  {stage.label}
+                </span>
+              </span>
+            ))}
+            <span className="ml-1 hidden h-px min-w-[4rem] flex-1 border-t border-dotted border-white/45 sm:block" aria-hidden="true" />
+          </Motion.p>
 
-            <div className="flex flex-col gap-3 sm:flex-row lg:flex-col lg:items-end">
-              <button
-                type="button"
-                onClick={() => navigate("/register")}
-                aria-label="Create a free Jurinex account"
-                className="inline-flex w-full items-center justify-center gap-2.5 rounded-md bg-nx-teal px-8 py-3.5 text-[15px] font-semibold text-white shadow-lg shadow-teal-900/30 transition-colors hover:bg-nx-teal-deep sm:w-auto lg:w-60"
-              >
-                {HERO_COPY.primaryCta}
-                <Icon name="ArrowRight" className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => onLogin?.()}
-                aria-label="Log in to your account"
-                className="inline-flex w-full items-center justify-center rounded-md border border-white/40 px-8 py-3.5 text-[15px] font-semibold text-white transition-colors hover:border-white hover:bg-white/10 sm:w-auto lg:w-60"
-              >
-                Login
-              </button>
-            </div>
-          </Motion.div>
         </Motion.div>
       </div>
 
-      {/* Product band — inset from the page edges like Harvey's, light
-          painterly mint with deep-teal brushed edges */}
-      <div className="mx-auto max-w-[102rem] px-5 py-16 sm:px-12 lg:px-16 lg:py-20">
-        <div className="relative overflow-hidden rounded-md">
-          <div
-            className="absolute inset-0"
-            aria-hidden="true"
-            style={{
-              background:
-                "radial-gradient(50% 75% at 2% 100%, rgba(6,52,44,0.26) 0%, rgba(6,52,44,0) 58%), radial-gradient(45% 65% at 100% 0%, rgba(6,52,44,0.18) 0%, rgba(6,52,44,0) 58%), linear-gradient(118deg, #93c3b4 0%, #e7f4ef 36%, #f3fbf7 55%, #c2e0d6 100%)",
-            }}
-          />
-          <div className="relative px-5 py-10 sm:px-14 sm:py-16 lg:px-20 lg:py-20">
-            <AppShowcase />
-          </div>
-        </div>
-      </div>
     </section>
   )
 }
 
-HeroSection.propTypes = {
-  onLogin: PropTypes.func,
-}
+/**
+ * Product band — inset from the page edges like Harvey's, light
+ * painterly mint with deep-teal brushed edges. Rendered by HomePage
+ * below the micro-tools hub.
+ */
+export const ProductShowcaseSection = () => (
+  <section className="bg-[#f7fcfa]" aria-label="Product showcase">
+    <div className="mx-auto max-w-[102rem] px-5 py-16 sm:px-12 lg:px-16 lg:py-20">
+      <div className="relative overflow-hidden rounded-md">
+        <div
+          className="absolute inset-0"
+          aria-hidden="true"
+          style={{
+            background:
+              "radial-gradient(50% 75% at 2% 100%, rgba(6,52,44,0.26) 0%, rgba(6,52,44,0) 58%), radial-gradient(45% 65% at 100% 0%, rgba(6,52,44,0.18) 0%, rgba(6,52,44,0) 58%), linear-gradient(118deg, #93c3b4 0%, #e7f4ef 36%, #f3fbf7 55%, #c2e0d6 100%)",
+          }}
+        />
+        <div className="relative px-5 py-10 sm:px-14 sm:py-16 lg:px-20 lg:py-20">
+          <AppShowcase />
+        </div>
+      </div>
+    </div>
+  </section>
+)
 
 export default HeroSection

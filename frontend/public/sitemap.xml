@@ -126,40 +126,76 @@
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://jurinex.ai/blogs/citation-hallucination-checklist</loc>
+    <loc>https://jurinex.ai/blogs/what-is-case-memory</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <lastmod>2026-10-01</lastmod>
+  </url>
+  <url>
+    <loc>https://jurinex.ai/blogs/how-jurinex-verifies-a-citation</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <lastmod>2026-10-01</lastmod>
+  </url>
+  <url>
+    <loc>https://jurinex.ai/blogs/drafting-a-plaint-under-order-vii</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <lastmod>2026-09-01</lastmod>
+  </url>
+  <url>
+    <loc>https://jurinex.ai/blogs/bns-bnss-bsa-transition-checklist</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <lastmod>2026-09-01</lastmod>
+  </url>
+  <url>
+    <loc>https://jurinex.ai/blogs/computing-limitation-in-practice</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
     <lastmod>2026-08-01</lastmod>
   </url>
   <url>
-    <loc>https://jurinex.ai/blogs/drafting-with-structure</loc>
+    <loc>https://jurinex.ai/blogs/commercial-courts-act-timelines</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <lastmod>2026-08-01</lastmod>
+  </url>
+  <url>
+    <loc>https://jurinex.ai/blogs/dpdp-act-for-law-firms</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
     <lastmod>2026-07-01</lastmod>
   </url>
   <url>
-    <loc>https://jurinex.ai/blogs/regional-language-ocr</loc>
+    <loc>https://jurinex.ai/blogs/chronology-from-a-thousand-page-bundle</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <lastmod>2026-07-01</lastmod>
+  </url>
+  <url>
+    <loc>https://jurinex.ai/blogs/regional-language-case-files</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
     <lastmod>2026-06-01</lastmod>
   </url>
   <url>
-    <loc>https://jurinex.ai/blogs/chronology-from-bundle</loc>
+    <loc>https://jurinex.ai/blogs/zero-hallucination-policy-explained</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+    <lastmod>2026-06-01</lastmod>
+  </url>
+  <url>
+    <loc>https://jurinex.ai/blogs/a-week-in-a-solo-practice</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
     <lastmod>2026-05-01</lastmod>
   </url>
   <url>
-    <loc>https://jurinex.ai/blogs/data-protection-for-law-firms</loc>
+    <loc>https://jurinex.ai/blogs/court-ready-formatting-for-indian-courts</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
-    <lastmod>2026-04-01</lastmod>
-  </url>
-  <url>
-    <loc>https://jurinex.ai/blogs/solo-practice-week</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.7</priority>
-    <lastmod>2026-03-01</lastmod>
+    <lastmod>2026-05-01</lastmod>
   </url>
   <url>
     <loc>https://jurinex.ai/content-hub/high-courts/allahabad</loc>

@@ -1,141 +1,167 @@
-import { useState } from "react"
-import { AnimatePresence, motion as Motion, useReducedMotion } from "framer-motion"
+import { useMemo, useState } from "react"
+import PropTypes from "prop-types"
+import { useNavigate } from "react-router-dom"
 import PublicPageShell from "../components/PublicPageShell"
-import { Icon, Reveal, SectionHeading } from "../components/primitives"
-import { EASE } from "../components/motionTokens"
-import { BLOG_POSTS, SOCIAL_LINKS } from "../utils/landingConstants"
+import { Icon, Reveal } from "../components/primitives"
+import { BLOG_POSTS } from "../utils/landingConstants"
+import { coverFor } from "../utils/blogCovers"
 
-const CATEGORIES = ["All", ...Array.from(new Set(BLOG_POSTS.map((p) => p.category)))]
+/* ------------------------------------------------------------------ */
+/* /blogs — a quiet editorial index: masthead with search, topic tabs, */
+/* then one ruled list of articles, newest first. Rows open           */
+/* /blogs/:slug.                                                      */
+/* ------------------------------------------------------------------ */
 
-/**
- * Standalone /blogs page — filterable article cards; each card expands in
- * place to show the full post. Content lives in BLOG_POSTS.
- */
+const CATEGORIES = Array.from(new Set(BLOG_POSTS.map((p) => p.category)))
+
+const matches = (post, query) => {
+  if (!query) return true
+  const haystack = `${post.title} ${post.excerpt} ${post.category}`.toLowerCase()
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => haystack.includes(word))
+}
+
+/* Story row: thumbnail, kicker, headline, standfirst, byline. */
+const StoryRow = ({ post, onOpen }) => (
+  <li className="group">
+    <button
+      type="button"
+      onClick={() => onOpen(post)}
+      className="grid w-full grid-cols-1 gap-4 py-7 text-left sm:grid-cols-[16rem_minmax(0,1fr)] sm:gap-8"
+      aria-label={post.title}
+    >
+      <span className="block aspect-[16/10] overflow-hidden rounded-md">
+        <img
+          src={coverFor(post)}
+          alt=""
+          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+          loading="lazy"
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-center gap-x-2 text-[11px] font-semibold uppercase tracking-[0.16em]">
+          <span className="text-nx-teal">{post.category}</span>
+          <span aria-hidden="true" className="text-nx-faint">|</span>
+          <span className="font-medium normal-case tracking-normal text-nx-faint">{post.date}</span>
+        </span>
+        <span className="mt-2 block font-display text-[1.35rem] font-semibold leading-snug text-nx-ink transition-colors group-hover:text-nx-teal-ink">
+          {post.title}
+        </span>
+        <span className="mt-2 block max-w-3xl text-[0.95rem] leading-relaxed text-nx-muted line-clamp-2">{post.excerpt}</span>
+        <span className="mt-3 block text-xs text-nx-faint">
+          By <span className="font-semibold text-nx-ink">{post.author}</span>
+          <span aria-hidden="true"> · </span>
+          {post.readTime}
+        </span>
+      </span>
+    </button>
+  </li>
+)
+
+StoryRow.propTypes = { post: PropTypes.object.isRequired, onOpen: PropTypes.func.isRequired }
+
 const BlogsPage = () => {
-  const reduce = useReducedMotion()
+  const navigate = useNavigate()
   const [category, setCategory] = useState("All")
-  const [openSlug, setOpenSlug] = useState(null)
+  const [query, setQuery] = useState("")
+  const open = (post) => navigate(`/blogs/${post.slug}`)
 
-  const posts = category === "All" ? BLOG_POSTS : BLOG_POSTS.filter((p) => p.category === category)
+  const posts = useMemo(
+    () => BLOG_POSTS.filter((p) => (category === "All" || p.category === category) && matches(p, query)),
+    [category, query],
+  )
 
   return (
-    <PublicPageShell title="Blogs">
-      <section className="bg-nx-pale py-20 sm:py-24" aria-labelledby="blogs-heading">
-        <div className="mx-auto max-w-7xl px-5 sm:px-8">
-          <SectionHeading
-            id="blogs-heading"
-            eyebrow="Resource center"
-            title="Notes from the Jurinex team"
-            lede="Practical writing on legal AI, drafting, research and running a modern Indian practice."
-          />
+    <PublicPageShell>
+      {/* ----------------------------- masthead --------------------- */}
+      <section className="sticky top-20 z-30 border-b border-nx-line bg-white/95 backdrop-blur" aria-labelledby="blogs-heading">
+        <div className="mx-auto max-w-7xl px-5 pt-7 sm:px-8 sm:pt-8">
+          <Reveal className="flex flex-col gap-5 border-b-2 border-nx-ink pb-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-2xl">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-nx-teal">Jurinex Blog</p>
+              <h1 id="blogs-heading" className="mt-2 font-display text-3xl font-semibold leading-[1.08] tracking-tight text-nx-ink sm:text-[2.5rem]">
+                Notes from the Jurinex team
+              </h1>
+              <p className="mt-2 text-[0.95rem] leading-relaxed text-nx-muted">
+                Practical writing on legal AI, research, drafting, litigation, compliance and running a modern Indian practice.
+              </p>
+            </div>
+            <label className="relative block w-full lg:w-64">
+              <span className="sr-only">Search articles</span>
+              <Icon name="Search" className="pointer-events-none absolute left-0 top-1/2 h-4 w-4 -translate-y-1/2 text-nx-faint" />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search articles"
+                className="h-10 w-full border-b border-nx-line bg-transparent pl-7 pr-2 text-sm text-nx-ink outline-none transition-colors placeholder:text-nx-faint focus:border-nx-ink"
+              />
+            </label>
+          </Reveal>
 
-          <Reveal className="mt-10 flex flex-wrap justify-center gap-2">
-            {CATEGORIES.map((c) => {
-              const active = c === category
-              return (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => {
-                    setCategory(c)
-                    setOpenSlug(null)
-                  }}
-                  aria-pressed={active}
-                  className={`rounded-lg border px-4 py-1.5 text-sm font-medium transition-colors ${
-                    active
-                      ? "border-nx-teal bg-nx-teal text-white"
-                      : "border-nx-ink/40 bg-white text-nx-ink hover:border-nx-teal hover:text-nx-teal"
-                  }`}
-                >
-                  {c}
-                </button>
-              )
-            })}
+          {/* Topic tabs */}
+          <Reveal className="overflow-x-auto">
+            <div role="tablist" aria-label="Filter by topic" className="flex min-w-max items-center">
+              {["All", ...CATEGORIES].map((c) => {
+                const active = c === category
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setCategory(c)}
+                    className={`relative whitespace-nowrap px-4 py-3 text-[13px] font-semibold uppercase tracking-[0.12em] transition-colors first:pl-0 ${
+                      active ? "text-nx-teal" : "text-nx-muted hover:text-nx-ink"
+                    }`}
+                  >
+                    {c}
+                    <span
+                      aria-hidden="true"
+                      className={`absolute inset-x-4 bottom-0 h-0.5 bg-nx-teal transition-opacity first:inset-x-0 ${active ? "opacity-100" : "opacity-0"}`}
+                    />
+                  </button>
+                )
+              })}
+            </div>
           </Reveal>
         </div>
       </section>
 
-      <section className="bg-white py-16 sm:py-20" aria-label="Articles">
+      {/* ----------------------------- list ------------------------- */}
+      <section className="bg-white pb-16" aria-label="Articles">
         <div className="mx-auto max-w-7xl px-5 sm:px-8">
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {posts.map((post, i) => {
-              const isOpen = openSlug === post.slug
-              return (
-                <Reveal
-                  key={post.slug}
-                  delay={i * 0.04}
-                  className={`flex flex-col rounded-2xl border border-nx-ink/75 bg-white p-6 transition-shadow ${
-                    isOpen ? "shadow-[0_16px_40px_-20px_rgba(13,60,55,0.35)] md:col-span-2 lg:col-span-3" : ""
-                  }`}
-                >
-                  <div className="flex items-center gap-3 text-xs text-nx-faint">
-                    <span className="rounded-full bg-nx-pale px-2.5 py-1 font-semibold text-nx-teal">
-                      {post.category}
-                    </span>
-                    <span>{post.date}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{post.readTime}</span>
-                  </div>
-
-                  <h3 className="mt-4 font-display text-xl font-semibold leading-snug text-nx-ink">
-                    {post.title}
-                  </h3>
-                  <p className="mt-3 text-sm leading-relaxed text-nx-muted">{post.excerpt}</p>
-
-                  <AnimatePresence initial={false}>
-                    {isOpen && (
-                      <Motion.div
-                        key="body"
-                        initial={reduce ? false : { opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={reduce ? undefined : { opacity: 0, height: 0 }}
-                        transition={{ duration: 0.28, ease: EASE }}
-                        className="overflow-hidden"
-                      >
-                        <div className="mt-5 max-w-3xl space-y-4 border-t border-nx-line pt-5 text-[15px] leading-relaxed text-nx-ink/90">
-                          {post.body.map((para, j) => (
-                            <p key={j}>{para}</p>
-                          ))}
-                          <p className="text-sm text-nx-faint">— {post.author}</p>
-                        </div>
-                      </Motion.div>
-                    )}
-                  </AnimatePresence>
-
-                  <button
-                    type="button"
-                    onClick={() => setOpenSlug(isOpen ? null : post.slug)}
-                    aria-expanded={isOpen}
-                    className="mt-5 inline-flex items-center gap-1.5 self-start text-sm font-semibold text-nx-teal transition-colors hover:text-teal-800"
-                  >
-                    {isOpen ? "Show less" : "Read article"}
-                    <Icon
-                      name="ChevronDown"
-                      className={`h-4 w-4 transition-transform ${isOpen ? "rotate-180" : ""}`}
-                    />
-                  </button>
-                </Reveal>
-              )
-            })}
-          </div>
-
-          <Reveal className="mt-16 rounded-2xl border border-nx-ink/75 bg-nx-pale p-8 text-center">
-            <p className="font-display text-xl font-semibold text-nx-ink">Get new posts where you already are</p>
-            <p className="mt-2 text-sm text-nx-muted">We share every article on our social channels.</p>
-            <div className="mt-5 flex flex-wrap justify-center gap-2">
-              {SOCIAL_LINKS.map((s) => (
-                <a
-                  key={s.label}
-                  href={s.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="rounded-lg border border-nx-ink/40 bg-white px-4 py-1.5 text-sm font-medium text-nx-ink transition-colors hover:border-nx-teal hover:text-nx-teal"
-                >
-                  {s.label}
-                </a>
-              ))}
+          {posts.length === 0 ? (
+            <div className="py-20 text-center">
+              <p className="font-display text-xl font-semibold text-nx-ink">No articles match</p>
+              <p className="mt-2 text-sm text-nx-muted">Try another word, or clear the filters.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setCategory("All")
+                  setQuery("")
+                }}
+                className="mt-5 text-sm font-semibold text-nx-teal hover:underline"
+              >
+                Clear filters
+              </button>
             </div>
-          </Reveal>
+          ) : (
+            <>
+              <p className="pt-6 text-xs text-nx-faint">
+                <span className="font-semibold text-nx-ink">{posts.length}</span> {posts.length === 1 ? "article" : "articles"}
+                {category !== "All" && <> in {category}</>}
+              </p>
+              <ul className="divide-y divide-nx-line">
+                {posts.map((post) => (
+                  <StoryRow key={post.slug} post={post} onOpen={open} />
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       </section>
     </PublicPageShell>

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react"
 import { motion as Motion } from "framer-motion"
 import PropTypes from "prop-types"
+import { useLocation } from "react-router-dom"
 import Navbar from "../components/Navbar"
 import Footer from "../components/Footer"
 import PolicyModal from "../components/PolicyModal"
@@ -196,6 +197,8 @@ const ContactPage = ({ onNavigateLogin, onSectionNav }) => {
     }
   }
 
+  const embed = new URLSearchParams(useLocation().search).get("embed") === "1"
+
   const reset = () => {
     setForm(EMPTY)
     setAgreed(false)
@@ -206,9 +209,11 @@ const ContactPage = ({ onNavigateLogin, onSectionNav }) => {
 
   return (
     <div className="min-h-screen bg-white">
-      <Navbar solid onRequestDemo={() => setDemoOpen(true)} onLogin={onNavigateLogin} onSectionNav={onSectionNav} />
+      {!embed && (
+        <Navbar solid onRequestDemo={() => setDemoOpen(true)} onLogin={onNavigateLogin} onSectionNav={onSectionNav} />
+      )}
 
-      <main className="pt-20">
+      <main className={embed ? "" : "pt-20"}>
         <div className="mx-auto max-w-6xl px-6 pb-8 pt-12 sm:px-10 sm:pt-16">
 
         <SectionMark n="01">Send a message</SectionMark>
@@ -539,9 +544,9 @@ const ContactPage = ({ onNavigateLogin, onSectionNav }) => {
         </section>
       </main>
 
-      <Footer onOpenPolicy={setPolicyKey} onRequestDemo={() => setDemoOpen(true)} />
+      {!embed && <Footer onOpenPolicy={setPolicyKey} onRequestDemo={() => setDemoOpen(true)} />}
 
-      {policyKey && (
+      {!embed && policyKey && (
         <PolicyModal
           policyKey={policyKey}
           onClose={closePolicy}
@@ -549,8 +554,8 @@ const ContactPage = ({ onNavigateLogin, onSectionNav }) => {
         />
       )}
 
-      <BookDemoModal isOpen={demoOpen} onClose={() => setDemoOpen(false)} />
-      <ChatbotWidget />
+      {!embed && <BookDemoModal isOpen={demoOpen} onClose={() => setDemoOpen(false)} />}
+      {!embed && <ChatbotWidget />}
     </div>
   )
 }
