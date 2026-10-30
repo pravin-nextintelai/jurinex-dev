@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
+    "dev:all": "node scripts/dev-all.mjs",
     "build": "vite build",
     "lint": "eslint .",
-    "start": "serve -s dist -l $PORT",
+    "start": "node gateway.mjs",
+    "start:spa": "serve -s dist -l $PORT",
     "preview": "vite preview"
   },
   "dependencies": {

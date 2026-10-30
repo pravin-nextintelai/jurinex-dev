@@ -55,6 +55,28 @@ No variable with the `NEXT_PUBLIC_` prefix holds a secret, and none is used.
 
 ## Running locally
 
+### One port for both apps (recommended)
+
+```bash
+cd frontend
+npm run dev:all        # starts Vite (:5173) and Next (:3000); Vite proxies /acts to Next
+```
+
+Open `http://localhost:5173` for the React app and `http://localhost:5173/acts` for Bare Acts.
+Hot reload works for both. Next still needs `frontend/acts/.env.local` and a backend on :8096
+(real service or `node scripts/mock-backend.mjs`).
+
+In production `npm start` in `frontend/` runs `gateway.mjs`: one Node process that serves the
+React build from `dist/` with the SPA fallback and proxies `/acts/*` to the Next server
+(`NEXT_URL`, default `http://localhost:3000`). The previous static-only server is `npm run start:spa`.
+
+```bash
+cd frontend/acts && npm run build && npm start      # Next on :3000
+cd frontend && npm run build && PORT=8080 npm start # everything on :8080
+```
+
+### Separate processes
+
 Three processes, three ports:
 
 ```bash
