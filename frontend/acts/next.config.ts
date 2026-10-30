@@ -31,6 +31,9 @@ const nextConfig: NextConfig = {
   basePath: "/acts",
   poweredByHeader: false,
   output: "standalone",
+  // Brand images are a few small PNG/JPG files; serve them as-is instead of through
+  // the on-demand optimizer (which needs sharp at runtime and broke behind the proxy).
+  images: { unoptimized: true },
   turbopack: {
     // Several lockfiles live above this folder; pin the workspace root to this app.
     root: path.resolve(process.cwd()),

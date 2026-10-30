@@ -14,6 +14,28 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const NEXT_PORT = 3000;
+
+/**
+ * The Vite proxy only looks at :3000. If something else already listens there,
+ * Next dev would silently move to :3001 and /acts would show the wrong thing,
+ * so stop early with the command that frees the port.
+ */
+async function assertPortFree(port) {
+  const { createServer } = await import("node:net");
+  await new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(port, () => probe.close(resolve));
+  }).catch(() => {
+    console.error(`[dev:all] Port ${port} is already in use, so Next dev cannot start there and /acts would break.`);
+    console.error(`[dev:all] Stop whatever is using it, then run again. On Windows (PowerShell):`);
+    console.error(`[dev:all]   Get-NetTCPConnection -LocalPort ${port} -State Listen | % { Stop-Process -Id $_.OwningProcess -Force }`);
+    process.exit(1);
+  });
+}
+
+await assertPortFree(NEXT_PORT);
 
 function run(name, cwd, args) {
   const child = spawn(npm, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
