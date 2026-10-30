@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/* Jurinex design tokens, copied from frontend/src/shared/styles/      */
+/* index.css so both apps render as one site. Fonts come from          */
+/* next/font (see app/layout.tsx), which sets the CSS variables.       */
+/* ------------------------------------------------------------------ */
+@theme {
+  --font-display: var(--font-lora), Georgia, "Times New Roman", serif;
+  --font-body: var(--font-inter), "DM Sans", system-ui, -apple-system, sans-serif;
+  --font-editorial: var(--font-newsreader), var(--font-lora), Georgia, serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-nx-ink: #101413;
+  --color-nx-forest: #08a393;
+  --color-nx-forest-soft: #21b3a4;
+  --color-nx-teal: #08a393;
+  --color-nx-teal-deep: #07958a;
+  --color-nx-teal-ink: #06857b;
+  --color-nx-mint: #a6ece3;
+
+  --color-teal-50: #eaf8f6;
+  --color-teal-100: #d2f1ec;
+  --color-teal-200: #a6e3db;
+  --color-teal-300: #6fd0c4;
+  --color-teal-400: #34b9a9;
+  --color-teal-500: #08a393;
+  --color-teal-600: #08a393;
+  --color-teal-700: #07958a;
+  --color-teal-800: #06857b;
+  --color-teal-900: #056b63;
+  --color-teal-950: #044a45;
+
+  --color-nx-muted: #5b6664;
+  --color-nx-faint: #8f9b98;
+  --color-nx-line: #e3e9e7;
+  --color-nx-pale: #f5f8f7;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: #ffffff;
+  color: var(--color-nx-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Legal text: readable serif, keeps the backend's line breaks. */
+.legal-text {
+  font-family: var(--font-editorial);
+  font-size: 1.0625rem;
+  line-height: 1.75rem;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/* Schedules are often tables laid out in plain text: keep every space and let them scroll sideways. */
+.legal-pre {
+  font-family: var(--font-editorial);
+  font-size: 1rem;
+  line-height: 1.75rem;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+mark {
+  background: var(--color-teal-100);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
