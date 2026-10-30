@@ -15,6 +15,10 @@ export default defineConfig({
   },
   server: {
     strictPort: false,
+    // /acts is the separate Next.js app (frontend/acts) on :3000, including its /acts/_next/* assets.
+    proxy: {
+      '/acts': { target: 'http://localhost:3000', changeOrigin: true },
+    },
     hmr: { overlay: false },
     watch: {
       ignored: [

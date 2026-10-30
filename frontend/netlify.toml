@@ -5,6 +5,15 @@
 [build.environment]
   GIT_SUBMODULE_STRATEGY = "none"
 
+# Bare Acts (Next.js, frontend/acts) is served on the same domain under /acts.
+# This rule must come BEFORE the SPA fallback. Replace <next-app-host> with the
+# Cloud Run / Vercel host of bare-acts-web.
+[[redirects]]
+  from = "/acts/*"
+  to = "https://<next-app-host>/acts/:splat"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

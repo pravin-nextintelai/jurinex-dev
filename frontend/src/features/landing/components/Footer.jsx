@@ -284,13 +284,23 @@ const Footer = ({ onOpenPolicy, onGetInTouch, onRequestDemo }) => {
                 <ul className="mt-5 space-y-3">
                   {column.links.map((link) => (
                     <li key={`${column.heading}-${link.title}`}>
-                      <button
-                        type="button"
-                        onClick={() => followLink(link)}
-                        className="text-left text-sm text-nx-muted transition-colors hover:text-nx-ink"
-                      >
-                        {link.title}
-                      </button>
+                      {link.type === "plain" ? (
+                        // A different app (Next.js under /acts): a real anchor, full page load.
+                        <a
+                          href={link.href}
+                          className="text-left text-sm text-nx-muted transition-colors hover:text-nx-ink"
+                        >
+                          {link.title}
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => followLink(link)}
+                          className="text-left text-sm text-nx-muted transition-colors hover:text-nx-ink"
+                        >
+                          {link.title}
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>

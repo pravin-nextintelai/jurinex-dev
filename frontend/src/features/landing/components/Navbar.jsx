@@ -317,6 +317,11 @@ const Navbar = ({ onLogin, onSectionNav, onRequestDemo, onPromoVisibilityChange 
       window.open(href, "_blank", "noopener,noreferrer")
       return
     }
+    // Bare Acts is the separate Next.js app served under /acts: leave the SPA with a full navigation.
+    if (href === "/acts" || href.startsWith("/acts/")) {
+      window.location.assign(href)
+      return
+    }
     if (href.startsWith("/#") || href.startsWith("#")) {
       const id = href.replace(/^\/?#/, "")
       if (onSectionNav) {

@@ -247,3 +247,4 @@ Disallow: /enterprise-analytics
 Disallow: /auth/
 
 Sitemap: https://jurinex.ai/sitemap.xml
+Sitemap: https://jurinex.ai/acts/sitemap.xml

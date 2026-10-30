@@ -109,6 +109,7 @@ export const NAV_LINKS = [
     },
   },
   { label: "Pricing", href: "#pricing" },
+  { label: "Bare Acts", href: "/acts" },
   { label: "Blog", href: "/blogs" },
   { label: "Team", href: "/team" },
   {
@@ -744,6 +745,8 @@ export const FOOTER_COLUMNS = [
   {
     heading: "Resources",
     links: [
+      // Bare Acts is a separate Next.js app on the same domain: a plain <a href>, not a router link.
+      { title: "Bare Acts", href: "/acts", type: "plain" },
       { title: "Blogs", href: "/blogs", type: "route" },
       { title: "FAQs", href: "/faqs", type: "route" },
       { title: "WhatsApp Community", href: "/community", type: "route" },
