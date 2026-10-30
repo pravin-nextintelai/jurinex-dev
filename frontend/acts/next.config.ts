@@ -6,9 +6,12 @@ import path from "node:path";
  * for next/font, so both get 'unsafe-inline'. Content pages ship no third
  * party scripts, so everything else is locked to 'self'.
  */
+const isDev = process.env.NODE_ENV !== "production";
+
 const contentSecurityPolicy = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  // React dev tools need eval() for source-mapped stack traces; never allowed in production.
+  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
