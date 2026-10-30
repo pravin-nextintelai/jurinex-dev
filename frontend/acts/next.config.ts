@@ -12,7 +12,8 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  // The footer newsletter form posts to the auth service, as in the React app.
+  "connect-src 'self' http://localhost:5001 https://authservice-120280829617.asia-south1.run.app",
   "frame-ancestors 'self'",
   "base-uri 'self'",
   "form-action 'self'",

@@ -33,7 +33,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${inter.variable} ${lora.variable} ${newsreader.variable} ${jetbrains.variable} h-full antialiased`}>
       <body className="flex min-h-full flex-col bg-white font-body text-nx-ink">
         <Header />
-        <main className="mx-auto w-full max-w-7xl flex-1 px-5 py-8 sm:px-8 sm:py-10">{children}</main>
+        {/* The header is fixed and 5rem tall, like the React app's PublicPageShell. */}
+        <main className="mx-auto w-full max-w-7xl flex-1 px-5 pb-8 pt-28 sm:px-8 sm:pb-10 sm:pt-30">{children}</main>
         <Footer />
       </body>
     </html>

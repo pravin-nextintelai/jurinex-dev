@@ -1,106 +1,95 @@
+"use client";
+
+import { useRef, useState } from "react";
 import Image from "next/image";
 import BrandLogo from "@/components/BrandLogo";
+import { Icon, SocialIcon } from "@/components/site/Icon";
+import { CONTACT_INFO, FOOTER_COLUMNS, NEWSLETTER_COPY, SOCIAL_LINKS, toReactHref, type FooterLink } from "@/components/site/constants";
 
 /**
- * Static copy of the React app's Footer (frontend/src/features/landing/components/Footer.jsx).
- * The newsletter form needs JavaScript and the auth service, so it is left out;
- * every other link is a plain <a href> into the React app or an external site.
+ * Port of frontend/src/features/landing/components/Footer.jsx: the same teal
+ * "Get in touch" band with the newsletter form, link columns, contact record,
+ * social icons, giant wordmark and bottom bar. Links are real anchors into the
+ * React app. "Book a Demo" and "Get in touch" go to /contact (the React app
+ * opens a modal for them; there is no modal here).
  */
-const CONTACT_INFO = {
-  company: "NexIntel AI Pvt Ltd",
-  tagline: "Enterprise grade legal operating system for Professionals powered by AI",
-  addressLines: ["B11, Near Railway Station Road, MIDC,", "Chhatrapati Sambhajinagar, Maharashtra 431010"],
-  phone: "+91 9684027372",
-  email: "connect@jurinex.ai",
-  cin: "U62010MH2025PTC448297",
-  gstin: "27AAKCN4811B1ZQ",
-  registeredOffice: "Chhatrapati Sambhajinagar, Maharashtra 431005",
-  incorporation: "Incorporated under the Companies Act, 2013.",
-};
 
-const SOCIAL_LINKS = [
-  { label: "Instagram", href: "https://www.instagram.com/jurinex_/" },
-  { label: "Facebook", href: "https://www.facebook.com/share/19VmrVEWYM" },
-  { label: "X", href: "https://x.com/nexintel_ai" },
-  { label: "LinkedIn", href: "https://www.linkedin.com/company/jurinex" },
-  { label: "YouTube", href: "https://www.youtube.com/@JuriNex_ai" },
-  { label: "Pinterest", href: "https://in.pinterest.com/nexintel_ai/" },
-];
-
-interface FooterLink {
-  title: string;
-  href: string;
-  external?: boolean;
+/** Same fallback as frontend/src/config/apiConfig.js. */
+function authServiceUrl(): string {
+  const fromEnv = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL;
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  const local = typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname);
+  return local ? "http://localhost:5001" : "https://authservice-120280829617.asia-south1.run.app";
 }
 
-const FOOTER_COLUMNS: { heading: string; links: FooterLink[] }[] = [
-  {
-    heading: "Product",
-    links: [
-      { title: "Create Case", href: "/products/create-case" },
-      { title: "Case Storage", href: "/products/case-storage" },
-      { title: "Quick Chat", href: "/products/quick-chat" },
-      { title: "AI Drafting", href: "/products/ai-drafting" },
-      { title: "Citation Research", href: "/products/citation-research" },
-      { title: "All Products", href: "/products" },
-    ],
-  },
-  {
-    heading: "Solutions",
-    links: [
-      { title: "Solo Practitioners", href: "/#solutions" },
-      { title: "Law Firms & Enterprises", href: "/#solutions" },
-      { title: "Built for Indian Courts", href: "/#indian-courts" },
-      { title: "Security & Trust", href: "/#security" },
-      { title: "Pricing", href: "/#pricing" },
-    ],
-  },
-  {
-    heading: "Resources",
-    links: [
-      { title: "Bare Acts", href: "/acts" },
-      { title: "Blogs", href: "/blogs" },
-      { title: "FAQs", href: "/faqs" },
-      { title: "WhatsApp Community", href: "/community" },
-      { title: "Get Help", href: "/help" },
-      { title: "Contact Us", href: "/contact" },
-    ],
-  },
-  {
-    heading: "Company",
-    links: [
-      { title: "Why Jurinex", href: "/#why" },
-      { title: "Team", href: "/team" },
-      { title: "Book a Demo", href: "/contact" },
-    ],
-  },
-  {
-    heading: "Legal",
-    links: [
-      { title: "Terms of Services", href: "https://drive.google.com/open?id=1BTXf-YUiOjQiJmdwM9QS0GCgbGUXRBOO&usp=drive_copy", external: true },
-      { title: "Master Service Agreement", href: "https://drive.google.com/open?id=1iUYu1fDiqp95_GV16G8w_Su-EIgBg4aT&usp=drive_copy", external: true },
-      { title: "DPA", href: "https://drive.google.com/open?id=1MEYVdK5NtlqkhlhPrCi_q4o6zCvsyBTP&usp=drive_copy", external: true },
-      { title: "Privacy Policy", href: "https://drive.google.com/open?id=10RKK0Eh7ybm0mRNpbsDx4ecMs5ymedWa&usp=drive_copy", external: true },
-      { title: "Data Security Policy", href: "https://drive.google.com/open?id=1X0qE1gpz-oVfy9qfL7UdIhcoLezhIEeZ&usp=drive_copy", external: true },
-      { title: "Disclosures", href: "https://drive.google.com/open?id=11oc-dhaFbjhPtraRuYucjfOtnE5WqQj4&usp=drive_copy", external: true },
-      { title: "Cookie Policy", href: "https://drive.google.com/open?id=1iKeGRa0w86ERuGJLYRSaAFnw7H1fYeNS&usp=drive_copy", external: true },
-      { title: "Refund Policy", href: "https://drive.google.com/open?id=1ryZoxjk55ESOU4QaSximCarJe2236DAC&usp=drive_copy", external: true },
-    ],
-  },
-];
+function footerHref(link: FooterLink): string {
+  if (link.type === "demo") return "/contact";
+  return toReactHref(link.href);
+}
 
 export default function Footer() {
   const year = new Date().getFullYear();
+  const [email, setEmail] = useState("");
+  const [subscribed, setSubscribed] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
+  const [subscribeError, setSubscribeError] = useState("");
+  const [emailError, setEmailError] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
+  const subscribe = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (submittingRef.current) return;
+    setSubscribeError("");
+    setEmailError(false);
+    const trimmedEmail = email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedEmail)) {
+      setEmailError(true);
+      setSubscribeError("Enter a valid email address");
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      const response = await fetch(`${authServiceUrl()}/api/auth/newsletter-subscribers`, {
+        method: "POST",
+        credentials: "omit",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: trimmedEmail, source: "website_footer", page_url: window.location.href, website: "" }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { success?: boolean; message?: string; already_subscribed?: boolean; errors?: { email?: string } }
+        | null;
+      if (!response.ok || result?.success !== true) {
+        setEmailError(Boolean(result?.errors?.email));
+        throw new Error(result?.errors?.email || result?.message || "We could not save your subscription. Please try again.");
+      }
+      setSuccessMessage(result.message || (result.already_subscribed ? "This email is already on the newsletter list." : NEWSLETTER_COPY.thanks));
+      setSubscribed(true);
+    } catch (error) {
+      setSubscribeError(
+        error instanceof TypeError
+          ? "Unable to connect. Please check your connection and try again."
+          : error instanceof Error && error.message
+            ? error.message
+            : "We could not save your subscription. Please try again.",
+      );
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
 
   return (
     <footer
-      className="mt-16 overflow-hidden rounded-t-[3.5rem] border border-b-0 border-nx-line bg-[#fbfbfa] font-body shadow-[0_-16px_48px_-28px_rgba(6,52,44,0.3)] sm:rounded-t-[5rem]"
+      className="overflow-hidden rounded-t-[3.5rem] border border-b-0 border-nx-line bg-[#fbfbfa] font-body shadow-[0_-16px_48px_-28px_rgba(6,52,44,0.3)] sm:rounded-t-[5rem]"
       aria-labelledby="footer-heading"
     >
       <h2 id="footer-heading" className="sr-only">
         Footer
       </h2>
 
+      {/* Get in touch + newsletter, one teal band */}
       <div className="bg-nx-forest">
         <div className="mx-auto max-w-7xl px-5 pb-12 pt-16 sm:px-8">
           <div className="flex flex-col justify-between gap-8 md:flex-row md:items-center">
@@ -109,23 +98,93 @@ export default function Footer() {
               <p className="mt-4 font-display text-3xl text-white">
                 Have a question or a <em className="text-nx-mint">use case</em> in mind?
               </p>
-              <p className="mt-3 text-sm leading-relaxed text-white/85">
-                Tell us how your practice works. We will show you where Jurinex fits.
-              </p>
+              <p className="mt-3 text-sm leading-relaxed text-white/85">Tell us how your practice works — we&apos;ll show you where Jurinex fits.</p>
             </div>
             <a
               href="/contact"
               className="inline-flex flex-none items-center gap-3 rounded-lg bg-white px-8 py-4 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-nx-teal-deep transition-colors hover:bg-teal-50"
             >
               Get in touch
-              <span aria-hidden="true">&rarr;</span>
+              <Icon name="ArrowRight" className="h-3.5 w-3.5" />
             </a>
+          </div>
+
+          {/* Newsletter, inset within the same band */}
+          <div className="mt-12 flex flex-col gap-5 rounded-2xl border border-white/15 bg-nx-teal-ink/70 px-6 py-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] md:flex-row md:items-center md:justify-between">
+            <div className="max-w-md">
+              <p className="flex items-center gap-2 text-sm font-semibold text-white">
+                <Icon name="Mail" className="h-4 w-4 text-nx-mint" />
+                {NEWSLETTER_COPY.title}
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-white/80">{NEWSLETTER_COPY.text}</p>
+            </div>
+            {subscribed ? (
+              <div className="flex w-full max-w-md flex-col items-start gap-3">
+                <p className="inline-flex items-center gap-2 text-sm font-semibold text-white" role="status">
+                  <Icon name="CircleCheck" className="h-5 w-5 text-nx-mint" />
+                  {successMessage}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmail("");
+                    setSuccessMessage("");
+                    setSubscribeError("");
+                    setEmailError(false);
+                    setSubscribed(false);
+                    requestAnimationFrame(() => document.getElementById("footer-newsletter-email")?.focus());
+                  }}
+                  className="rounded-sm text-sm font-semibold text-white underline underline-offset-4 hover:text-nx-mint focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
+                >
+                  Subscribe another email
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={subscribe} noValidate aria-busy={submitting} className="flex w-full max-w-md flex-col gap-2 sm:flex-row sm:flex-wrap">
+                <label htmlFor="footer-newsletter-email" className="sr-only">
+                  Email address
+                </label>
+                <input
+                  id="footer-newsletter-email"
+                  type="email"
+                  required
+                  maxLength={255}
+                  autoComplete="email"
+                  disabled={submitting}
+                  aria-invalid={emailError}
+                  aria-describedby={subscribeError ? "footer-newsletter-error" : undefined}
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setEmailError(false);
+                    setSubscribeError("");
+                  }}
+                  placeholder={NEWSLETTER_COPY.placeholder}
+                  className="min-w-0 flex-1 rounded-lg border border-white/30 bg-white/10 px-4 py-3 text-sm text-white placeholder:text-white/60 focus:border-white focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex flex-none items-center justify-center gap-2 rounded-lg bg-white px-5 py-3 font-mono text-xs font-semibold uppercase tracking-[0.2em] text-nx-teal-deep transition-colors hover:bg-teal-50"
+                >
+                  {submitting ? "Subscribing…" : NEWSLETTER_COPY.button}
+                  <Icon name="ArrowRight" className="h-3.5 w-3.5" />
+                </button>
+                {subscribeError && (
+                  <p id="footer-newsletter-error" role="alert" className="w-full text-sm text-white">
+                    {subscribeError}
+                  </p>
+                )}
+              </form>
+            )}
           </div>
         </div>
       </div>
 
+      {/* Main columns */}
       <div className="mx-auto max-w-7xl px-5 sm:px-8">
         <div className="grid grid-cols-1 gap-12 pt-14 lg:grid-cols-[1.3fr_2.7fr]">
+          {/* Brand + contact + statutory record */}
           <div>
             <BrandLogo size="lg" />
             <p className="mt-5 max-w-xs text-sm leading-relaxed text-nx-muted">{CONTACT_INFO.tagline}</p>
@@ -145,25 +204,26 @@ export default function Footer() {
               </p>
             </address>
 
+            {/* Social */}
             <div className="mt-7">
               <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.24em] text-nx-faint">Follow Jurinex</p>
-              <ul className="mt-3 flex flex-wrap items-center gap-2.5">
+              <div className="mt-3 flex items-center gap-2.5">
                 {SOCIAL_LINKS.map((social) => (
-                  <li key={social.label}>
-                    <a
-                      href={social.href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={`Jurinex on ${social.label}`}
-                      className="inline-flex h-9 items-center rounded-lg border border-nx-line px-3 text-xs font-semibold text-nx-muted transition-colors hover:border-nx-teal-deep hover:text-nx-teal-deep"
-                    >
-                      {social.label}
-                    </a>
-                  </li>
+                  <a
+                    key={social.label}
+                    href={social.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Jurinex on ${social.label}`}
+                    className="grid h-9 w-9 place-items-center rounded-lg border border-nx-line text-nx-muted transition-colors hover:border-nx-teal-deep hover:text-nx-teal-deep"
+                  >
+                    <SocialIcon icon={social.icon} />
+                  </a>
                 ))}
-              </ul>
+              </div>
             </div>
 
+            {/* Statutory identifiers */}
             <div className="mt-8 space-y-1.5 font-mono text-xs leading-relaxed text-nx-faint">
               <p className="font-semibold text-nx-ink">{CONTACT_INFO.company}</p>
               <p>
@@ -178,6 +238,7 @@ export default function Footer() {
             </div>
           </div>
 
+          {/* Link columns */}
           <nav className="grid grid-cols-2 gap-x-8 gap-y-10 sm:grid-cols-3 lg:grid-cols-5" aria-label="Footer">
             {FOOTER_COLUMNS.map((column) => (
               <div key={column.heading}>
@@ -186,9 +247,9 @@ export default function Footer() {
                   {column.links.map((link) => (
                     <li key={`${column.heading}-${link.title}`}>
                       <a
-                        href={link.href}
-                        target={link.external ? "_blank" : undefined}
-                        rel={link.external ? "noopener noreferrer" : undefined}
+                        href={footerHref(link)}
+                        target={link.type === "external" ? "_blank" : undefined}
+                        rel={link.type === "external" ? "noopener noreferrer" : undefined}
                         className="text-left text-sm text-nx-muted transition-colors hover:text-nx-ink"
                       >
                         {link.title}
@@ -201,21 +262,16 @@ export default function Footer() {
           </nav>
         </div>
 
+        {/* Giant brand lockup — the same artwork as the header */}
         <div aria-hidden="true" className="mt-16 flex select-none justify-center overflow-hidden border-t border-nx-line py-10">
-          <Image
-            src="/brand/jurinex-wordmark.png"
-            alt=""
-            width={816}
-            height={169}
-            className="h-[clamp(3rem,9vw,8rem)] w-auto"
-            loading="lazy"
-          />
+          <Image src="/brand/jurinex-wordmark.png" alt="" width={816} height={169} className="h-[clamp(3rem,9vw,8rem)] w-auto" loading="lazy" />
         </div>
 
+        {/* Bottom bar */}
         <div className="flex flex-col items-start justify-between gap-3 border-t border-nx-line py-7 sm:flex-row sm:items-center">
           <div>
             <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-nx-faint">
-              &copy; {year} {CONTACT_INFO.company}
+              © {year} {CONTACT_INFO.company}
             </p>
             <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-nx-faint/80">{CONTACT_INFO.incorporation}</p>
           </div>
