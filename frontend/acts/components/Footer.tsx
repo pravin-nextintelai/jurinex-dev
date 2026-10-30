@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import Image from "next/image";
 import BrandLogo from "@/components/BrandLogo";
 import { Icon, SocialIcon } from "@/components/site/Icon";
+import { BASE_PATH } from "@/lib/route";
 import { CONTACT_INFO, FOOTER_COLUMNS, NEWSLETTER_COPY, SOCIAL_LINKS, toReactHref, type FooterLink } from "@/components/site/constants";
 
 /**
@@ -264,7 +265,7 @@ export default function Footer() {
 
         {/* Giant brand lockup — the same artwork as the header */}
         <div aria-hidden="true" className="mt-16 flex select-none justify-center overflow-hidden border-t border-nx-line py-10">
-          <Image src="/brand/jurinex-wordmark.png" alt="" width={816} height={169} className="h-[clamp(3rem,9vw,8rem)] w-auto" loading="lazy" />
+          <Image src={`${BASE_PATH}/brand/jurinex-wordmark.png`} alt="" width={816} height={169} className="h-[clamp(3rem,9vw,8rem)] w-auto" loading="lazy" />
         </div>
 
         {/* Bottom bar */}
