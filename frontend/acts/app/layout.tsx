@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono, Lora, Newsreader } from "next/font/google";
 import "./globals.css";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
+import SpeculationRules from "@/components/site/SpeculationRules";
 import { siteUrl } from "@/lib/route";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* The header is fixed and 5rem tall, like the React app's PublicPageShell. */}
         <main className="mx-auto w-full max-w-7xl flex-1 px-5 pb-8 pt-28 sm:px-8 sm:pb-10 sm:pt-30">{children}</main>
         <Footer />
+        <SpeculationRules />
       </body>
     </html>
   );
