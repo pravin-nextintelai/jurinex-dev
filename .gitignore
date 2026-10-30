@@ -165,6 +165,9 @@ eggs/
 .eggs/
 lib/
 lib64/
+# The Python 'lib/' rule above must not hide the Next.js app's source folder.
+!frontend/acts/lib/
+!frontend/acts/lib/**
 parts/
 sdist/
 var/
